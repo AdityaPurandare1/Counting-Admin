@@ -1,0 +1,68 @@
+/* Design tokens — inferred from docs/designs/raw/app/*.jsx references.
+   The prototype files use var(--...) throughout without shipping their
+   own token definitions, so values here are reasonable defaults to be
+   refined against the real design once the source palette is shared. */
+
+:root {
+  /* Canvas / surfaces */
+  --canvas:       #FAF6F1;   /* cream page background */
+  --surface:      #FFFFFF;   /* card surface */
+  --surface-alt:  #F4EFE8;
+  --border:       #E6E0D6;
+  --border-strong:#D7CFBF;
+  --shadow-sm:    0 1px 2px rgba(13, 10, 8, 0.06);
+  --shadow-md:    0 4px 12px rgba(13, 10, 8, 0.08);
+
+  /* Foreground */
+  --fg-primary:   #0D0A08;
+  --fg-secondary: #3B3632;
+  --fg-muted:     #7A736A;
+  --fg-faint:     #A9A197;
+
+  /* Ink (dark scale) */
+  --dark-900: #0D0A08;
+  --dark-800: #221D18;
+  --dark-700: #3A322A;
+
+  /* Off-white (cream scale) */
+  --off-100: #FFF9F5;
+  --off-200: #F4EFE8;
+
+  /* Gold — primary accent */
+  --gold-100: #F5EBD4;
+  --gold-200: #E8D69C;
+  --gold-300: #C9A24C;
+  --gold-400: #9F7F38;
+
+  /* Raspberry — critical / variance */
+  --raspberry-100: #F7D9E0;
+  --raspberry-300: #C13A57;
+  --raspberry-400: #8F2842;
+
+  /* Copper — caution */
+  --copper-100: #F5E2CC;
+  --copper-300: #B8743A;
+  --copper-400: #8A542A;
+
+  /* Teal — positive */
+  --teal-100: #D7EAE6;
+  --teal-300: #3F7D73;
+
+  /* Amethyst — informational */
+  --amethyst-100: #E3DCEE;
+  --amethyst-300: #6D5BA3;
+
+  /* Accent host (App.jsx toggles this via [data-accent]) */
+  --accent-bg: var(--dark-900);
+  --accent-fg: var(--off-100);
+
+  /* Type scale */
+  --text-headline-md: 600 22px/1.2 'DM Sans', system-ui, sans-serif;
+  --text-body:        400 14px/1.55 'DM Sans', system-ui, sans-serif;
+  --text-mono:        500 12px/1.4 'JetBrains Mono', ui-monospace, monospace;
+}
+
+body[data-accent='gold']      { --accent-bg: var(--gold-300);      --accent-fg: var(--dark-900); }
+body[data-accent='raspberry'] { --accent-bg: var(--raspberry-300); --accent-fg: #FFFFFF; }
+body[data-accent='teal']      { --accent-bg: var(--teal-300);      --accent-fg: #FFFFFF; }
+body[data-accent='ink']       { --accent-bg: var(--dark-900);      --accent-fg: var(--off-100); }

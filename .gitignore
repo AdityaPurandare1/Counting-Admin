@@ -1,0 +1,35 @@
+# Node
+node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build
+dist
+dist-ssr
+.vite
+
+# Editor
+.vscode
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Design assets — raw JSX source is committed for reference; huge binaries aren't.
+docs/designs/raw/**/*.psd
+docs/designs/raw/**/*.sketch
+docs/designs/raw/**/*.fig
+docs/designs/raw/**/*.zip
