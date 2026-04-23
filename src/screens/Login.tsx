@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { resolveAccess } from '@/lib/access';
+import { resolveAccessAsync } from '@/lib/access';
 import type { AccessEntry } from '@/lib/access';
 
 interface Props {
@@ -10,11 +10,14 @@ export function Login({ onSignedIn }: Props) {
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
   const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  function submit(e: React.FormEvent) {
+  async function submit(e: React.FormEvent) {
     e.preventDefault();
     setErr(null);
-    const hit = resolveAccess(email);
+    setBusy(true);
+    const hit = await resolveAccessAsync(email);
+    setBusy(false);
     if (!hit) { setErr('Access denied. Your email is not authorized.'); return; }
     if (hit.role === 'counter') {
       setErr('The desktop app is for managers and admins. Use the phone app.');
@@ -37,7 +40,7 @@ export function Login({ onSignedIn }: Props) {
         <input value={name} onChange={e => setName(e.target.value)} placeholder="Your name" />
 
         {err && <div className="login-err">{err}</div>}
-        <button type="submit">Sign in</button>
+        <button type="submit" disabled={busy}>{busy ? 'Checking…' : 'Sign in'}</button>
       </form>
     </div>
   );

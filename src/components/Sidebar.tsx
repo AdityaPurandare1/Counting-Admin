@@ -13,6 +13,10 @@ const NAV_TEAM = [
   { to: '/ai',     label: 'Ask AI' },
 ];
 
+const NAV_ADMIN = [
+  { to: '/security', label: 'Security' },
+];
+
 interface Props {
   userName?: string;
   userRole?: string;
@@ -20,6 +24,7 @@ interface Props {
 }
 
 export function Sidebar({ userName, userRole, onSignOut }: Props) {
+  const isAdmin = userRole === 'corporate';
   return (
     <aside className="sidebar">
       <div className="sidebar-head">
@@ -51,6 +56,21 @@ export function Sidebar({ userName, userRole, onSignOut }: Props) {
           {n.label}
         </NavLink>
       ))}
+
+      {isAdmin && (
+        <>
+          <div className="sidebar-group-label">Admin</div>
+          {NAV_ADMIN.map(n => (
+            <NavLink
+              key={n.to}
+              to={n.to}
+              className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}
+            >
+              {n.label}
+            </NavLink>
+          ))}
+        </>
+      )}
 
       <div style={{ flex: 1 }} />
 

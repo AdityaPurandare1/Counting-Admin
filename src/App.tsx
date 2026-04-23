@@ -3,9 +3,11 @@ import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { Sidebar } from '@/components/Sidebar';
 import { Login } from '@/screens/Login';
 import { Variance } from '@/screens/Variance';
+import { Security } from '@/screens/Security';
 import {
   Venues, Recount, Summary, Issues, AI,
 } from '@/screens/_placeholders';
+import { refreshAccessList } from '@/lib/access';
 import type { AccessEntry } from '@/lib/access';
 import { NotificationProvider } from '@/lib/notifications';
 import { NotificationBell, NotificationToaster } from '@/components/NotificationUI';
@@ -29,6 +31,9 @@ export default function App() {
 
   useEffect(() => { saveUser(user); }, [user]);
 
+  // Warm the access-list cache at boot so the Login form resolves fast.
+  useEffect(() => { void refreshAccessList(); }, []);
+
   if (!user) {
     return <Login onSignedIn={(u) => { setUser(u); nav('/variance'); }} />;
   }
@@ -50,6 +55,7 @@ export default function App() {
             <Route path="/summary"  element={<Summary />} />
             <Route path="/issues"   element={<Issues />} />
             <Route path="/ai"       element={<AI />} />
+            <Route path="/security" element={user.role === 'corporate' ? <Security user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="*"         element={<Navigate to="/variance" replace />} />
           </Routes>
         </main>
