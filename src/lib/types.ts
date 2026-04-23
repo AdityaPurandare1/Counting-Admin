@@ -82,6 +82,36 @@ export interface KountEntry {
   timestamp: string;
 }
 
+export interface KountAvtReport {
+  id: string;
+  uploaded_by_email: string;
+  uploaded_by_name: string | null;
+  uploaded_at: string;
+  file_name: string | null;
+  row_count: number;
+  venue_ids: string[];
+  notes: string | null;
+}
+
+export interface KountAvtRow {
+  id: string;
+  report_id: string;
+  store: string | null;
+  venue_id: string;
+  venue_name: string | null;
+  item_name: string;
+  category: string | null;
+  actual: number | null;
+  theo: number | null;
+  variance: number | null;
+  variance_value: number | null;
+  variance_pct: number | null;
+  cu_price: number | null;
+  start_qty: number | null;
+  purchases: number | null;
+  depletions: number | null;
+}
+
 export interface KountRecount {
   id: string;
   audit_id: string;

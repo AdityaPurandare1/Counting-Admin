@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import type { AccessEntry } from '@/lib/access';
-import type { KountAudit, KountEntry, KountMember } from '@/lib/types';
-import { Pill, Eyebrow, Card, Btn, Num, Avatar } from '@/components/atoms';
+import type { KountAudit, KountEntry, KountMember, KountAvtReport, KountAvtRow } from '@/lib/types';
+import { Pill, Eyebrow, Card, Btn, Num, Money, Avatar } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
+import { AvtUpload } from '@/components/AvtUpload';
 
 /* ───────────────────────────────────────────────────────────────────────
    Variance screen (v0.3)
@@ -82,7 +83,8 @@ export function Variance({ user }: Props) {
           <div className="eyebrow">Variance dashboard</div>
           <h1>Active audits</h1>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <AvtUpload user={user} onUploaded={() => { /* detail pane re-fetches via realtime subscription on kount_avt_reports */ }} />
           <Btn variant="secondary" size="sm" onClick={() => void loadAudits()}>Refresh</Btn>
         </div>
       </div>
@@ -143,6 +145,8 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
   const [audit, setAudit] = useState<KountAudit | null>(null);
   const [entries, setEntries] = useState<KountEntry[]>([]);
   const [members, setMembers] = useState<KountMember[]>([]);
+  const [avtReport, setAvtReport] = useState<KountAvtReport | null>(null);
+  const [avtRows, setAvtRows] = useState<KountAvtRow[]>([]);
   const [closing, setClosing] = useState(false);
 
   const load = useCallback(async () => {
@@ -156,7 +160,28 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
     setMembers((m as KountMember[]) ?? []);
   }, [auditId]);
 
+  // Pull the most-recent AVT report that covers this audit's venue + its rows
+  const loadAvt = useCallback(async (venueId: string) => {
+    const { data: reports } = await supabase
+      .from('kount_avt_reports')
+      .select('*')
+      .contains('venue_ids', [venueId])
+      .order('uploaded_at', { ascending: false })
+      .limit(1);
+    const rep = (reports?.[0] as KountAvtReport) ?? null;
+    setAvtReport(rep);
+    if (!rep) { setAvtRows([]); return; }
+    const { data: rows } = await supabase
+      .from('kount_avt_rows')
+      .select('*')
+      .eq('report_id', rep.id)
+      .eq('venue_id', venueId)
+      .order('variance_value', { ascending: true });
+    setAvtRows((rows as KountAvtRow[]) ?? []);
+  }, []);
+
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => { if (audit?.venue_id) void loadAvt(audit.venue_id); }, [audit?.venue_id, loadAvt]);
 
   useEffect(() => {
     const ch = supabase
@@ -164,9 +189,14 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
       .on('postgres_changes', { event: '*', schema: 'public', table: 'kount_entries', filter: `audit_id=eq.${auditId}` }, () => { void load(); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'kount_members', filter: `audit_id=eq.${auditId}` }, () => { void load(); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'kount_audits',  filter: `id=eq.${auditId}` },       () => { void load(); })
+      // New AVT reports touching this venue → refresh variance table
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'kount_avt_reports' }, (evt) => {
+        const row = evt.new as KountAvtReport;
+        if (audit?.venue_id && row?.venue_ids?.includes(audit.venue_id)) void loadAvt(audit.venue_id);
+      })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
-  }, [auditId, load]);
+  }, [auditId, load, loadAvt, audit?.venue_id]);
 
   const stats = useMemo(() => {
     const totalEntries = entries.length;
@@ -268,6 +298,54 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
         ))}
       </Card>
 
+      {/* AVT variance — pulled from latest kount_avt_reports row covering this venue */}
+      <Card padding={16}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+          <Eyebrow>Craftable AVT variance</Eyebrow>
+          {avtReport
+            ? <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+                uploaded {new Date(avtReport.uploaded_at).toLocaleString()} · by {avtReport.uploaded_by_name || avtReport.uploaded_by_email} · {avtReport.file_name}
+              </span>
+            : <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>no report uploaded for this venue yet</span>}
+        </div>
+        {avtReport && avtRows.length > 0 && (
+          <>
+            <VarianceSummaryStrip rows={avtRows} />
+            <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse', marginTop: 12 }}>
+              <thead>
+                <tr style={{ textAlign: 'left', color: 'var(--fg-muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1 }}>
+                  <th style={{ padding: '4px 4px' }}>Item</th>
+                  <th style={{ padding: '4px 4px' }}>Actual</th>
+                  <th style={{ padding: '4px 4px' }}>Theo</th>
+                  <th style={{ padding: '4px 4px' }}>Δ qty</th>
+                  <th style={{ padding: '4px 4px' }}>Δ $</th>
+                </tr>
+              </thead>
+              <tbody>
+                {avtRows.slice(0, 40).map(r => (
+                  <tr key={r.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                    <td style={{ padding: '6px 4px' }}>{r.item_name}</td>
+                    <td style={{ padding: '6px 4px', fontFamily: 'JetBrains Mono, monospace' }}>{r.actual ?? '—'}</td>
+                    <td style={{ padding: '6px 4px', fontFamily: 'JetBrains Mono, monospace' }}>{r.theo ?? '—'}</td>
+                    <td style={{ padding: '6px 4px' }}>
+                      {r.variance !== null ? <Num value={Number(r.variance)} signed /> : '—'}
+                    </td>
+                    <td style={{ padding: '6px 4px' }}>
+                      {r.variance_value !== null ? <Money value={Number(r.variance_value)} showSign /> : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {avtRows.length > 40 && (
+              <div style={{ marginTop: 8, fontSize: 11, color: 'var(--fg-muted)' }}>
+                showing 40 of {avtRows.length} · sorted by worst variance first
+              </div>
+            )}
+          </>
+        )}
+      </Card>
+
       {/* Recent entries */}
       <Card padding={16}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
@@ -302,5 +380,40 @@ function StatTile({ label, value }: { label: string; value: React.ReactNode }) {
       <Eyebrow>{label}</Eyebrow>
       <div style={{ marginTop: 8, fontSize: 22, fontWeight: 700 }}>{value}</div>
     </Card>
+  );
+}
+
+function VarianceSummaryStrip({ rows }: { rows: KountAvtRow[] }) {
+  const stats = useMemo(() => {
+    let totalVarianceValue = 0;
+    let totalTheoValue = 0;
+    let overCount = 0;
+    let underCount = 0;
+    for (const r of rows) {
+      const vv = Number(r.variance_value ?? 0);
+      totalVarianceValue += vv;
+      if ((r.variance ?? 0) > 0) overCount++;
+      if ((r.variance ?? 0) < 0) underCount++;
+      totalTheoValue += Number(r.theo ?? 0) * Number(r.cu_price ?? 0);
+    }
+    return { totalVarianceValue, totalTheoValue, overCount, underCount };
+  }, [rows]);
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+      <MiniTile label="Items w/ AVT" value={<Num value={rows.length} />} />
+      <MiniTile label="Over theo" value={<Num value={stats.overCount} />} />
+      <MiniTile label="Under theo" value={<Num value={stats.underCount} />} />
+      <MiniTile label="Net variance $" value={<Money value={stats.totalVarianceValue} showSign />} />
+    </div>
+  );
+}
+
+function MiniTile({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div style={{ padding: 10, background: 'var(--off-200)', borderRadius: 6 }}>
+      <div style={{ fontSize: 10, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--fg-muted)', fontWeight: 600 }}>{label}</div>
+      <div style={{ marginTop: 4, fontSize: 16, fontWeight: 700 }}>{value}</div>
+    </div>
   );
 }
