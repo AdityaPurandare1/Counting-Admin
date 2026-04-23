@@ -1,8 +1,9 @@
-/* Stub screens for v0.1. Real ports from docs/designs/raw/desktop_screens.jsx
-   land in v0.2+. Each one renders a topbar + a placeholder so we can see
-   routing works end-to-end. */
+/* Stub screens — Variance lives in ./Variance.tsx as of v0.3.
+   The rest are still placeholders; each gets its own real port in later
+   versions (Recount + Summary in v0.5, Issues in v0.6, AI in v0.7). */
+import type { ReactNode } from 'react';
 
-function Shell({ title, eyebrow, children }: { title: string; eyebrow: string; children?: React.ReactNode }) {
+function Shell({ title, eyebrow, children }: { title: string; eyebrow: string; children?: ReactNode }) {
   return (
     <>
       <div className="topbar">
@@ -12,15 +13,14 @@ function Shell({ title, eyebrow, children }: { title: string; eyebrow: string; c
         </div>
       </div>
       <div className="content">
-        {children ?? <div className="placeholder">Port coming in v0.2</div>}
+        {children ?? <div className="placeholder">Port coming in a later version — see README roadmap.</div>}
       </div>
     </>
   );
 }
 
-export function Venues()   { return <Shell eyebrow="Overview"   title="Venues" />; }
-export function Variance() { return <Shell eyebrow="Variance dashboard" title="Count 1 review" />; }
-export function Recount()  { return <Shell eyebrow="Recount handoff"    title="Flagged items" />; }
-export function Summary()  { return <Shell eyebrow="Audit summary"      title="All audits" />; }
-export function Issues()   { return <Shell eyebrow="Issues tracker"     title="Open issues" />; }
-export function AI()       { return <Shell eyebrow="Ask kΩunt"          title="AI assistant" />; }
+export function Venues()   { return <Shell eyebrow="Overview"            title="Venues" />; }
+export function Recount()  { return <Shell eyebrow="Recount handoff"     title="Flagged items" />; }
+export function Summary()  { return <Shell eyebrow="Audit summary"       title="All audits" />; }
+export function Issues()   { return <Shell eyebrow="Issues tracker"      title="Open issues" />; }
+export function AI()       { return <Shell eyebrow="Ask kΩunt"           title="AI assistant" />; }
