@@ -36,10 +36,18 @@ Counting-Admin/
 └── vite.config.ts
 ```
 
+## Deployed URL
+
+Auto-deployed to GitHub Pages on every push to `main`:
+<https://adityapurandare1.github.io/Counting-Admin/>
+
+(First push triggers the workflow; check the Actions tab for progress. Once the workflow is green, Pages takes ~30 s to propagate.)
+
 ## Roadmap
 
 - **v0.1** — scaffold, Supabase connected, routing, placeholder screens
-- **v0.2** — port `atoms.jsx` + `icons.jsx` into typed components
-- **v0.3** — real Variance dashboard (live from `purchase_items` + `kount_audits`)
-- **v0.4** — Recount handoff + Summary pages
-- **v0.5+** — Issues tracker, Ask-kΩunt AI, exports
+- **v0.2** — GitHub Pages deploy + SPA fallback + version banner
+- **v0.3** — port `atoms.jsx` + `icons.jsx` into typed components
+- **v0.4** — real Variance dashboard (live from `purchase_items` + `kount_audits`)
+- **v0.5** — Recount handoff + Summary pages
+- **v0.6+** — Issues tracker, Ask-kΩunt AI, `app_users` migration, exports

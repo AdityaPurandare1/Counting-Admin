@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>kΩunt Admin</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      // SPA fallback: when a user lands on /Counting-Admin/variance directly,
+      // GitHub Pages serves this file. Redirect to the base URL with the path
+      // parked in a query param; main.tsx picks it up and replaces history.
+      (function () {
+        var base = '/Counting-Admin/';
+        var full = window.location.pathname + window.location.search + window.location.hash;
+        if (full.indexOf(base) === 0) {
+          var rest = full.substring(base.length);
+          if (rest && rest !== 'index.html') {
+            var target = base + '?__redirect=' + encodeURIComponent(rest);
+            window.location.replace(target);
+          }
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <noscript>
+      <p>This app requires JavaScript. Please enable it and reload.</p>
+    </noscript>
+  </body>
+</html>

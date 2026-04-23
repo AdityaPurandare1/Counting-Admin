@@ -1,4 +1,5 @@
 import { NavLink } from 'react-router-dom';
+import { APP_VERSION } from '@/lib/version';
 
 const NAV_AUDIT = [
   { to: '/venues',   label: 'Venues' },
@@ -72,7 +73,7 @@ export function Sidebar({ userName, userRole, onSignOut }: Props) {
         </button>
       </div>
 
-      <div className="sidebar-footer">© H.Wood Group 2026</div>
+      <div className="sidebar-footer">© H.Wood Group 2026 · v{APP_VERSION}</div>
     </aside>
   );
 }
