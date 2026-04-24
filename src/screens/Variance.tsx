@@ -28,27 +28,39 @@ export function Variance({ user }: Props) {
   const [searchParams, setSearchParams] = useSearchParams();
   const auditParam = searchParams.get('audit');
 
-  const [audits, setAudits] = useState<KountAudit[]>([]);
+  const [activeAudits, setActiveAudits] = useState<KountAudit[]>([]);
+  const [historicAudits, setHistoricAudits] = useState<KountAudit[]>([]);
   const [loadingAudits, setLoadingAudits] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(auditParam);
 
-  // --- Load active audits the user can see ---
+  const filterVisible = useCallback((rows: KountAudit[]) => rows.filter(a => {
+    if (user.role === 'corporate' || user.venueIds === 'all') return true;
+    return Array.isArray(user.venueIds) && user.venueIds.includes(a.venue_id);
+  }), [user]);
+
+  // --- Load both active and recent (submitted + cancelled) audits ---
   const loadAudits = useCallback(async () => {
     setLoadingAudits(true);
-    const { data, error } = await supabase
-      .from('kount_audits')
-      .select('*')
-      .eq('status', 'active')
-      .order('started_at', { ascending: false });
+    const [activeRes, historicRes] = await Promise.all([
+      supabase
+        .from('kount_audits')
+        .select('*')
+        .eq('status', 'active')
+        .order('started_at', { ascending: false }),
+      supabase
+        .from('kount_audits')
+        .select('*')
+        .in('status', ['submitted', 'cancelled'])
+        .order('completed_at', { ascending: false, nullsFirst: false })
+        .limit(25),
+    ]);
     setLoadingAudits(false);
-    if (error) { console.error('[variance] load audits', error); return; }
+    if (activeRes.error)   console.error('[variance] load active',   activeRes.error);
+    if (historicRes.error) console.error('[variance] load historic', historicRes.error);
 
-    const visible = (data ?? []).filter(a => {
-      if (user.role === 'corporate' || user.venueIds === 'all') return true;
-      return Array.isArray(user.venueIds) && user.venueIds.includes(a.venue_id);
-    });
-    setAudits(visible as KountAudit[]);
-  }, [user]);
+    setActiveAudits(filterVisible((activeRes.data ?? []) as KountAudit[]));
+    setHistoricAudits(filterVisible((historicRes.data ?? []) as KountAudit[]));
+  }, [filterVisible]);
 
   useEffect(() => { void loadAudits(); }, [loadAudits]);
 
@@ -67,7 +79,7 @@ export function Variance({ user }: Props) {
   }, [selectedId, auditParam, setSearchParams]);
 
   const openAudit = (id: string) => {
-    const a = audits.find(x => x.id === id);
+    const a = [...activeAudits, ...historicAudits].find(x => x.id === id);
     if (!a) return;
     if (user.role !== 'corporate') {
       const ok = user.venueIds === 'all' || (Array.isArray(user.venueIds) && user.venueIds.includes(a.venue_id));
@@ -89,42 +101,25 @@ export function Variance({ user }: Props) {
         </div>
       </div>
       <div className="content" style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 20 }}>
-        <aside>
-          <Eyebrow style={{ marginBottom: 8 }}>Audits ({audits.length})</Eyebrow>
-          {loadingAudits && <Card padding={14}><div style={{ color: 'var(--fg-muted)', fontSize: 12 }}>Loading…</div></Card>}
-          {!loadingAudits && audits.length === 0 && (
-            <Card padding={14}>
-              <div style={{ color: 'var(--fg-muted)', fontSize: 12 }}>
-                No active audits. Start one from the phone app.
-              </div>
-            </Card>
-          )}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {audits.map(a => (
-              <button
-                key={a.id}
-                onClick={() => openAudit(a.id)}
-                style={{
-                  textAlign: 'left', padding: '12px 14px', borderRadius: 8,
-                  border: '1px solid var(--border)',
-                  background: selectedId === a.id ? 'var(--amethyst-100)' : '#FFF',
-                  cursor: 'pointer', fontFamily: 'inherit',
-                }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, letterSpacing: 2, color: 'var(--accent-bg)', fontSize: 14 }}>
-                    {a.join_code}
-                  </span>
-                  <Pill tone={a.count_phase === 'count1' ? 'gold' : a.count_phase === 'review' ? 'inform' : 'positive'} size="sm">
-                    {a.count_phase}
-                  </Pill>
-                </div>
-                <div style={{ fontSize: 13, fontWeight: 600, marginTop: 6 }}>{a.venue_name}</div>
-                <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 2 }}>
-                  by {a.started_by_name || a.started_by_email} · {new Date(a.started_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </div>
-              </button>
-            ))}
-          </div>
+        <aside style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+          <AuditList
+            title="Active"
+            count={activeAudits.length}
+            audits={activeAudits}
+            selectedId={selectedId}
+            onOpen={openAudit}
+            loading={loadingAudits}
+            emptyMessage="No active audits. Start one from the phone app."
+          />
+          <AuditList
+            title="Historic"
+            count={historicAudits.length}
+            audits={historicAudits}
+            selectedId={selectedId}
+            onOpen={openAudit}
+            loading={false}
+            emptyMessage="No completed or cancelled audits yet."
+          />
         </aside>
 
         <section>
@@ -216,6 +211,9 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
     && audit?.status === 'active'
     && audit?.count_phase === 'count1';
 
+  const canCancel = user.role === 'corporate' && audit?.status === 'active';
+  const [cancelling, setCancelling] = useState(false);
+
   const closeCount1 = async () => {
     if (!audit || closing) return;
     setClosing(true);
@@ -226,6 +224,21 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
     setClosing(false);
     if (error) { alert('Close Count 1 failed: ' + error.message); return; }
     onClosed();
+  };
+
+  const cancelAudit = async () => {
+    if (!audit || cancelling) return;
+    if (!confirm(`Cancel audit ${audit.join_code} at ${audit.venue_name}?\n\nCounters will lose access to this audit. This cannot be undone.`)) return;
+    setCancelling(true);
+    const now = new Date().toISOString();
+    const { error } = await supabase
+      .from('kount_audits')
+      .update({ status: 'cancelled', completed_at: now })
+      .eq('id', audit.id);
+    setCancelling(false);
+    if (error) { alert('Cancel failed: ' + error.message); return; }
+    // Keep the detail pane open so the admin sees the "cancelled" badge;
+    // the active list will drop it and the historic list will pick it up.
   };
 
   if (!audit) return <Card padding={24}><div style={{ color: 'var(--fg-muted)' }}>Loading audit…</div></Card>;
@@ -245,12 +258,23 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <Pill tone={audit.count_phase === 'count1' ? 'gold' : audit.count_phase === 'review' ? 'inform' : 'positive'}>
-              {audit.count_phase}
+            <Pill tone={
+              audit.status === 'cancelled' ? 'critical'
+              : audit.status === 'submitted' ? 'positive'
+              : audit.count_phase === 'count1' ? 'gold'
+              : audit.count_phase === 'review' ? 'inform'
+              : 'positive'
+            }>
+              {audit.status === 'cancelled' ? 'cancelled' : audit.status === 'submitted' ? 'submitted' : audit.count_phase}
             </Pill>
             {canClose && (
               <Btn variant="primary" size="md" onClick={closeCount1} disabled={closing} leading={Ic.flag(14)}>
                 {closing ? 'Closing…' : 'Close Count 1'}
+              </Btn>
+            )}
+            {canCancel && (
+              <Btn variant="critical" size="md" onClick={cancelAudit} disabled={cancelling} leading={Ic.close(14)}>
+                {cancelling ? 'Cancelling…' : 'Cancel audit'}
               </Btn>
             )}
           </div>
@@ -406,6 +430,69 @@ function VarianceSummaryStrip({ rows }: { rows: KountAvtRow[] }) {
       <MiniTile label="Under theo" value={<Num value={stats.underCount} />} />
       <MiniTile label="Net variance $" value={<Money value={stats.totalVarianceValue} showSign />} />
     </div>
+  );
+}
+
+function AuditList({
+  title, count, audits, selectedId, onOpen, loading, emptyMessage,
+}: {
+  title: string;
+  count: number;
+  audits: KountAudit[];
+  selectedId: string | null;
+  onOpen: (id: string) => void;
+  loading: boolean;
+  emptyMessage: string;
+}) {
+  return (
+    <div>
+      <Eyebrow style={{ marginBottom: 8 }}>{title} ({count})</Eyebrow>
+      {loading && <Card padding={14}><div style={{ color: 'var(--fg-muted)', fontSize: 12 }}>Loading…</div></Card>}
+      {!loading && audits.length === 0 && (
+        <Card padding={14}>
+          <div style={{ color: 'var(--fg-muted)', fontSize: 12 }}>{emptyMessage}</div>
+        </Card>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {audits.map(a => <AuditListItem key={a.id} audit={a} selected={selectedId === a.id} onClick={() => onOpen(a.id)} />)}
+      </div>
+    </div>
+  );
+}
+
+function AuditListItem({ audit, selected, onClick }: { audit: KountAudit; selected: boolean; onClick: () => void }) {
+  const isHistoric = audit.status !== 'active';
+  const badgeTone =
+    audit.status === 'cancelled' ? 'critical'
+  : audit.status === 'submitted' ? 'positive'
+  : audit.count_phase === 'count1' ? 'gold'
+  : audit.count_phase === 'review' ? 'inform'
+  : 'positive';
+  const badgeLabel = audit.status === 'cancelled' ? 'cancelled' : audit.status === 'submitted' ? 'submitted' : audit.count_phase;
+  const timestampLabel = isHistoric && audit.completed_at
+    ? new Date(audit.completed_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : new Date(audit.started_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        textAlign: 'left', padding: '12px 14px', borderRadius: 8,
+        border: '1px solid var(--border)',
+        background: selected ? 'var(--amethyst-100)' : (isHistoric ? 'var(--off-200)' : '#FFF'),
+        cursor: 'pointer', fontFamily: 'inherit',
+        opacity: isHistoric ? 0.9 : 1,
+      }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, letterSpacing: 2, color: 'var(--accent-bg)', fontSize: 14 }}>
+          {audit.join_code}
+        </span>
+        <Pill tone={badgeTone as 'gold' | 'inform' | 'positive' | 'critical'} size="sm">{badgeLabel}</Pill>
+      </div>
+      <div style={{ fontSize: 13, fontWeight: 600, marginTop: 6 }}>{audit.venue_name}</div>
+      <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 2 }}>
+        {isHistoric ? `ended ${timestampLabel}` : `started ${timestampLabel}`} · {audit.started_by_name || audit.started_by_email}
+      </div>
+    </button>
   );
 }
 

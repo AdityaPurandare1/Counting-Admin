@@ -50,6 +50,9 @@ function venueVisibleToUser(user: AccessEntry | null, venueId: string): boolean 
 
 /** Builds a human-readable title from a phase / status transition. */
 function phaseMessage(audit: KountAudit, prevPhase: CountPhase, prevStatus: AuditStatus): { title: string; body?: string } | null {
+  if (audit.status === 'cancelled' && prevStatus !== 'cancelled') {
+    return { title: `Audit cancelled — ${audit.venue_name}` };
+  }
   if (audit.status === 'submitted' && prevStatus !== 'submitted') {
     return { title: `Audit submitted — ${audit.venue_name}`, body: 'Final report ready' };
   }
