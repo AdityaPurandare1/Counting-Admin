@@ -6,9 +6,8 @@ import { Variance } from '@/screens/Variance';
 import { Recount } from '@/screens/Recount';
 import { Summary } from '@/screens/Summary';
 import { Security } from '@/screens/Security';
-import {
-  Venues, Issues, AI,
-} from '@/screens/_placeholders';
+import { Venues } from '@/screens/Venues';
+import { Issues, AI } from '@/screens/_placeholders';
 import { refreshAccessList } from '@/lib/access';
 import type { AccessEntry } from '@/lib/access';
 import { NotificationProvider } from '@/lib/notifications';
@@ -51,7 +50,7 @@ export default function App() {
         <main className="main">
           <Routes>
             <Route path="/"         element={<Navigate to="/variance" replace />} />
-            <Route path="/venues"   element={<Venues />} />
+            <Route path="/venues"   element={<Venues user={user} />} />
             <Route path="/variance" element={<Variance user={user} />} />
             <Route path="/recount"  element={<Recount user={user} />} />
             <Route path="/summary"  element={<Summary user={user} />} />

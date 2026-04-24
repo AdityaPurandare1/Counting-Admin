@@ -19,6 +19,5 @@ function Shell({ title, eyebrow, children }: { title: string; eyebrow: string; c
   );
 }
 
-export function Venues() { return <Shell eyebrow="Overview"       title="Venues" />; }
 export function Issues() { return <Shell eyebrow="Issues tracker" title="Open issues" />; }
 export function AI()     { return <Shell eyebrow="Ask kΩunt"      title="AI assistant" />; }
