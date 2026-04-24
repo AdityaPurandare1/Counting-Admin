@@ -116,10 +116,29 @@ export function Catalog({ user }: Props) {
     setImporting('parsing');
     try {
       const bevRows = await parseBevagerWorkbook(file);
+      console.log('[import] parsed XLSX rows:', bevRows.length);
+      if (bevRows.length === 0) {
+        throw new Error('No rows parsed from the XLSX. Expected the "2. Inventory" sheet with an ITEM column.');
+      }
+
       setImporting('matching');
-      const results = matchBevagerRows(bevRows, items);
-      const unmatched  = results.filter(r => r.confidence === 'unmatched');
-      const matched    = results.filter(r => r.confidence !== 'unmatched');
+      // Re-fetch the full catalog right here instead of trusting the React
+      // state, which can be mid-load when the admin clicks Import quickly.
+      const catalog = await selectAllPaged<PurchaseItem>(
+        'purchase_items',
+        'id,name,brand,category,subcategory,upc,sku',
+        'name',
+      );
+      console.log('[import] fresh catalog rows:', catalog.length);
+      if (catalog.length === 0) {
+        throw new Error('purchase_items came back empty. Check Supabase RLS / network, then retry.');
+      }
+
+      const results = matchBevagerRows(bevRows, catalog);
+      const unmatched = results.filter(r => r.confidence === 'unmatched');
+      const matched   = results.filter(r => r.confidence !== 'unmatched');
+      console.log('[import] matched:', matched.length, 'unmatched:', unmatched.length);
+
       const alreadyCarried = matched.filter(r => r.purchaseItemId && carried.has(r.purchaseItemId));
       // Dedupe on purchase_item_id for the insert list (multiple XLSX rows
       // can collapse to the same purchase_items row via loose match).
@@ -132,6 +151,10 @@ export function Catalog({ user }: Props) {
         toInsert.push(r);
       }
       setImportPreview({ matches: matched, unmatched, alreadyCarried, toInsert });
+
+      // Also refresh the on-screen catalog table so the teal highlight and
+      // row count reflect reality after the admin confirms the import.
+      setItems(catalog);
       setImporting(null);
     } catch (e) {
       setImportError((e as Error).message || 'Parse failed');

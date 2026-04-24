@@ -12,13 +12,15 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 });
 
 /** Paginate past the db-max-rows cap (default 1000) so a full catalog loads
- *  without silent truncation. Matches the v1.3 fix in the phone app. */
+ *  without silent truncation. Matches the v1.3 fix in the phone app. Cap is
+ *  50 pages = 50 k rows, high enough for the current purchase_items (~23 k)
+ *  with headroom; tune up if the catalog grows. */
 export async function selectAllPaged<T>(
   table: string,
   select = '*',
   order = 'name',
   pageSize = 1000,
-  maxPages = 20,
+  maxPages = 50,
 ): Promise<T[]> {
   const rows: T[] = [];
   for (let page = 0; page < maxPages; page++) {
