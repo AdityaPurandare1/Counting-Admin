@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useNotifications } from '@/lib/notifications';
 import type { NotificationItem } from '@/lib/notifications';
+import { VENUES } from '@/lib/access';
 import { Ic } from './Icons';
 
 /** Renders two things:
@@ -24,10 +25,22 @@ function formatTime(iso: string) {
 }
 
 export function NotificationBell() {
-  const { items, unread, markRead, markAllRead } = useNotifications();
+  const { items, unread, markRead, markAllRead, clear, venueFilter, setVenueFilter } = useNotifications();
   const [open, setOpen] = useState(false);
+  const [showFilter, setShowFilter] = useState(false);
   const navigate = useNavigate();
   const ref = useRef<HTMLDivElement>(null);
+
+  const activeFilter = venueFilter.size > 0;
+  const filteredVenueNames = useMemo(() =>
+    [...venueFilter].map(id => VENUES.find(v => v.id === id)?.name ?? id),
+    [venueFilter],
+  );
+  const toggleVenue = (id: string) => {
+    const next = new Set(venueFilter);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    setVenueFilter(next);
+  };
 
   // Close on outside click
   useEffect(() => {
@@ -72,7 +85,7 @@ export function NotificationBell() {
       {open && (
         <div style={{
           position: 'absolute', top: 46, right: 0,
-          width: 340, maxHeight: 480, overflowY: 'auto',
+          width: 360, maxHeight: 520, overflowY: 'auto',
           background: '#FFF', border: '1px solid var(--border)',
           borderRadius: 10, boxShadow: 'var(--shadow-md)', padding: 6,
         }}>
@@ -80,13 +93,40 @@ export function NotificationBell() {
             <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--fg-primary)', letterSpacing: '.04em', textTransform: 'uppercase' }}>
               Notifications
             </span>
-            {unread > 0 && (
-              <button onClick={markAllRead} style={{
-                border: 'none', background: 'transparent', cursor: 'pointer',
-                color: 'var(--fg-muted)', fontSize: 11, fontFamily: 'inherit',
-              }}>Mark all read</button>
-            )}
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button onClick={() => setShowFilter(s => !s)} style={linkStyle} title="Filter by venue">
+                {activeFilter ? `Filter · ${venueFilter.size}` : 'Filter'}
+              </button>
+              {unread > 0 && <button onClick={markAllRead} style={linkStyle}>Mark all read</button>}
+              {items.length > 0 && <button onClick={() => { if (confirm('Clear all notifications?')) clear(); }} style={{ ...linkStyle, color: 'var(--raspberry-300)' }}>Clear</button>}
+            </div>
           </div>
+
+          {showFilter && (
+            <div style={{ padding: '10px 10px 12px', borderBottom: '1px solid var(--border)' }}>
+              <div style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--fg-muted)', marginBottom: 6 }}>
+                Show only venues:
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                {VENUES.map(v => {
+                  const on = venueFilter.has(v.id);
+                  return (
+                    <button key={v.id} onClick={() => toggleVenue(v.id)} style={{
+                      padding: '4px 8px', borderRadius: 9999, fontSize: 11, fontFamily: 'inherit', cursor: 'pointer',
+                      border: '1px solid ' + (on ? 'var(--dark-900)' : 'var(--border)'),
+                      background: on ? 'var(--dark-900)' : '#FFF',
+                      color: on ? 'var(--off-100)' : 'var(--fg-secondary)',
+                    }}>{v.name}</button>
+                  );
+                })}
+              </div>
+              <div style={{ marginTop: 8, display: 'flex', gap: 10, fontSize: 11 }}>
+                <button onClick={() => setVenueFilter(new Set())} style={linkStyle}>Clear filter</button>
+                {activeFilter && <span style={{ color: 'var(--fg-muted)' }}>Only seeing: {filteredVenueNames.join(', ')}</span>}
+              </div>
+            </div>
+          )}
+
           {items.length === 0 && (
             <div style={{ padding: 24, textAlign: 'center', color: 'var(--fg-muted)', fontSize: 12 }}>
               No notifications yet.
@@ -123,6 +163,11 @@ export function NotificationBell() {
     </div>
   );
 }
+
+const linkStyle: React.CSSProperties = {
+  border: 'none', background: 'transparent', cursor: 'pointer',
+  color: 'var(--fg-muted)', fontSize: 11, fontFamily: 'inherit',
+};
 
 /* -------------------- Toaster -------------------- */
 

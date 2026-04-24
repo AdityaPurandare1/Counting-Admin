@@ -22,6 +22,9 @@ interface Ctx {
   markRead: (id: string) => void;
   markAllRead: () => void;
   clear: () => void;
+  /** Venue filter: ids the user cares about. Empty set = accept all. */
+  venueFilter: Set<string>;
+  setVenueFilter: (ids: Set<string>) => void;
 }
 
 const NotificationContext = createContext<Ctx | null>(null);
@@ -33,6 +36,7 @@ export function useNotifications(): Ctx {
 }
 
 const STORAGE_KEY = 'kount_admin_notifications_v1';
+const FILTER_KEY = 'kount_admin_notifications_filter_v1';
 const MAX_HISTORY = 50;
 
 function loadStored(): NotificationItem[] {
@@ -40,6 +44,15 @@ function loadStored(): NotificationItem[] {
 }
 function saveStored(items: NotificationItem[]) {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(items.slice(0, MAX_HISTORY))); } catch { /* quota */ }
+}
+function loadFilter(): Set<string> {
+  try {
+    const raw = localStorage.getItem(FILTER_KEY);
+    return new Set<string>(raw ? (JSON.parse(raw) as string[]) : []);
+  } catch { return new Set(); }
+}
+function saveFilter(s: Set<string>) {
+  try { localStorage.setItem(FILTER_KEY, JSON.stringify([...s])); } catch { /* quota */ }
 }
 
 function venueVisibleToUser(user: AccessEntry | null, venueId: string): boolean {
@@ -66,6 +79,12 @@ function phaseMessage(audit: KountAudit, prevPhase: CountPhase, prevStatus: Audi
 
 export function NotificationProvider({ user, children }: { user: AccessEntry | null; children: ReactNode }) {
   const [items, setItems] = useState<NotificationItem[]>(() => loadStored());
+  const [venueFilter, setVenueFilterState] = useState<Set<string>>(() => loadFilter());
+
+  const setVenueFilter = useCallback((ids: Set<string>) => {
+    setVenueFilterState(new Set(ids));
+    saveFilter(ids);
+  }, []);
 
   const push = useCallback((n: Omit<NotificationItem, 'id' | 'createdAt' | 'read'>) => {
     setItems(prev => {
@@ -73,6 +92,8 @@ export function NotificationProvider({ user, children }: { user: AccessEntry | n
       if (prev.find(x => `${x.auditId}:${x.title}` === dedupKey && Date.now() - new Date(x.createdAt).getTime() < 60_000)) {
         return prev;  // swallow duplicates within a 60s window (Realtime can retry)
       }
+      // Apply venue filter — empty set means "no filter, accept all"
+      if (venueFilter.size > 0 && n.venueId && !venueFilter.has(n.venueId)) return prev;
       const next: NotificationItem = {
         ...n,
         id: crypto.randomUUID(),
@@ -83,7 +104,7 @@ export function NotificationProvider({ user, children }: { user: AccessEntry | n
       saveStored(out);
       return out;
     });
-  }, []);
+  }, [venueFilter]);
 
   const markRead = useCallback((id: string) => {
     setItems(prev => {
@@ -155,7 +176,9 @@ export function NotificationProvider({ user, children }: { user: AccessEntry | n
 
   const unread = useMemo(() => items.filter(i => !i.read).length, [items]);
 
-  const ctx = useMemo<Ctx>(() => ({ items, unread, push, markRead, markAllRead, clear }), [items, unread, push, markRead, markAllRead, clear]);
+  const ctx = useMemo<Ctx>(() => ({
+    items, unread, push, markRead, markAllRead, clear, venueFilter, setVenueFilter,
+  }), [items, unread, push, markRead, markAllRead, clear, venueFilter, setVenueFilter]);
 
   return <NotificationContext.Provider value={ctx}>{children}</NotificationContext.Provider>;
 }
