@@ -50,7 +50,7 @@ export function Catalog({ user }: Props) {
   const loadAll = useCallback(async () => {
     setLoading(true);
     const [cat, carr] = await Promise.all([
-      selectAllPaged<PurchaseItem>('purchase_items', 'id,name,brand,category,subcategory,upc,sku', 'name'),
+      selectAllPaged<PurchaseItem>('purchase_items', 'id,name,category,subcategory,upc,sku', 'name'),
       supabase.from('kount_carried_items').select('purchase_item_id'),
     ]);
     setItems(cat);
@@ -126,7 +126,7 @@ export function Catalog({ user }: Props) {
       // state, which can be mid-load when the admin clicks Import quickly.
       const catalog = await selectAllPaged<PurchaseItem>(
         'purchase_items',
-        'id,name,brand,category,subcategory,upc,sku',
+        'id,name,category,subcategory,upc,sku',
         'name',
       );
       console.log('[import] fresh catalog rows:', catalog.length);
