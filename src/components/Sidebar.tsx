@@ -14,7 +14,8 @@ const NAV_TEAM = [
 ];
 
 const NAV_ADMIN = [
-  { to: '/security', label: 'Security' },
+  { to: '/approvals', label: 'UPC approvals', manager: true },
+  { to: '/security',  label: 'Security',      manager: false },
 ];
 
 interface Props {
@@ -24,7 +25,8 @@ interface Props {
 }
 
 export function Sidebar({ userName, userRole, onSignOut }: Props) {
-  const isAdmin = userRole === 'corporate';
+  const isAdmin   = userRole === 'corporate';
+  const isManager = userRole === 'manager';
   return (
     <aside className="sidebar">
       <div className="sidebar-head">
@@ -57,10 +59,10 @@ export function Sidebar({ userName, userRole, onSignOut }: Props) {
         </NavLink>
       ))}
 
-      {isAdmin && (
+      {(isAdmin || isManager) && (
         <>
           <div className="sidebar-group-label">Admin</div>
-          {NAV_ADMIN.map(n => (
+          {NAV_ADMIN.filter(n => isAdmin || (isManager && n.manager)).map(n => (
             <NavLink
               key={n.to}
               to={n.to}

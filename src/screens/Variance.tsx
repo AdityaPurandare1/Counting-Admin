@@ -374,22 +374,13 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
       <Card padding={16}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
           <Eyebrow>Recent entries</Eyebrow>
-          <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>showing latest 30</span>
+          <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>showing latest 30 · admin can edit / delete</span>
         </div>
         {entries.length === 0 && <div style={{ color: 'var(--fg-muted)', fontSize: 12 }}>No entries yet.</div>}
         <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
           <tbody>
             {entries.slice(0, 30).map(e => (
-              <tr key={e.id} style={{ borderBottom: '1px solid var(--border)' }}>
-                <td style={{ padding: '6px 4px' }}>{e.item_name}</td>
-                <td style={{ padding: '6px 4px', color: 'var(--fg-muted)' }}>{e.zone}</td>
-                <td style={{ padding: '6px 4px', fontFamily: 'JetBrains Mono, monospace' }}>{Number(e.qty).toFixed(e.qty % 1 === 0 ? 0 : 2)}</td>
-                <td style={{ padding: '6px 4px', color: 'var(--fg-muted)', fontSize: 11 }}>{e.method || '—'}</td>
-                <td style={{ padding: '6px 4px', color: 'var(--fg-muted)', fontSize: 11 }}>{e.counted_by_name || e.counted_by_email}</td>
-                <td style={{ padding: '6px 4px', color: 'var(--fg-muted)', fontSize: 10 }}>
-                  {new Date(e.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </td>
-              </tr>
+              <EntryRow key={e.id} entry={e} canEdit={user.role === 'corporate'} />
             ))}
           </tbody>
         </table>
@@ -404,6 +395,65 @@ function StatTile({ label, value }: { label: string; value: React.ReactNode }) {
       <Eyebrow>{label}</Eyebrow>
       <div style={{ marginTop: 8, fontSize: 22, fontWeight: 700 }}>{value}</div>
     </Card>
+  );
+}
+
+function EntryRow({ entry, canEdit }: { entry: KountEntry; canEdit: boolean }) {
+  const [editing, setEditing] = useState(false);
+  const [qty, setQty] = useState(String(entry.qty));
+  const [busy, setBusy] = useState(false);
+
+  const save = async () => {
+    const parsed = Number(qty);
+    if (!Number.isFinite(parsed) || parsed < 0) { alert('Enter a non-negative number'); return; }
+    setBusy(true);
+    const { error } = await supabase.from('kount_entries').update({ qty: parsed }).eq('id', entry.id);
+    setBusy(false);
+    if (error) { alert('Update failed: ' + error.message); return; }
+    setEditing(false);
+  };
+
+  const remove = async () => {
+    if (!confirm(`Delete this entry?\n\n${entry.item_name} · ${entry.zone} · qty ${entry.qty}`)) return;
+    setBusy(true);
+    const { error } = await supabase.from('kount_entries').delete().eq('id', entry.id);
+    setBusy(false);
+    if (error) alert('Delete failed: ' + error.message);
+  };
+
+  return (
+    <tr style={{ borderBottom: '1px solid var(--border)' }}>
+      <td style={{ padding: '6px 4px' }}>{entry.item_name}</td>
+      <td style={{ padding: '6px 4px', color: 'var(--fg-muted)' }}>{entry.zone}</td>
+      <td style={{ padding: '6px 4px', fontFamily: 'JetBrains Mono, monospace' }}>
+        {editing
+          ? <input
+              type="number" step="0.25" min="0" value={qty}
+              onChange={e => setQty(e.target.value)}
+              style={{ width: 70, padding: '2px 6px', fontFamily: 'inherit', fontSize: 12, border: '1px solid var(--border-strong)', borderRadius: 4 }}/>
+          : Number(entry.qty).toFixed(entry.qty % 1 === 0 ? 0 : 2)}
+      </td>
+      <td style={{ padding: '6px 4px', color: 'var(--fg-muted)', fontSize: 11 }}>{entry.method || '—'}</td>
+      <td style={{ padding: '6px 4px', color: 'var(--fg-muted)', fontSize: 11 }}>{entry.counted_by_name || entry.counted_by_email}</td>
+      <td style={{ padding: '6px 4px', color: 'var(--fg-muted)', fontSize: 10 }}>
+        {new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+      </td>
+      {canEdit && (
+        <td style={{ padding: '6px 4px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+          {editing ? (
+            <>
+              <Btn variant="positive" size="sm" onClick={save} disabled={busy}>Save</Btn>{' '}
+              <Btn variant="ghost"    size="sm" onClick={() => { setEditing(false); setQty(String(entry.qty)); }} disabled={busy}>Cancel</Btn>
+            </>
+          ) : (
+            <>
+              <Btn variant="ghost" size="sm" onClick={() => setEditing(true)} title="Edit qty">Edit</Btn>{' '}
+              <Btn variant="ghost" size="sm" onClick={remove} disabled={busy} style={{ color: 'var(--raspberry-300)' }}>Delete</Btn>
+            </>
+          )}
+        </td>
+      )}
+    </tr>
   );
 }
 

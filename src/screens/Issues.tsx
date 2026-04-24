@@ -4,6 +4,7 @@ import { VENUES } from '@/lib/access';
 import type { AccessEntry } from '@/lib/access';
 import type { KountAudit, KountEntry } from '@/lib/types';
 import { Pill, Eyebrow, Card, Btn } from '@/components/atoms';
+import { Ic } from '@/components/Icons';
 
 /* ───────────────────────────────────────────────────────────────────────
    Issues screen (v0.10)
@@ -32,6 +33,7 @@ const KNOWN_ISSUES = [
 ] as const;
 
 type WindowChoice = 'all' | '7d' | '24h';
+type StatusChoice = 'open' | 'resolved' | 'all';
 
 export function Issues({ user }: Props) {
   const [entries,  setEntries]  = useState<KountEntry[]>([]);
@@ -40,6 +42,7 @@ export function Issues({ user }: Props) {
   const [venue,    setVenue]    = useState<string>('');
   const [issue,    setIssue]    = useState<string>('');
   const [window_,  setWindow_]  = useState<WindowChoice>('7d');
+  const [status,   setStatus]   = useState<StatusChoice>('open');
 
   const visibleVenues = useMemo(() => {
     if (user.role === 'corporate' || user.venueIds === 'all') return VENUES;
@@ -63,6 +66,8 @@ export function Issues({ user }: Props) {
       .order('timestamp', { ascending: false })
       .limit(500);
     if (cutoff) q = q.gte('timestamp', cutoff);
+    if (status === 'open')     q = q.eq('issue_resolved', false);
+    if (status === 'resolved') q = q.eq('issue_resolved', true);
 
     const { data: entriesRows, error } = await q;
     if (error) { console.error('[issues] load', error); setLoading(false); return; }
@@ -91,7 +96,7 @@ export function Issues({ user }: Props) {
     });
     setEntries(filtered);
     setLoading(false);
-  }, [window_, user, visibleVenues]);
+  }, [window_, status, user, visibleVenues]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -132,6 +137,11 @@ export function Issues({ user }: Props) {
           <h1>Flagged items</h1>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <select value={status} onChange={e => setStatus(e.target.value as StatusChoice)} style={pickerStyle}>
+            <option value="open">Open only</option>
+            <option value="resolved">Resolved only</option>
+            <option value="all">Open + resolved</option>
+          </select>
           <select value={window_} onChange={e => setWindow_(e.target.value as WindowChoice)} style={pickerStyle}>
             <option value="24h">Last 24 h</option>
             <option value="7d">Last 7 days</option>
@@ -201,22 +211,31 @@ export function Issues({ user }: Props) {
                   <th style={{ padding: '6px 4px' }}>Notes</th>
                   <th style={{ padding: '6px 4px' }}>Counter</th>
                   <th style={{ padding: '6px 4px' }}>When</th>
+                  <th style={{ padding: '6px 4px', width: 110 }}></th>
                 </tr>
               </thead>
               <tbody>
                 {rendered.map(e => {
                   const a = audits.get(e.audit_id);
+                  const resolved = !!e.issue_resolved;
                   return (
-                    <tr key={e.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                    <tr key={e.id} style={{ borderBottom: '1px solid var(--border)', opacity: resolved ? 0.65 : 1 }}>
                       <td style={{ padding: '8px 4px' }}>{a?.venue_name ?? '—'}</td>
                       <td style={{ padding: '8px 4px', color: 'var(--fg-muted)' }}>{e.zone}</td>
                       <td style={{ padding: '8px 4px', fontWeight: 500 }}>{e.item_name}</td>
                       <td style={{ padding: '8px 4px' }}>
-                        <Pill tone="caution" size="sm">{e.issue}</Pill>
+                        {resolved ? <Pill tone="positive" size="sm">{e.issue} · resolved</Pill> : <Pill tone="caution" size="sm">{e.issue}</Pill>}
                       </td>
                       <td style={{ padding: '8px 4px', fontSize: 12, color: 'var(--fg-muted)', maxWidth: 260 }}>{e.issue_notes ?? ''}</td>
                       <td style={{ padding: '8px 4px', fontSize: 12, color: 'var(--fg-muted)' }}>{e.counted_by_name || e.counted_by_email}</td>
                       <td style={{ padding: '8px 4px', fontSize: 11, color: 'var(--fg-muted)' }}>{new Date(e.timestamp).toLocaleString()}</td>
+                      <td style={{ padding: '8px 4px', textAlign: 'right' }}>
+                        {resolved ? (
+                          <Btn variant="ghost" size="sm" onClick={() => void toggleResolved(e, false, user)}>Reopen</Btn>
+                        ) : (
+                          <Btn variant="positive" size="sm" leading={Ic.check(12)} onClick={() => void toggleResolved(e, true, user)}>Resolve</Btn>
+                        )}
+                      </td>
                     </tr>
                   );
                 })}
@@ -233,6 +252,14 @@ const pickerStyle: React.CSSProperties = {
   padding: '6px 10px', border: '1px solid var(--border-strong)',
   borderRadius: 6, fontFamily: 'inherit', fontSize: 13,
 };
+
+async function toggleResolved(entry: KountEntry, resolve: boolean, user: AccessEntry) {
+  const patch = resolve
+    ? { issue_resolved: true,  issue_resolved_by: user.email, issue_resolved_at: new Date().toISOString() }
+    : { issue_resolved: false, issue_resolved_by: null,       issue_resolved_at: null };
+  const { error } = await supabase.from('kount_entries').update(patch).eq('id', entry.id);
+  if (error) alert('Update failed: ' + error.message);
+}
 
 function Tile({ label, value }: { label: string; value: number }) {
   return (

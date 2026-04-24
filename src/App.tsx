@@ -8,6 +8,7 @@ import { Summary } from '@/screens/Summary';
 import { Security } from '@/screens/Security';
 import { Venues } from '@/screens/Venues';
 import { Issues } from '@/screens/Issues';
+import { Approvals } from '@/screens/Approvals';
 import { AI } from '@/screens/_placeholders';
 import { refreshAccessList } from '@/lib/access';
 import type { AccessEntry } from '@/lib/access';
@@ -57,6 +58,7 @@ export default function App() {
             <Route path="/summary"  element={<Summary user={user} />} />
             <Route path="/issues"   element={<Issues user={user} />} />
             <Route path="/ai"       element={<AI />} />
+            <Route path="/approvals" element={(user.role === 'corporate' || user.role === 'manager') ? <Approvals user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/security" element={user.role === 'corporate' ? <Security user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="*"         element={<Navigate to="/variance" replace />} />
           </Routes>

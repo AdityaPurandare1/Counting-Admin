@@ -80,6 +80,10 @@ export interface KountEntry {
   is_recount: boolean;
   photo_id: string | null;
   timestamp: string;
+  /** From migration 0004 — resolution trail for flagged issues. */
+  issue_resolved?: boolean;
+  issue_resolved_by?: string | null;
+  issue_resolved_at?: string | null;
 }
 
 export interface KountAvtReport {
