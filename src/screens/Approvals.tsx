@@ -25,6 +25,7 @@ export function Approvals({ user }: Props) {
   const [rows, setRows] = useState<UpcMapping[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [lastError, setLastError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -51,6 +52,7 @@ export function Approvals({ user }: Props) {
   const act = async (row: UpcMapping, approve: boolean) => {
     if (!canAct) return;
     setBusyId(row.id);
+    setLastError(null);
     const rpc = approve ? 'approve_upc_mapping' : 'reject_upc_mapping';
     const { data, error } = await supabase.rpc(rpc, {
       p_mapping_id: row.id,
@@ -60,9 +62,45 @@ export function Approvals({ user }: Props) {
     });
     setBusyId(null);
     if (error || (data && (data as { ok?: boolean }).ok === false)) {
-      const msg = (data && (data as { error?: string }).error) || error?.message || 'unknown';
-      alert(`${approve ? 'Approve' : 'Reject'} failed: ${msg}`);
+      const msg = (data && (data as { error?: string }).error) || error?.message || 'unknown error';
+      setLastError(`${approve ? 'Approve' : 'Reject'} via ${rpc} RPC failed for ${row.barcode_raw} → ${row.item_name}: ${msg}`);
+      console.warn('[approvals] RPC failed:', { rpc, row, data, error });
       return;
+    }
+  };
+
+  /* Escape hatch: bypass the RPC and directly commit the mapping. Useful
+     when approve_upc_mapping errors out (missing RPC, column drift, RLS
+     on purchase_items update, etc.). Only corporate can use it. */
+  const forceApprove = async (row: UpcMapping) => {
+    if (user.role !== 'corporate') return;
+    if (!confirm(`Force-approve ${row.barcode_raw} → ${row.item_name}?\n\nBypasses approve_upc_mapping RPC. Updates purchase_items.upc + marks upc_mappings row approved directly.`)) return;
+    setBusyId(row.id);
+    setLastError(null);
+    try {
+      if (row.purchase_item_id) {
+        const { error: piErr } = await supabase
+          .from('purchase_items')
+          .update({ upc: row.barcode_raw })
+          .eq('id', row.purchase_item_id);
+        if (piErr) throw new Error('purchase_items update: ' + piErr.message);
+      }
+      const { error: mapErr } = await supabase
+        .from('upc_mappings')
+        .update({
+          status: 'approved',
+          reviewed_by_email: user.email,
+          reviewed_by_name:  user.name,
+          reviewed_at: new Date().toISOString(),
+        })
+        .eq('id', row.id);
+      if (mapErr) throw new Error('upc_mappings update: ' + mapErr.message);
+    } catch (e: unknown) {
+      const msg = (e as Error).message || 'unknown error';
+      setLastError('Force-approve failed: ' + msg);
+      console.warn('[approvals] force-approve failed:', e);
+    } finally {
+      setBusyId(null);
     }
   };
 
@@ -80,6 +118,17 @@ export function Approvals({ user }: Props) {
       </div>
 
       <div className="content">
+        {lastError && (
+          <Card padding={14} style={{ marginBottom: 12, borderColor: 'var(--raspberry-300)', background: 'var(--raspberry-100)' }}>
+            <Eyebrow>Last error</Eyebrow>
+            <div style={{ marginTop: 6, fontSize: 13, color: 'var(--raspberry-400)', fontFamily: 'JetBrains Mono, monospace', whiteSpace: 'pre-wrap' }}>
+              {lastError}
+            </div>
+            <div style={{ marginTop: 8, fontSize: 11, color: 'var(--fg-muted)' }}>
+              If the RPC itself is the problem, corporate admins can use <strong>Force approve</strong> to skip it and commit directly.
+            </div>
+          </Card>
+        )}
         <Card padding={16}>
           {loading && <div style={{ color: 'var(--fg-muted)' }}>Loading…</div>}
           {!loading && rows.length === 0 && (
@@ -115,9 +164,12 @@ export function Approvals({ user }: Props) {
                     </td>
                     <td style={{ padding: '10px 4px', textAlign: 'right' }}>
                       {canAct ? (
-                        <div style={{ display: 'inline-flex', gap: 6 }}>
+                        <div style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                           <Btn variant="positive" size="sm" leading={Ic.check(12)} onClick={() => void act(r, true)}  disabled={busyId === r.id}>Approve</Btn>
                           <Btn variant="critical" size="sm" leading={Ic.close(12)} onClick={() => void act(r, false)} disabled={busyId === r.id}>Reject</Btn>
+                          {user.role === 'corporate' && (
+                            <Btn variant="ghost" size="sm" onClick={() => void forceApprove(r)} disabled={busyId === r.id} title="Skip the RPC and commit the mapping directly. Use if Approve errors out.">Force</Btn>
+                          )}
                         </div>
                       ) : (
                         <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>read-only</span>
