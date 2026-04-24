@@ -116,6 +116,14 @@ export interface KountAvtRow {
   depletions: number | null;
 }
 
+export interface KountCarriedItem {
+  purchase_item_id: string;
+  added_by_email: string;
+  added_by_name: string | null;
+  added_at: string;
+  notes: string | null;
+}
+
 export interface KountRecount {
   id: string;
   audit_id: string;

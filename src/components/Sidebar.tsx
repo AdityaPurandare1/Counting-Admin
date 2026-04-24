@@ -14,7 +14,8 @@ const NAV_TEAM = [
 ];
 
 const NAV_ADMIN = [
-  { to: '/approvals', label: 'UPC approvals', manager: true },
+  { to: '/approvals', label: 'UPC approvals', manager: true  },
+  { to: '/catalog',   label: 'Catalog',       manager: false },
   { to: '/security',  label: 'Security',      manager: false },
 ];
 
