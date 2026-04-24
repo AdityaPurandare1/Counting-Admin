@@ -4,9 +4,10 @@ import { Sidebar } from '@/components/Sidebar';
 import { Login } from '@/screens/Login';
 import { Variance } from '@/screens/Variance';
 import { Recount } from '@/screens/Recount';
+import { Summary } from '@/screens/Summary';
 import { Security } from '@/screens/Security';
 import {
-  Venues, Summary, Issues, AI,
+  Venues, Issues, AI,
 } from '@/screens/_placeholders';
 import { refreshAccessList } from '@/lib/access';
 import type { AccessEntry } from '@/lib/access';
@@ -53,7 +54,7 @@ export default function App() {
             <Route path="/venues"   element={<Venues />} />
             <Route path="/variance" element={<Variance user={user} />} />
             <Route path="/recount"  element={<Recount user={user} />} />
-            <Route path="/summary"  element={<Summary />} />
+            <Route path="/summary"  element={<Summary user={user} />} />
             <Route path="/issues"   element={<Issues />} />
             <Route path="/ai"       element={<AI />} />
             <Route path="/security" element={user.role === 'corporate' ? <Security user={user} /> : <Navigate to="/variance" replace />} />
