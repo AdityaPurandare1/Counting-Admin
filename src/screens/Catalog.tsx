@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase, selectAllPaged } from '@/lib/supabase';
 import type { AccessEntry } from '@/lib/access';
 import type { PurchaseItem } from '@/lib/types';
 import { Btn, Card, Eyebrow, Pill, Segment } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
+import { parseBevagerWorkbook, matchBevagerRows } from '@/lib/bevagerImport';
+import type { MatchResult } from '@/lib/bevagerImport';
 
 /* ───────────────────────────────────────────────────────────────────────
    Catalog screen (desktop v0.13)
@@ -34,6 +36,15 @@ export function Catalog({ user }: Props) {
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(0);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [importPreview, setImportPreview] = useState<{
+    matches: MatchResult[];
+    unmatched: MatchResult[];
+    alreadyCarried: MatchResult[];
+    toInsert: MatchResult[];
+  } | null>(null);
+  const [importing, setImporting] = useState<null | 'parsing' | 'matching' | 'inserting' | 'done'>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   // --- Initial load: full catalog + current carried set ---
   const loadAll = useCallback(async () => {
@@ -99,6 +110,81 @@ export function Catalog({ user }: Props) {
     );
   }
 
+  const handleBevagerFile = async (file: File) => {
+    setImportError(null);
+    setImportPreview(null);
+    setImporting('parsing');
+    try {
+      const bevRows = await parseBevagerWorkbook(file);
+      setImporting('matching');
+      const results = matchBevagerRows(bevRows, items);
+      const unmatched  = results.filter(r => r.confidence === 'unmatched');
+      const matched    = results.filter(r => r.confidence !== 'unmatched');
+      const alreadyCarried = matched.filter(r => r.purchaseItemId && carried.has(r.purchaseItemId));
+      // Dedupe on purchase_item_id for the insert list (multiple XLSX rows
+      // can collapse to the same purchase_items row via loose match).
+      const seen = new Set<string>();
+      const toInsert: MatchResult[] = [];
+      for (const r of matched) {
+        if (!r.purchaseItemId || carried.has(r.purchaseItemId)) continue;
+        if (seen.has(r.purchaseItemId)) continue;
+        seen.add(r.purchaseItemId);
+        toInsert.push(r);
+      }
+      setImportPreview({ matches: matched, unmatched, alreadyCarried, toInsert });
+      setImporting(null);
+    } catch (e) {
+      setImportError((e as Error).message || 'Parse failed');
+      setImporting(null);
+    }
+  };
+
+  const confirmImport = async () => {
+    if (!importPreview) return;
+    setImporting('inserting');
+    setImportError(null);
+    const CHUNK = 200;
+    try {
+      for (let i = 0; i < importPreview.toInsert.length; i += CHUNK) {
+        const chunk = importPreview.toInsert.slice(i, i + CHUNK).map(r => ({
+          purchase_item_id: r.purchaseItemId!,
+          added_by_email:   user.email,
+          added_by_name:    user.name,
+          notes:            'imported from Bevager XLSX: ' + (r.matchedName ?? r.bevager.name),
+        }));
+        const { error } = await supabase.from('kount_carried_items').insert(chunk);
+        if (error) throw new Error(error.message);
+      }
+      // Bulk-update local state so the table re-renders without a full refetch
+      setCarried(prev => {
+        const next = new Set(prev);
+        for (const r of importPreview!.toInsert) if (r.purchaseItemId) next.add(r.purchaseItemId);
+        return next;
+      });
+      setImporting('done');
+    } catch (e) {
+      setImportError('Insert failed: ' + (e as Error).message);
+      setImporting(null);
+    }
+  };
+
+  const downloadUnmatched = () => {
+    if (!importPreview) return;
+    const lines = ['name,cu,category,quantity'];
+    for (const r of importPreview.unmatched) {
+      const row = [r.bevager.name, r.bevager.cu, r.bevager.category, String(r.bevager.quantity)]
+        .map(c => /[",\n]/.test(c) ? '"' + c.replace(/"/g, '""') + '"' : c).join(',');
+      lines.push(row);
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'bevager-unmatched.csv';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
   const toggle = async (item: PurchaseItem) => {
     if (busyId) return;
     setBusyId(item.id);
@@ -144,6 +230,21 @@ export function Catalog({ user }: Props) {
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <Pill tone="gold"     size="md">{carried.size} carried</Pill>
           <Pill tone="ghost"    size="md">{items.length} catalog rows</Pill>
+          <input ref={fileRef} type="file" accept=".xlsx,.xls"
+            onChange={e => {
+              const f = e.target.files?.[0];
+              e.target.value = '';
+              if (f) void handleBevagerFile(f);
+            }}
+            style={{ display: 'none' }} />
+          <Btn variant="secondary" size="sm" leading={Ic.upload(14)}
+            onClick={() => fileRef.current?.click()}
+            disabled={importing === 'parsing' || importing === 'matching' || importing === 'inserting'}>
+            {importing === 'parsing'   ? 'Parsing…'
+           : importing === 'matching'  ? 'Matching…'
+           : importing === 'inserting' ? 'Importing…'
+           :                             'Import Bevager XLSX'}
+          </Btn>
           <Btn variant="secondary" size="sm" onClick={() => void loadAll()}>Refresh</Btn>
         </div>
       </div>
@@ -226,6 +327,69 @@ export function Catalog({ user }: Props) {
           )}
         </Card>
 
+        {(importPreview || importError) && (
+          <Card padding={16} style={{ borderColor: importError ? 'var(--raspberry-300)' : 'var(--border)' }}>
+            <Eyebrow>{importError ? 'Import error' : 'Import preview'}</Eyebrow>
+            {importError && (
+              <div style={{ marginTop: 8, color: 'var(--raspberry-400)', fontFamily: 'JetBrains Mono, monospace', fontSize: 12 }}>
+                {importError}
+              </div>
+            )}
+            {importPreview && (
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginTop: 10 }}>
+                  <PreviewTile label="Matched"            value={importPreview.matches.length}   tone="positive" />
+                  <PreviewTile label="Unmatched"          value={importPreview.unmatched.length} tone={importPreview.unmatched.length ? 'caution' : 'positive'} />
+                  <PreviewTile label="Already carried"    value={importPreview.alreadyCarried.length} tone="ghost" />
+                  <PreviewTile label="New carried rows"   value={importPreview.toInsert.length}  tone="gold" />
+                </div>
+                <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {importing !== 'done' ? (
+                    <>
+                      <Btn variant="primary"   size="md" onClick={() => void confirmImport()} disabled={importing === 'inserting'}>
+                        {importing === 'inserting' ? 'Importing…' : `Add ${importPreview.toInsert.length} to carried`}
+                      </Btn>
+                      <Btn variant="secondary" size="md" onClick={() => setImportPreview(null)} disabled={importing === 'inserting'}>Cancel</Btn>
+                    </>
+                  ) : (
+                    <Btn variant="secondary" size="md" onClick={() => { setImportPreview(null); setImporting(null); }}>Done</Btn>
+                  )}
+                  {importPreview.unmatched.length > 0 && (
+                    <Btn variant="ghost" size="md" leading={Ic.download(14)} onClick={downloadUnmatched}>
+                      Download {importPreview.unmatched.length} unmatched (CSV)
+                    </Btn>
+                  )}
+                </div>
+                <details style={{ marginTop: 12 }}>
+                  <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--fg-muted)' }}>
+                    Preview — first 20 of {importPreview.toInsert.length} new rows
+                  </summary>
+                  <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse', marginTop: 8 }}>
+                    <thead>
+                      <tr style={{ textAlign: 'left', color: 'var(--fg-muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1 }}>
+                        <th style={{ padding: '6px 4px' }}>XLSX name</th>
+                        <th style={{ padding: '6px 4px' }}>→ catalog row</th>
+                        <th style={{ padding: '6px 4px' }}>match</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {importPreview.toInsert.slice(0, 20).map((r, i) => (
+                        <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                          <td style={{ padding: '4px 4px' }}>{r.bevager.name}</td>
+                          <td style={{ padding: '4px 4px', color: 'var(--fg-muted)' }}>{r.matchedName ?? '—'}</td>
+                          <td style={{ padding: '4px 4px', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: r.confidence === 'strict' ? 'var(--teal-300)' : 'var(--copper-300)' }}>
+                            {r.confidence}{r.candidateCount && r.candidateCount > 1 ? ` · ${r.candidateCount} candidates` : ''}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </details>
+              </>
+            )}
+          </Card>
+        )}
+
         {totalPages > 1 && (
           <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 10, padding: '8px 0' }}>
             <Btn variant="ghost" size="sm" onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0} leading={Ic.chevronLeft(14)}>Prev</Btn>
@@ -235,5 +399,22 @@ export function Catalog({ user }: Props) {
         )}
       </div>
     </>
+  );
+}
+
+function PreviewTile({ label, value, tone }: { label: string; value: number; tone: 'gold' | 'caution' | 'positive' | 'ghost' }) {
+  const bg = tone === 'gold'     ? 'var(--gold-100)'
+           : tone === 'caution'  ? 'var(--copper-100)'
+           : tone === 'positive' ? 'var(--teal-100)'
+           :                       'var(--off-200)';
+  const fg = tone === 'gold'     ? 'var(--gold-400)'
+           : tone === 'caution'  ? 'var(--copper-400)'
+           : tone === 'positive' ? 'var(--teal-300)'
+           :                       'var(--fg-muted)';
+  return (
+    <div style={{ padding: 12, background: bg, borderRadius: 8 }}>
+      <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: 1, textTransform: 'uppercase', color: fg }}>{label}</div>
+      <div style={{ marginTop: 4, fontSize: 22, fontWeight: 700, color: 'var(--fg-primary)' }}>{value}</div>
+    </div>
   );
 }
