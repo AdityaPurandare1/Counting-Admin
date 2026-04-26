@@ -11,21 +11,55 @@ import { Issues } from '@/screens/Issues';
 import { Approvals } from '@/screens/Approvals';
 import { Catalog } from '@/screens/Catalog';
 import { AI } from '@/screens/_placeholders';
-import { refreshAccessList } from '@/lib/access';
+import { refreshAccessList, resolveAccess } from '@/lib/access';
 import type { AccessEntry } from '@/lib/access';
 import { NotificationProvider } from '@/lib/notifications';
 import { NotificationBell, NotificationToaster } from '@/components/NotificationUI';
 
-const STORAGE_KEY = 'kount_admin_user_v1';
+const STORAGE_KEY  = 'kount_admin_user_v1';
+const SESSION_MS   = 8 * 60 * 60 * 1000; // 8 hours
+
+interface StoredSession {
+  user: AccessEntry;
+  expiresAt: number;
+}
+
+function isAccessEntry(x: unknown): x is AccessEntry {
+  if (!x || typeof x !== 'object') return false;
+  const o = x as Record<string, unknown>;
+  if (typeof o.email !== 'string' || typeof o.name !== 'string') return false;
+  if (o.role !== 'corporate' && o.role !== 'manager' && o.role !== 'counter') return false;
+  if (o.venueIds !== 'all' && !Array.isArray(o.venueIds)) return false;
+  return true;
+}
 
 function loadUser(): AccessEntry | null {
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); } catch { return null; }
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<StoredSession>;
+    if (!parsed.user || !parsed.expiresAt) return null;
+    if (Date.now() > parsed.expiresAt) {
+      localStorage.removeItem(STORAGE_KEY);
+      return null;
+    }
+    if (!isAccessEntry(parsed.user)) {
+      // Tampered or pre-hardening shape — refuse and force a fresh sign-in.
+      localStorage.removeItem(STORAGE_KEY);
+      return null;
+    }
+    return parsed.user;
+  } catch { return null; }
 }
 
 function saveUser(user: AccessEntry | null) {
   try {
-    if (user) localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
-    else localStorage.removeItem(STORAGE_KEY);
+    if (user) {
+      const session: StoredSession = { user, expiresAt: Date.now() + SESSION_MS };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
+    } else {
+      localStorage.removeItem(STORAGE_KEY);
+    }
   } catch { /* quota / private mode */ }
 }
 
@@ -35,8 +69,24 @@ export default function App() {
 
   useEffect(() => { saveUser(user); }, [user]);
 
-  // Warm the access-list cache at boot so the Login form resolves fast.
-  useEffect(() => { void refreshAccessList(); }, []);
+  // Warm the access-list cache at boot so the Login form resolves fast,
+  // then re-validate the restored session against the live app_users
+  // table — a deactivation in the DB should kick the user immediately.
+  useEffect(() => {
+    void (async () => {
+      await refreshAccessList();
+      if (!user) return;
+      const live = resolveAccess(user.email);
+      if (!live || live.role === 'counter') {
+        setUser(null);
+        nav('/');
+      } else if (live.role !== user.role) {
+        // Role/scope changes propagate in-place rather than forcing a sign-out.
+        setUser(live);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (!user) {
     return <Login onSignedIn={(u) => { setUser(u); nav('/variance'); }} />;

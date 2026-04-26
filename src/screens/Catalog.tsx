@@ -47,17 +47,19 @@ export function Catalog({ user }: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
 
   // --- Initial load: full catalog + current carried set ---
+  // Both must paginate — the kount_carried_items query previously used a plain
+  // select() which silently capped at Supabase's 1000-row default, leaving the
+  // local set incomplete and breaking the import dedupe (PK violations on
+  // insert when carried > 1000 rows in DB).
   const loadAll = useCallback(async () => {
     setLoading(true);
     const [cat, carr] = await Promise.all([
       selectAllPaged<PurchaseItem>('purchase_items', 'id,name,category,subcategory,upc,sku', 'name'),
-      supabase.from('kount_carried_items').select('purchase_item_id'),
+      selectAllPaged<{ purchase_item_id: string }>('kount_carried_items', 'purchase_item_id', 'purchase_item_id'),
     ]);
     setItems(cat);
     const carrSet = new Set<string>();
-    for (const row of (carr.data ?? []) as Array<{ purchase_item_id: string }>) {
-      carrSet.add(row.purchase_item_id);
-    }
+    for (const row of carr) carrSet.add(row.purchase_item_id);
     setCarried(carrSet);
     setLoading(false);
   }, []);
@@ -122,39 +124,49 @@ export function Catalog({ user }: Props) {
       }
 
       setImporting('matching');
-      // Re-fetch the full catalog right here instead of trusting the React
-      // state, which can be mid-load when the admin clicks Import quickly.
-      const catalog = await selectAllPaged<PurchaseItem>(
-        'purchase_items',
-        'id,name,category,subcategory,upc,sku',
-        'name',
-      );
-      console.log('[import] fresh catalog rows:', catalog.length);
+      // Re-fetch the full catalog AND the live carried set right here instead
+      // of trusting React state, which can be stale (mid-load on a fast click,
+      // or out of sync if another admin curated in another tab).
+      const [catalog, carriedRows] = await Promise.all([
+        selectAllPaged<PurchaseItem>(
+          'purchase_items',
+          'id,name,category,subcategory,upc,sku',
+          'name',
+        ),
+        selectAllPaged<{ purchase_item_id: string }>(
+          'kount_carried_items',
+          'purchase_item_id',
+          'purchase_item_id',
+        ),
+      ]);
+      console.log('[import] fresh catalog rows:', catalog.length, 'carried rows:', carriedRows.length);
       if (catalog.length === 0) {
         throw new Error('purchase_items came back empty. Check Supabase RLS / network, then retry.');
       }
+      const liveCarried = new Set(carriedRows.map(r => r.purchase_item_id));
 
       const results = matchBevagerRows(bevRows, catalog);
       const unmatched = results.filter(r => r.confidence === 'unmatched');
       const matched   = results.filter(r => r.confidence !== 'unmatched');
       console.log('[import] matched:', matched.length, 'unmatched:', unmatched.length);
 
-      const alreadyCarried = matched.filter(r => r.purchaseItemId && carried.has(r.purchaseItemId));
+      const alreadyCarried = matched.filter(r => r.purchaseItemId && liveCarried.has(r.purchaseItemId));
       // Dedupe on purchase_item_id for the insert list (multiple XLSX rows
       // can collapse to the same purchase_items row via loose match).
       const seen = new Set<string>();
       const toInsert: MatchResult[] = [];
       for (const r of matched) {
-        if (!r.purchaseItemId || carried.has(r.purchaseItemId)) continue;
+        if (!r.purchaseItemId || liveCarried.has(r.purchaseItemId)) continue;
         if (seen.has(r.purchaseItemId)) continue;
         seen.add(r.purchaseItemId);
         toInsert.push(r);
       }
       setImportPreview({ matches: matched, unmatched, alreadyCarried, toInsert });
 
-      // Also refresh the on-screen catalog table so the teal highlight and
-      // row count reflect reality after the admin confirms the import.
+      // Refresh the on-screen catalog + carried highlight so they reflect
+      // reality after the admin confirms the import.
       setItems(catalog);
+      setCarried(liveCarried);
       setImporting(null);
     } catch (e) {
       setImportError((e as Error).message || 'Parse failed');
@@ -175,19 +187,22 @@ export function Catalog({ user }: Props) {
           added_by_name:    user.name,
           notes:            'imported from Bevager XLSX: ' + (r.matchedName ?? r.bevager.name),
         }));
-        const { error } = await supabase.from('kount_carried_items').insert(chunk);
+        // upsert + ignoreDuplicates makes this idempotent: if any rows already
+        // landed (a previous failed run, a parallel admin, or a stale local
+        // dedupe), the call still succeeds rather than throwing on PK.
+        const { error } = await supabase
+          .from('kount_carried_items')
+          .upsert(chunk, { onConflict: 'purchase_item_id', ignoreDuplicates: true });
         if (error) throw new Error(error.message);
       }
-      // Bulk-update local state so the table re-renders without a full refetch
-      setCarried(prev => {
-        const next = new Set(prev);
-        for (const r of importPreview!.toInsert) if (r.purchaseItemId) next.add(r.purchaseItemId);
-        return next;
-      });
       setImporting('done');
     } catch (e) {
       setImportError('Insert failed: ' + (e as Error).message);
       setImporting(null);
+    } finally {
+      // Always reload — partial-success runs leave DB ahead of local state,
+      // which is exactly what made matched items "not show" before.
+      await loadAll();
     }
   };
 
