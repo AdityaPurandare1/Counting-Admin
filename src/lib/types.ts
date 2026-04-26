@@ -124,6 +124,43 @@ export interface KountCarriedItem {
   notes: string | null;
 }
 
+/** Mirror of public.kount_venue_zones (migration 0008). User-added zones
+ *  per venue. Default hardcoded zones live in venueMap.ts and are NOT
+ *  stored here — only counter/admin additions land in this table. */
+export interface KountVenueZone {
+  id: string;
+  venue_id: string;
+  zone_name: string;
+  added_by_email: string | null;
+  added_by_name: string | null;
+  added_at: string;
+}
+
+/** Mirror of public.kount_pending_items (migration 0009). New-item suggestions
+ *  submitted by counters/managers when they hit a gap in the catalog. Admin
+ *  approves → approve_pending_item RPC mints a purchase_items row and links it
+ *  via purchase_item_id. */
+export interface KountPendingItem {
+  id: string;
+  name: string;
+  brand: string | null;
+  category: string | null;
+  subcategory: string | null;
+  size: string | null;
+  upc: string | null;
+  notes: string | null;
+  submitted_by_email: string;
+  submitted_by_name: string | null;
+  submitted_at: string;
+  audit_id: string | null;
+  status: 'pending' | 'approved' | 'rejected';
+  reviewed_by_email: string | null;
+  reviewed_by_name: string | null;
+  reviewed_at: string | null;
+  reject_reason: string | null;
+  purchase_item_id: string | null;
+}
+
 export interface KountRecount {
   id: string;
   audit_id: string;

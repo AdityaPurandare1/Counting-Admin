@@ -57,3 +57,24 @@ export function mapStoreToVenueName(storeName: string | null | undefined): strin
   if (!vid) return storeName ?? null;
   return VENUES.find(v => v.id === vid)?.name ?? storeName ?? null;
 }
+
+/** Default (hardcoded) zones per venue — kept in lockstep with the phone
+ *  app's appState.venues[].zones list in counting-app.html. These zones are
+ *  NOT stored in kount_venue_zones; only counter/admin additions are. The
+ *  phone treats anything in this list as non-removable. */
+export const DEFAULT_VENUE_ZONES: Record<string, string[]> = {
+  v1:  ['Main Bar', 'Back Bar', 'Service Bar', 'Wine Room', 'Main Fridge', 'Back Fridge', 'Walk-in Cooler', 'Dry Storage', 'Back Office'],
+  v2:  ['Main Bar', 'Service Bar', 'Wine Room', 'Pool Bar', 'Main Fridge', 'Walk-in Cooler', 'Dry Storage', 'Back Office'],
+  v3:  ['Main Bar', 'Back Bar', 'Wine Fridge', 'Cellar', 'Main Fridge', 'Kitchen', 'Dry Storage', 'Back Office'],
+  v4:  ['Main Bar', 'Back Bar', 'Lounge Bar', 'Wine Cellar', 'Main Fridge', 'Walk-in Cooler', 'Dry Storage', 'Back Office'],
+  v5:  ['Main Bar', 'DJ Booth Bar', 'VIP Bar', 'Main Fridge', 'Walk-in Cooler', 'Dry Storage', 'Back Office'],
+  v6:  ['Main Bar', 'Back Bar', 'Main Fridge', 'Walk-in Cooler', 'Dry Storage', 'Back Office'],
+  v7:  ['Main Bar', 'Back Bar', 'VIP Bar', 'Main Fridge', 'Dry Storage', 'Back Office'],
+  v8:  ['Main Bar', 'Lounge Bar', 'Main Fridge', 'Dry Storage', 'Back Office'],
+  v9:  ['Rooftop Bar', 'Pool Bar', 'Main Fridge', 'Dry Storage', 'Back Office'],
+  v10: ['Main Bar', 'Patio Bar', 'Main Fridge', 'Walk-in Cooler', 'Dry Storage', 'Back Office'],
+};
+
+export function getDefaultZones(venueId: string): string[] {
+  return DEFAULT_VENUE_ZONES[venueId] ?? [];
+}
