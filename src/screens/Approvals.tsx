@@ -26,6 +26,39 @@ export function Approvals({ user }: Props) {
   const [upcCount, setUpcCount]   = useState(0);
   const [itemCount, setItemCount] = useState(0);
 
+  // Tab badges have to stay live regardless of which tab is mounted —
+  // previously each subqueue ran its own subscription only while visible,
+  // so switching to one tab silently froze the other badge until you
+  // clicked back. Subscribe at the parent for both tables; the active
+  // queue keeps its own subscription too (via realtime fan-out the count
+  // there is updated by `load()` returning the data, so this parent-level
+  // count just polls quickly when something changes).
+  const refreshUpcCount = useCallback(async () => {
+    const { count } = await supabase
+      .from('upc_mappings')
+      .select('id', { head: true, count: 'exact' })
+      .eq('status', 'pending') as unknown as { count: number };
+    if (typeof count === 'number') setUpcCount(count);
+  }, []);
+  const refreshItemCount = useCallback(async () => {
+    const { count } = await supabase
+      .from('kount_pending_items')
+      .select('id', { head: true, count: 'exact' })
+      .eq('status', 'pending') as unknown as { count: number };
+    if (typeof count === 'number') setItemCount(count);
+  }, []);
+
+  useEffect(() => { void refreshUpcCount(); void refreshItemCount(); }, [refreshUpcCount, refreshItemCount]);
+
+  useEffect(() => {
+    const ch = supabase
+      .channel('approvals-tab-counts')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'upc_mappings' },     () => { void refreshUpcCount(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'kount_pending_items' }, () => { void refreshItemCount(); })
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [refreshUpcCount, refreshItemCount]);
+
   return (
     <>
       <div className="topbar">

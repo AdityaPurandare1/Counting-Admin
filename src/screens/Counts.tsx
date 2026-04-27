@@ -78,6 +78,38 @@ export function Counts({ user }: Props) {
 
   useEffect(() => { void loadAudits(); }, [loadAudits]);
 
+  // Deep-link recovery: ?audit=<id> may point to an audit older than the
+  // recent-50 cap loadAudits uses — common when clicking through from the
+  // Venues card on a long-since-completed audit. Fetch that single row by
+  // id and splice it in so the workspace renders instead of silently
+  // showing the empty state.
+  useEffect(() => {
+    if (!auditParam) return;
+    if (audits.some(a => a.id === auditParam)) return;
+    let cancelled = false;
+    void (async () => {
+      const { data, error } = await supabase
+        .from('kount_audits')
+        .select('*')
+        .eq('id', auditParam)
+        .maybeSingle();
+      if (cancelled) return;
+      if (error || !data) {
+        console.warn('[counts] deep-linked audit not found', auditParam, error);
+        return;
+      }
+      const row = data as KountAudit;
+      // Respect venue scope so a manager can't view audits from venues they
+      // don't have access to via a hand-crafted URL.
+      const visible =
+        user.role === 'corporate' || user.venueIds === 'all' ||
+        (Array.isArray(user.venueIds) && user.venueIds.includes(row.venue_id));
+      if (!visible) return;
+      setAudits(prev => prev.some(a => a.id === row.id) ? prev : [row, ...prev]);
+    })();
+    return () => { cancelled = true; };
+  }, [auditParam, audits, user]);
+
   // Live audit list — admin's "Start audit" elsewhere or counter's start needs to land here
   useEffect(() => {
     const ch = supabase
