@@ -257,6 +257,22 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
     return map;
   }, [entries]);
 
+  // ── Orphan zones ────────────────────────────────────────────────────
+  // Entries can sit in a zone that was later removed (admin removed a
+  // custom zone with rows still in it, or a counter typo'd a zone name
+  // pre-v1.20 before zones were Supabase-backed). Without surfacing them
+  // explicitly the tabs hide those rows; the entries table's "All zones"
+  // filter shows them but the qty rolling up into the wrong-zone bucket
+  // is exactly the kind of variance error this app exists to prevent.
+  const orphanZones = useMemo(() => {
+    const known = new Set(allZones);
+    const out: string[] = [];
+    for (const z of countsByZone.keys()) {
+      if (!known.has(z) && !out.includes(z)) out.push(z);
+    }
+    return out;
+  }, [countsByZone, allZones]);
+
   // ── Zone CRUD ──────────────────────────────────────────────────────
   const addZone = async () => {
     if (isReadOnly) return;
@@ -273,6 +289,33 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
     });
     if (error) { alert('Add zone failed: ' + error.message); return; }
     setCurrentZone(name);
+  };
+
+  const restoreOrphanZone = async (zoneName: string) => {
+    if (!isAdminish) return;
+    const dupe = allZones.find(z => z.toLowerCase() === zoneName.toLowerCase());
+    if (dupe) { alert(`Zone "${dupe}" already exists`); return; }
+    const { error } = await supabase.from('kount_venue_zones').insert({
+      venue_id: audit.venue_id,
+      zone_name: zoneName,
+      added_by_email: user.email,
+      added_by_name: user.name,
+    });
+    if (error) { alert('Restore zone failed: ' + error.message); return; }
+    setCurrentZone(zoneName);
+  };
+
+  const reassignOrphanEntries = async (fromZone: string, toZone: string) => {
+    if (!isAdminish || isReadOnly) return;
+    if (!toZone || fromZone === toZone) return;
+    const affected = countsByZone.get(fromZone) ?? 0;
+    if (!confirm(`Move all ${affected} entries from "${fromZone}" to "${toZone}"?\n\nEntries can't be split — every row in "${fromZone}" gets the new zone.`)) return;
+    const { error } = await supabase
+      .from('kount_entries')
+      .update({ zone: toZone })
+      .eq('audit_id', audit.id)
+      .eq('zone', fromZone);
+    if (error) { alert('Move entries failed: ' + error.message); return; }
   };
 
   const removeZone = async (zoneName: string) => {
@@ -308,8 +351,14 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
     if (!itemName) { alert('Item name required'); return; }
     if (!payload.zone) { alert('Pick a zone first'); return; }
 
-    const isCount2 = audit.count_phase === 'count2';
-
+    // is_recount: false unconditionally to match the phone. The phone's
+    // syncEntryToSupabase (counting-app.html:6394) never passes isRecount=true
+    // — recounts are tracked separately in the kount_recounts table, not by
+    // flagging kount_entries rows. Setting is_recount=true here would put
+    // admin entries in a different unique-key bucket than phone entries
+    // (the merge key is `audit_id, zone, item, is_recount`), so two devices
+    // counting the same bottle in the same zone during count2 would create
+    // two rows instead of merging.
     const row = {
       audit_id:         audit.id,
       item_id:          item?.id ?? null,
@@ -324,7 +373,7 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
       upc:              item?.upc ?? null,
       counted_by_email: user.email,
       counted_by_name:  user.name,
-      is_recount:       isCount2,
+      is_recount:       false,
       timestamp:        new Date().toISOString(),
     };
     const { error } = await supabase.from('kount_entries').insert(row);
@@ -439,6 +488,18 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
         canAdd={!isReadOnly}
       />
 
+      {orphanZones.length > 0 && (
+        <OrphanZoneBanner
+          orphans={orphanZones}
+          countsByZone={countsByZone}
+          knownZones={allZones}
+          canRestore={isAdminish}
+          canReassign={isAdminish && !isReadOnly}
+          onRestore={restoreOrphanZone}
+          onReassign={reassignOrphanEntries}
+        />
+      )}
+
       {!isReadOnly && (
         <AddEntryCard
           catalog={catalog}
@@ -524,6 +585,91 @@ function AuditHeader({
         )}
       </div>
     </Card>
+  );
+}
+
+/* ────────── Orphan zone banner ────────── */
+
+function OrphanZoneBanner({
+  orphans, countsByZone, knownZones, canRestore, canReassign, onRestore, onReassign,
+}: {
+  orphans: string[];
+  countsByZone: Map<string, number>;
+  knownZones: string[];
+  canRestore: boolean;
+  canReassign: boolean;
+  onRestore: (z: string) => Promise<void> | void;
+  onReassign: (from: string, to: string) => Promise<void> | void;
+}) {
+  return (
+    <Card padding={14} style={{ borderColor: 'var(--copper-300)', background: 'var(--copper-100)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+        <Pill tone="caution" size="sm">{orphans.length} orphan zone{orphans.length === 1 ? '' : 's'}</Pill>
+        <Eyebrow style={{ color: 'var(--copper-400)' }}>Entries reference zones not in the tab list</Eyebrow>
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--copper-400)', marginBottom: 10 }}>
+        These entries are still in the data and will roll into AVT variance — but they can't be edited from a tab. Restore the zone to bring it back to the tab list, or move the entries into an existing zone.
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {orphans.map(z => (
+          <OrphanRow
+            key={z}
+            zone={z}
+            count={countsByZone.get(z) ?? 0}
+            knownZones={knownZones}
+            canRestore={canRestore}
+            canReassign={canReassign}
+            onRestore={() => onRestore(z)}
+            onReassign={(to) => onReassign(z, to)}
+          />
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function OrphanRow({
+  zone, count, knownZones, canRestore, canReassign, onRestore, onReassign,
+}: {
+  zone: string;
+  count: number;
+  knownZones: string[];
+  canRestore: boolean;
+  canReassign: boolean;
+  onRestore: () => Promise<void> | void;
+  onReassign: (to: string) => Promise<void> | void;
+}) {
+  const [target, setTarget] = useState<string>('');
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
+      background: '#FFF', border: '1px solid var(--copper-300)', borderRadius: 6,
+    }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <span style={{ fontWeight: 600, fontSize: 13 }}>{zone}</span>
+        <span style={{ marginLeft: 8, fontSize: 12, color: 'var(--fg-muted)' }}>
+          {count} {count === 1 ? 'entry' : 'entries'}
+        </span>
+      </div>
+      {canRestore && (
+        <Btn variant="secondary" size="sm" onClick={() => void onRestore()}>Restore zone</Btn>
+      )}
+      {canReassign && (
+        <>
+          <select
+            value={target}
+            onChange={e => setTarget(e.target.value)}
+            style={{ padding: '6px 8px', border: '1px solid var(--border-strong)', borderRadius: 6, fontFamily: 'inherit', fontSize: 12, background: '#FFF' }}
+          >
+            <option value="">Move to…</option>
+            {knownZones.map(z => <option key={z} value={z}>{z}</option>)}
+          </select>
+          <Btn variant="primary" size="sm" disabled={!target} onClick={() => target && void onReassign(target)}>
+            Move
+          </Btn>
+        </>
+      )}
+    </div>
   );
 }
 
