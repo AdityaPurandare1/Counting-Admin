@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import type { AccessEntry } from '@/lib/access';
 import type { KountAudit, KountEntry, KountMember } from '@/lib/types';
-import { Pill, Eyebrow, Card, Btn, Num, Avatar } from '@/components/atoms';
+import { Pill, Eyebrow, Card, Btn, Num, Avatar, Segment } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
 
 /* ───────────────────────────────────────────────────────────────────────
@@ -27,6 +27,11 @@ export function Summary({ user }: Props) {
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(auditParam);
   const [venueFilter, setVenueFilter] = useState<string>('');
+  // Submitted is the more common review case (closed-out audits) so it's
+  // the default. Cancelled is its own bucket — bad audits, mistakes, walk-
+  // aways. "All" stays available because the cross-cutting view is useful
+  // when scanning a date range.
+  const [statusFilter, setStatusFilter] = useState<'submitted' | 'cancelled' | 'all'>('submitted');
 
   const filterVisible = useCallback((rows: KountAudit[]) => rows.filter(a => {
     if (user.role === 'corporate' || user.venueIds === 'all') return true;
@@ -57,10 +62,26 @@ export function Summary({ user }: Props) {
     return Array.from(set).sort();
   }, [audits]);
 
-  const filtered = useMemo(() =>
-    venueFilter ? audits.filter(a => a.venue_id === venueFilter) : audits,
-    [audits, venueFilter],
-  );
+  // Counts per status drive the segment labels — admin gets a glanceable
+  // sense of how many of each are pending review.
+  const submittedCount = useMemo(() => audits.filter(a => a.status === 'submitted').length, [audits]);
+  const cancelledCount = useMemo(() => audits.filter(a => a.status === 'cancelled').length, [audits]);
+
+  const filtered = useMemo(() => {
+    let xs = audits;
+    if (statusFilter !== 'all') xs = xs.filter(a => a.status === statusFilter);
+    if (venueFilter) xs = xs.filter(a => a.venue_id === venueFilter);
+    return xs;
+  }, [audits, venueFilter, statusFilter]);
+
+  // If the currently-selected audit drops out of the filter (e.g. user
+  // switched from Submitted to Cancelled), close the detail panel so the
+  // right pane doesn't show an audit the user can't see in the list.
+  useEffect(() => {
+    if (selectedId && !filtered.some(a => a.id === selectedId)) {
+      setSelectedId(null);
+    }
+  }, [filtered, selectedId]);
 
   return (
     <>
@@ -86,12 +107,31 @@ export function Summary({ user }: Props) {
 
       <div className="content" style={{ display: 'grid', gridTemplateColumns: '300px 1fr', gap: 20 }}>
         <aside>
+          <div style={{ marginBottom: 12 }}>
+            <Segment<'submitted' | 'cancelled' | 'all'>
+              value={statusFilter}
+              onChange={setStatusFilter}
+              options={[
+                { value: 'submitted', label: `Submitted (${submittedCount})` },
+                { value: 'cancelled', label: `Cancelled (${cancelledCount})` },
+                { value: 'all',       label: `All (${audits.length})` },
+              ]}
+            />
+          </div>
           <Eyebrow style={{ marginBottom: 8 }}>{filtered.length} audit{filtered.length === 1 ? '' : 's'}</Eyebrow>
           {loading && <Card padding={14}><div style={{ color: 'var(--fg-muted)', fontSize: 12 }}>Loading…</div></Card>}
           {!loading && filtered.length === 0 && (
             <Card padding={14}>
               <div style={{ color: 'var(--fg-muted)', fontSize: 12 }}>
-                {audits.length === 0 ? 'No historic audits yet — close an audit on the phone or the Variance screen to see it here.' : 'No audits match the venue filter.'}
+                {audits.length === 0
+                  ? 'No historic audits yet — close an audit on the phone or the Variance screen to see it here.'
+                  : statusFilter !== 'all' && audits.some(a => (statusFilter === 'submitted' ? a.status === 'submitted' : a.status === 'cancelled'))
+                    ? 'No audits match the venue filter in this tab.'
+                    : statusFilter === 'submitted'
+                      ? 'No submitted audits yet. Switch to Cancelled or All to see other states.'
+                      : statusFilter === 'cancelled'
+                        ? 'No cancelled audits — all clean.'
+                        : 'No audits match the venue filter.'}
               </div>
             </Card>
           )}
