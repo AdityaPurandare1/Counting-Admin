@@ -16,6 +16,7 @@ import { refreshAccessList, resolveAccess } from '@/lib/access';
 import type { AccessEntry } from '@/lib/access';
 import { NotificationProvider } from '@/lib/notifications';
 import { NotificationBell, NotificationToaster } from '@/components/NotificationUI';
+import { StaleAuditsPrompt } from '@/components/StaleAuditsPrompt';
 
 const STORAGE_KEY  = 'kount_admin_user_v1';
 const SESSION_MS   = 8 * 60 * 60 * 1000; // 8 hours
@@ -119,6 +120,10 @@ export default function App() {
         </main>
         <NotificationBell />
         <NotificationToaster />
+        {/* Stale-audits prompt — fires once per session for corporate admins
+            with active audits older than 48 h. Component self-gates by role
+            and sessionStorage, so cheap to mount unconditionally. */}
+        <StaleAuditsPrompt user={user} />
       </div>
     </NotificationProvider>
   );
