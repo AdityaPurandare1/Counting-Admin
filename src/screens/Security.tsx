@@ -134,13 +134,20 @@ function UserRow({ row, onEdit }: { row: AppUserRow; onEdit: () => void }) {
 }
 
 function UserFormModal({
-  mode, initial, onClose, onSaved,
+  mode: initialMode, initial, onClose, onSaved,
 }: {
   mode: 'create' | 'edit';
   initial?: AppUserRow;
   onClose: () => void;
   onSaved: () => void;
 }) {
+  // mode is mutable inside the modal so we can swap create→edit when the
+  // user types an email that already exists. Otherwise the form would dead-
+  // end with a raw Postgres "duplicate key" error and force them to close
+  // and find the row in the underlying table — confusing for new admins.
+  const [mode, setMode] = useState<'create' | 'edit'>(initialMode);
+  const [editingRow, setEditingRow] = useState<AppUserRow | undefined>(initial);
+
   const [email, setEmail] = useState(initial?.email ?? '');
   const [name, setName] = useState(initial?.name ?? '');
   const [role, setRole] = useState<Role>(initial?.role ?? 'counter');
@@ -149,8 +156,48 @@ function UserFormModal({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  // If the email being typed already exists in app_users, we capture the row
+  // here and surface a banner with a "Edit instead" affordance. Cleared when
+  // the user changes the email or successfully switches to edit mode.
+  const [dupeRow, setDupeRow] = useState<AppUserRow | null>(null);
+  const [checkingDupe, setCheckingDupe] = useState(false);
+
   const toggleVenue = (id: string) => {
     setVenueIds(v => v.includes(id) ? v.filter(x => x !== id) : [...v, id]);
+  };
+
+  /* Pre-flight duplicate check fires when the email field loses focus
+     during create mode. .maybeSingle() returns null when no row matches,
+     vs. .single() which would 406 — we want a clean "no duplicate" path. */
+  const checkForDuplicate = async () => {
+    if (mode !== 'create') return;
+    const emailTrim = email.trim().toLowerCase();
+    if (!emailTrim) { setDupeRow(null); return; }
+    setCheckingDupe(true);
+    const { data, error } = await supabase
+      .from('app_users')
+      .select('*')
+      .eq('email', emailTrim)
+      .maybeSingle();
+    setCheckingDupe(false);
+    if (error) { console.warn('[security] dupe check', error); return; }
+    setDupeRow((data as AppUserRow | null) ?? null);
+  };
+
+  /* Swap create→edit and pre-load every form field from the existing row.
+     The submit handler reads `mode` and `editingRow` to UPDATE instead of
+     INSERT; the banner stays mounted as a confirmation that we're now
+     editing rather than creating a new row. */
+  const switchToEdit = (row: AppUserRow) => {
+    setMode('edit');
+    setEditingRow(row);
+    setEmail(row.email);
+    setName(row.name ?? '');
+    setRole(row.role);
+    setVenueIds(row.venue_ids ?? []);
+    setIsActive(row.is_active);
+    setDupeRow(null);
+    setErr(null);
   };
 
   const save = async () => {
@@ -167,18 +214,37 @@ function UserFormModal({
     };
     const q = mode === 'create'
       ? supabase.from('app_users').insert(payload).select().single()
-      : supabase.from('app_users').update(payload).eq('email', initial!.email).select().single();
+      : supabase.from('app_users').update(payload).eq('email', editingRow!.email).select().single();
     const { error } = await q;
     setBusy(false);
-    if (error) { setErr(error.message); return; }
+    if (error) {
+      // Race fallback: the pre-flight blur check might have missed (user
+      // clicked Save without losing focus, or another admin inserted the
+      // same email between our check and our INSERT). Catch the unique
+      // violation, fetch the conflicting row, and surface the same banner.
+      if (mode === 'create' && /23505|duplicate key|unique constraint/i.test(error.message)) {
+        const { data: existing } = await supabase
+          .from('app_users')
+          .select('*')
+          .eq('email', emailTrim)
+          .maybeSingle();
+        if (existing) {
+          setDupeRow(existing as AppUserRow);
+          setErr(null);
+          return;
+        }
+      }
+      setErr(error.message);
+      return;
+    }
     onSaved();
   };
 
   const remove = async () => {
-    if (!initial) return;
-    if (!confirm(`Delete ${initial.email}? This can't be undone.`)) return;
+    if (!editingRow) return;
+    if (!confirm(`Delete ${editingRow.email}? This can't be undone.`)) return;
     setBusy(true);
-    const { error } = await supabase.from('app_users').delete().eq('email', initial.email);
+    const { error } = await supabase.from('app_users').delete().eq('email', editingRow.email);
     setBusy(false);
     if (error) { setErr(error.message); return; }
     onSaved();
@@ -194,17 +260,52 @@ function UserFormModal({
         border: '1px solid var(--border)', borderRadius: 12, padding: 22,
       }}>
         <Eyebrow>{mode === 'create' ? 'Add user' : 'Edit user'}</Eyebrow>
-        <h2 style={{ margin: '6px 0 14px', fontSize: 18 }}>{mode === 'create' ? 'New access entry' : initial?.email}</h2>
+        <h2 style={{ margin: '6px 0 14px', fontSize: 18 }}>{mode === 'create' ? 'New access entry' : editingRow?.email}</h2>
 
         <Field label="Email">
           <input
             value={email}
-            onChange={e => setEmail(e.target.value)}
+            onChange={e => { setEmail(e.target.value); setDupeRow(null); }}
+            onBlur={() => void checkForDuplicate()}
             disabled={mode === 'edit'}
             placeholder="user@hwood.com"
             style={fieldInput}
           />
+          {checkingDupe && (
+            <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 4 }}>Checking…</div>
+          )}
         </Field>
+
+        {dupeRow && mode === 'create' && (
+          <div
+            style={{
+              padding: '10px 12px',
+              background: 'var(--copper-100)',
+              border: '1px solid var(--copper-300)',
+              borderRadius: 8,
+              marginBottom: 12,
+              display: 'flex',
+              gap: 10,
+              alignItems: 'center',
+              flexWrap: 'wrap',
+            }}
+          >
+            <div style={{ flex: 1, minWidth: 200 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--copper-400)' }}>
+                User already exists
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--fg-secondary)', marginTop: 2 }}>
+                <strong>{dupeRow.name ?? dupeRow.email}</strong>
+                {' · '}
+                <span style={{ textTransform: 'uppercase', letterSpacing: 0.6, fontSize: 10, fontWeight: 600 }}>{dupeRow.role}</span>
+                {!dupeRow.is_active && <> · <span style={{ color: 'var(--raspberry-300)' }}>disabled</span></>}
+              </div>
+            </div>
+            <Btn variant="primary" size="sm" onClick={() => switchToEdit(dupeRow)}>
+              Edit instead
+            </Btn>
+          </div>
+        )}
         <Field label="Name">
           <input value={name} onChange={e => setName(e.target.value)} placeholder="Full name" style={fieldInput} />
         </Field>
