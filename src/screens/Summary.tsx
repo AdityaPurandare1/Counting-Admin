@@ -102,7 +102,7 @@ export function Summary({ user }: Props) {
 
         <section>
           {selectedId
-            ? <SummaryDetail auditId={selectedId} />
+            ? <SummaryDetail auditId={selectedId} user={user} onAuditChanged={() => void load()} />
             : <Card padding={24}><div style={{ color: 'var(--fg-muted)' }}>Pick an audit on the left to see its full breakdown.</div></Card>}
         </section>
       </div>
@@ -135,10 +135,33 @@ function SummaryListItem({ audit, selected, onOpen }: { audit: KountAudit; selec
 
 /* ────────── Per-audit summary detail ────────── */
 
-function SummaryDetail({ auditId }: { auditId: string }) {
+/* Drill-down state: which card/zone the admin clicked to expand into a
+ * full entries breakdown. Cleared by clicking the close (×) on the panel. */
+type Drill =
+  | { kind: 'entries' }
+  | { kind: 'qty' }
+  | { kind: 'counters' }
+  | { kind: 'issues' }
+  | { kind: 'zone'; zone: string };
+
+function SummaryDetail({
+  auditId, user, onAuditChanged,
+}: {
+  auditId: string;
+  user: AccessEntry;
+  onAuditChanged?: () => void;
+}) {
   const [audit, setAudit]     = useState<KountAudit | null>(null);
   const [entries, setEntries] = useState<KountEntry[]>([]);
   const [members, setMembers] = useState<KountMember[]>([]);
+  const [drill, setDrill]     = useState<Drill | null>(null);
+  const [reactBusy, setReactBusy] = useState(false);
+
+  // Drill-down is admin-only because some buckets (counters, issues) reveal
+  // submitter identities that managers/counters wouldn't normally see in the
+  // summary read-only view. Same gate the Reactivate action uses.
+  const canDrill     = user.role === 'corporate';
+  const canReactivate = user.role === 'corporate';
 
   const load = useCallback(async () => {
     const [{ data: a }, { data: e }, { data: m }] = await Promise.all([
@@ -152,6 +175,33 @@ function SummaryDetail({ auditId }: { auditId: string }) {
   }, [auditId]);
 
   useEffect(() => { void load(); }, [load]);
+
+  // Switching audits should drop the open drill — what we were drilled into
+  // doesn't apply to the new audit's entries.
+  useEffect(() => { setDrill(null); }, [auditId]);
+
+  /* Reactivate a cancelled audit. Flips status back to 'active' and clears
+     completed_at so it re-appears in Variance / Counts as in-progress. The
+     count_phase is left as-is so a mid-count1 cancellation picks up where
+     it stopped — admin can advance the phase from Counts.tsx if needed. */
+  const reactivate = async () => {
+    if (!audit || !canReactivate) return;
+    if (audit.status !== 'cancelled') return;
+    if (!confirm(
+      `Reactivate audit ${audit.join_code} (${audit.venue_name})?\n\n` +
+      'It moves back to Active and rejoins the Variance / Counts screens. ' +
+      'All previously-recorded entries are preserved.'
+    )) return;
+    setReactBusy(true);
+    const { error } = await supabase
+      .from('kount_audits')
+      .update({ status: 'active', completed_at: null })
+      .eq('id', audit.id);
+    setReactBusy(false);
+    if (error) { alert('Reactivate failed: ' + error.message); return; }
+    await load();
+    onAuditChanged?.();
+  };
 
   const stats = useMemo(() => {
     const totalEntries = entries.length;
@@ -218,19 +268,50 @@ function SummaryDetail({ auditId }: { auditId: string }) {
               · by {audit.started_by_name || audit.started_by_email}
             </div>
           </div>
-          <Btn variant="secondary" size="sm" leading={Ic.download(14)} onClick={exportCsv}>Export CSV</Btn>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            {canReactivate && audit.status === 'cancelled' && (
+              <Btn
+                variant="positive"
+                size="sm"
+                onClick={() => void reactivate()}
+                disabled={reactBusy}
+                title="Move this audit back to Active. Entries are preserved; admin can resume from Counts."
+              >
+                {reactBusy ? 'Reactivating…' : 'Reactivate audit'}
+              </Btn>
+            )}
+            <Btn variant="secondary" size="sm" leading={Ic.download(14)} onClick={exportCsv}>Export CSV</Btn>
+          </div>
         </div>
       </Card>
 
-      {/* Stat strip */}
+      {/* Stat strip — clickable for admin (corporate) to drill into the underlying entries */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
-        <StatTile label="Entries"         value={<Num value={stats.totalEntries} />} />
-        <StatTile label="Total qty"       value={<Num value={stats.totalQty} />} />
-        <StatTile label="Counters"        value={<Num value={stats.byCounter.size} />} />
-        <StatTile label="Issues flagged"  value={<Num value={stats.issues} color={stats.issues ? 'var(--raspberry-300)' : undefined} />} />
+        <StatTile
+          label="Entries" value={<Num value={stats.totalEntries} />}
+          clickable={canDrill} active={drill?.kind === 'entries'}
+          onClick={() => canDrill && setDrill(drill?.kind === 'entries' ? null : { kind: 'entries' })}
+        />
+        <StatTile
+          label="Total qty" value={<Num value={stats.totalQty} />}
+          clickable={canDrill} active={drill?.kind === 'qty'}
+          onClick={() => canDrill && setDrill(drill?.kind === 'qty' ? null : { kind: 'qty' })}
+        />
+        <StatTile
+          label="Counters" value={<Num value={stats.byCounter.size} />}
+          clickable={canDrill} active={drill?.kind === 'counters'}
+          onClick={() => canDrill && setDrill(drill?.kind === 'counters' ? null : { kind: 'counters' })}
+        />
+        <StatTile
+          label="Issues flagged"
+          value={<Num value={stats.issues} color={stats.issues ? 'var(--raspberry-300)' : undefined} />}
+          clickable={canDrill && stats.issues > 0}
+          active={drill?.kind === 'issues'}
+          onClick={() => (canDrill && stats.issues > 0) && setDrill(drill?.kind === 'issues' ? null : { kind: 'issues' })}
+        />
       </div>
 
-      {/* By zone */}
+      {/* By zone — each row is its own drill target */}
       <Card padding={16}>
         <Eyebrow>By zone</Eyebrow>
         {stats.byZone.size === 0 && <div style={{ color: 'var(--fg-muted)', fontSize: 12, marginTop: 8 }}>No entries.</div>}
@@ -241,20 +322,47 @@ function SummaryDetail({ auditId }: { auditId: string }) {
               <th style={{ padding: '4px 4px' }}>Items</th>
               <th style={{ padding: '4px 4px' }}>Qty</th>
               <th style={{ padding: '4px 4px' }}>Counters</th>
+              {canDrill && <th />}
             </tr>
           </thead>
           <tbody>
-            {[...stats.byZone.entries()].sort((a, b) => b[1].items - a[1].items).map(([zone, b]) => (
-              <tr key={zone} style={{ borderBottom: '1px solid var(--border)' }}>
-                <td style={{ padding: '6px 4px' }}>{zone}</td>
-                <td style={{ padding: '6px 4px', fontFamily: 'JetBrains Mono, monospace' }}>{b.items}</td>
-                <td style={{ padding: '6px 4px', fontFamily: 'JetBrains Mono, monospace' }}>{b.qty.toFixed(1)}</td>
-                <td style={{ padding: '6px 4px', color: 'var(--fg-muted)', fontSize: 11 }}>{[...b.counters].join(', ')}</td>
-              </tr>
-            ))}
+            {[...stats.byZone.entries()].sort((a, b) => b[1].items - a[1].items).map(([zone, b]) => {
+              const isActive = drill?.kind === 'zone' && drill.zone === zone;
+              const handler = () => canDrill && setDrill(isActive ? null : { kind: 'zone', zone });
+              return (
+                <tr
+                  key={zone}
+                  onClick={canDrill ? handler : undefined}
+                  style={{
+                    borderBottom: '1px solid var(--border)',
+                    cursor: canDrill ? 'pointer' : 'default',
+                    background: isActive ? 'var(--amethyst-100)' : undefined,
+                  }}
+                >
+                  <td style={{ padding: '6px 4px' }}>{zone}</td>
+                  <td style={{ padding: '6px 4px', fontFamily: 'JetBrains Mono, monospace' }}>{b.items}</td>
+                  <td style={{ padding: '6px 4px', fontFamily: 'JetBrains Mono, monospace' }}>{b.qty.toFixed(1)}</td>
+                  <td style={{ padding: '6px 4px', color: 'var(--fg-muted)', fontSize: 11 }}>{[...b.counters].join(', ')}</td>
+                  {canDrill && (
+                    <td style={{ padding: '6px 4px', textAlign: 'right', color: 'var(--fg-muted)', fontSize: 11 }}>
+                      {isActive ? 'open ↓' : 'view →'}
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </Card>
+
+      {drill && (
+        <DrillDetail
+          drill={drill}
+          entries={entries}
+          stats={stats}
+          onClose={() => setDrill(null)}
+        />
+      )}
 
       {/* By counter */}
       <Card padding={16}>
@@ -293,11 +401,201 @@ function SummaryDetail({ auditId }: { auditId: string }) {
   );
 }
 
-function StatTile({ label, value }: { label: string; value: React.ReactNode }) {
+function StatTile({
+  label, value, clickable, active, onClick,
+}: {
+  label: string;
+  value: React.ReactNode;
+  clickable?: boolean;
+  active?: boolean;
+  onClick?: () => void;
+}) {
+  const interactiveStyle: React.CSSProperties = clickable
+    ? {
+        cursor: 'pointer',
+        // Subtle highlight when active so the admin knows which drill is open
+        background: active ? 'var(--amethyst-100)' : undefined,
+        borderColor: active ? 'var(--amethyst-300)' : undefined,
+        transition: 'background .15s, border-color .15s',
+      }
+    : {};
   return (
-    <Card padding={14}>
-      <Eyebrow>{label}</Eyebrow>
-      <div style={{ marginTop: 8, fontSize: 22, fontWeight: 700 }}>{value}</div>
+    <Card padding={14} style={interactiveStyle}>
+      <div
+        onClick={clickable ? onClick : undefined}
+        role={clickable ? 'button' : undefined}
+        tabIndex={clickable ? 0 : undefined}
+        onKeyDown={clickable ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick?.(); } } : undefined}
+        style={{ outline: 'none' }}
+      >
+        <Eyebrow>{label}</Eyebrow>
+        <div style={{ marginTop: 8, fontSize: 22, fontWeight: 700, display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+          <span>{value}</span>
+          {clickable && (
+            <span style={{ fontSize: 11, color: active ? 'var(--amethyst-300)' : 'var(--fg-muted)', fontWeight: 600, letterSpacing: '.06em' }}>
+              {active ? 'OPEN ↓' : 'VIEW →'}
+            </span>
+          )}
+        </div>
+      </div>
     </Card>
   );
+}
+
+/* ────────── Drill-down panel ────────── */
+
+function DrillDetail({
+  drill, entries, stats, onClose,
+}: {
+  drill: Drill;
+  entries: KountEntry[];
+  stats: ReturnType<typeof computeStats> extends infer T ? T : never; // see note below
+  onClose: () => void;
+}) {
+  // The shape of `stats` matches what useMemo returns above; we accept it as
+  // typeof inference for ergonomic reasons rather than re-declaring the shape.
+
+  const filtered = useMemo(() => {
+    switch (drill.kind) {
+      case 'entries':
+      case 'qty':       return entries;
+      case 'issues':    return entries.filter(r => r.issue && r.issue !== 'none');
+      case 'zone':      return entries.filter(r => r.zone === drill.zone);
+      case 'counters':  return entries; // grouped view, see below
+    }
+  }, [drill, entries]);
+
+  const title = (() => {
+    switch (drill.kind) {
+      case 'entries':  return `All ${entries.length} entries`;
+      case 'qty':      return `All ${entries.length} entries — total qty ${stats.totalQty.toFixed(1)}`;
+      case 'issues':   return `${filtered.length} flagged entries`;
+      case 'zone':     return `Zone: ${drill.zone} — ${filtered.length} entries`;
+      case 'counters': return `${stats.byCounter.size} counter${stats.byCounter.size === 1 ? '' : 's'}`;
+    }
+  })();
+
+  return (
+    <Card padding={16} style={{ borderColor: 'var(--amethyst-300)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <Eyebrow style={{ color: 'var(--amethyst-300)' }}>Details</Eyebrow>
+        <button
+          onClick={onClose}
+          aria-label="Close details"
+          style={{
+            background: 'transparent', border: 'none', cursor: 'pointer',
+            color: 'var(--fg-muted)', padding: 4, fontSize: 14,
+          }}
+        >×</button>
+      </div>
+      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>{title}</div>
+
+      {drill.kind === 'counters' ? (
+        // Grouped breakdown by counter — entries-per-counter + total qty
+        <CountersBreakdown entries={entries} />
+      ) : filtered.length === 0 ? (
+        <div style={{ color: 'var(--fg-muted)', fontSize: 12 }}>No entries to show.</div>
+      ) : (
+        <div style={{ overflow: 'auto', maxHeight: 480 }}>
+          <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: 'var(--fg-muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, position: 'sticky', top: 0, background: '#FFF' }}>
+                <th style={{ padding: '6px 8px' }}>Item</th>
+                <th style={{ padding: '6px 8px' }}>Zone</th>
+                <th style={{ padding: '6px 8px' }}>Qty</th>
+                <th style={{ padding: '6px 8px' }}>Method</th>
+                <th style={{ padding: '6px 8px' }}>Counter</th>
+                <th style={{ padding: '6px 8px' }}>Time</th>
+                {drill.kind === 'issues' && <th style={{ padding: '6px 8px' }}>Issue</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map(r => (
+                <tr key={r.id} style={{ borderBottom: '1px solid var(--border)', background: r.issue && r.issue !== 'none' && drill.kind !== 'issues' ? 'var(--copper-100)' : undefined }}>
+                  <td style={{ padding: '6px 8px', fontWeight: 500 }}>{r.item_name}</td>
+                  <td style={{ padding: '6px 8px' }}>{r.zone}</td>
+                  <td style={{ padding: '6px 8px', fontFamily: 'JetBrains Mono, monospace' }}>{Number(r.qty).toFixed(Number.isInteger(r.qty) ? 0 : 1)}</td>
+                  <td style={{ padding: '6px 8px', fontSize: 12, color: 'var(--fg-muted)' }}>{r.method ?? '—'}</td>
+                  <td style={{ padding: '6px 8px', fontSize: 12, color: 'var(--fg-muted)' }}>{r.counted_by_name || r.counted_by_email}</td>
+                  <td style={{ padding: '6px 8px', fontSize: 11, color: 'var(--fg-muted)' }}>{new Date(r.timestamp).toLocaleString()}</td>
+                  {drill.kind === 'issues' && (
+                    <td style={{ padding: '6px 8px' }}>
+                      <Pill tone={r.issue_resolved ? 'positive' : 'caution'} size="sm">{r.issue}</Pill>
+                      {r.issue_notes && <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 2 }}>{r.issue_notes}</div>}
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function CountersBreakdown({ entries }: { entries: KountEntry[] }) {
+  // Aggregate by counter: entry count + total qty + zones touched
+  const map = new Map<string, { name: string; email: string; entries: number; qty: number; zones: Set<string> }>();
+  for (const r of entries) {
+    const key = r.counted_by_email || r.counted_by_name || '(unknown)';
+    const e = map.get(key) ?? {
+      name: r.counted_by_name || r.counted_by_email,
+      email: r.counted_by_email,
+      entries: 0, qty: 0, zones: new Set<string>(),
+    };
+    e.entries++;
+    e.qty += Number(r.qty || 0);
+    e.zones.add(r.zone);
+    map.set(key, e);
+  }
+  const rows = [...map.values()].sort((a, b) => b.entries - a.entries);
+  return (
+    <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
+      <thead>
+        <tr style={{ textAlign: 'left', color: 'var(--fg-muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1 }}>
+          <th style={{ padding: '6px 8px' }}>Counter</th>
+          <th style={{ padding: '6px 8px' }}>Entries</th>
+          <th style={{ padding: '6px 8px' }}>Total qty</th>
+          <th style={{ padding: '6px 8px' }}>Zones</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map(r => (
+          <tr key={r.email} style={{ borderBottom: '1px solid var(--border)' }}>
+            <td style={{ padding: '8px' }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <Avatar name={r.name} size={26} />
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>{r.name}</div>
+                  <div style={{ fontSize: 10, color: 'var(--fg-muted)' }}>{r.email}</div>
+                </div>
+              </div>
+            </td>
+            <td style={{ padding: '8px', fontFamily: 'JetBrains Mono, monospace' }}>{r.entries}</td>
+            <td style={{ padding: '8px', fontFamily: 'JetBrains Mono, monospace' }}>{r.qty.toFixed(1)}</td>
+            <td style={{ padding: '8px', fontSize: 11, color: 'var(--fg-muted)' }}>{[...r.zones].join(', ')}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+// Phantom helper so the `typeof computeStats` inference compiles. The actual
+// stats are produced inline via useMemo inside SummaryDetail; this function
+// merely declares the shape the DrillDetail component depends on.
+function computeStats(_e: KountEntry[]): {
+  totalEntries: number; totalQty: number;
+  byZone: Map<string, { items: number; qty: number; counters: Set<string> }>;
+  byCounter: Map<string, number>;
+  byMethod: Record<string, number>;
+  issues: number;
+  durationMin: number | null;
+} {
+  return {
+    totalEntries: 0, totalQty: 0,
+    byZone: new Map(), byCounter: new Map(),
+    byMethod: {}, issues: 0, durationMin: null,
+  };
 }
