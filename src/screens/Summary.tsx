@@ -196,12 +196,14 @@ function SummaryDetail({
   const [members, setMembers] = useState<KountMember[]>([]);
   const [drill, setDrill]     = useState<Drill | null>(null);
   const [reactBusy, setReactBusy] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   // Drill-down is admin-only because some buckets (counters, issues) reveal
   // submitter identities that managers/counters wouldn't normally see in the
-  // summary read-only view. Same gate the Reactivate action uses.
-  const canDrill     = user.role === 'corporate';
+  // summary read-only view. Same gate the Reactivate / Delete actions use.
+  const canDrill      = user.role === 'corporate';
   const canReactivate = user.role === 'corporate';
+  const canDelete     = user.role === 'corporate';
 
   const load = useCallback(async () => {
     const [{ data: a }, { data: e }, { data: m }] = await Promise.all([
@@ -261,6 +263,38 @@ function SummaryDetail({
     setReactBusy(false);
     if (error) { alert('Reactivate failed: ' + error.message); return; }
     await load();
+    onAuditChanged?.();
+  };
+
+  /* Permanently delete a cancelled audit. Corporate-only because it's
+     destructive — kount_audits' children (kount_entries, kount_members,
+     kount_recounts) all cascade, so the audit and every entry under it
+     are wiped from the server. Gated to status='cancelled' to make
+     submitted audits non-deletable from the UI; those are reports of
+     completed work and should always be retained.
+
+     Confirm copy includes the entry count so admin doesn't accidentally
+     destroy something with real data. The default-cancelled-with-zero-
+     entries case (the StaleAuditsPrompt cleanup workflow) gets a softer
+     message because there's nothing to lose. */
+  const deleteAudit = async () => {
+    if (!audit || !canDelete) return;
+    if (audit.status !== 'cancelled') return;
+    const entryCount = entries.length;
+    const msg = entryCount === 0
+      ? `Permanently delete ${audit.join_code} (${audit.venue_name})?\n\nNo entries on file — safe to drop.`
+      : `Permanently delete ${audit.join_code} (${audit.venue_name})?\n\nThis removes the audit AND ${entryCount} count entries from the server. CANNOT be undone.`;
+    if (!confirm(msg)) return;
+    setDeleteBusy(true);
+    const { error } = await supabase
+      .from('kount_audits')
+      .delete()
+      .eq('id', audit.id)
+      .eq('status', 'cancelled'); // race guard: refuses if someone reactivated it just now
+    setDeleteBusy(false);
+    if (error) { alert('Delete failed: ' + error.message); return; }
+    // Parent's useEffect clears selectedId once the audit drops out of the
+    // filtered list; load() refreshes that list.
     onAuditChanged?.();
   };
 
@@ -335,10 +369,22 @@ function SummaryDetail({
                 variant="positive"
                 size="sm"
                 onClick={() => void reactivate()}
-                disabled={reactBusy}
+                disabled={reactBusy || deleteBusy}
                 title="Move this audit back to Active. Entries are preserved; admin can resume from Counts."
               >
                 {reactBusy ? 'Reactivating…' : 'Reactivate audit'}
+              </Btn>
+            )}
+            {canDelete && audit.status === 'cancelled' && (
+              <Btn
+                variant="critical"
+                size="sm"
+                leading={Ic.close(14)}
+                onClick={() => void deleteAudit()}
+                disabled={reactBusy || deleteBusy}
+                title="Permanently remove this cancelled audit and all its entries from the server. Cannot be undone."
+              >
+                {deleteBusy ? 'Deleting…' : 'Delete audit'}
               </Btn>
             )}
             <Btn variant="secondary" size="sm" leading={Ic.download(14)} onClick={exportCsv}>Export CSV</Btn>
