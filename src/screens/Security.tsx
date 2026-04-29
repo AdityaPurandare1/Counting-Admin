@@ -168,7 +168,13 @@ function UserFormModal({
 
   /* Pre-flight duplicate check fires when the email field loses focus
      during create mode. .maybeSingle() returns null when no row matches,
-     vs. .single() which would 406 — we want a clean "no duplicate" path. */
+     vs. .single() which would 406 — we want a clean "no duplicate" path.
+     v0.25: use ilike instead of eq so the dupe banner also fires when an
+     existing app_users row has a different-case spelling of the same
+     email (e.g. row stored as User@HWoodGroup.com vs. typed
+     user@hwoodgroup.com). The save-path INSERT will still fail with
+     23505 on case-only duplicates if the table has a citext / lower()
+     unique index, but the banner gets a chance to catch it first. */
   const checkForDuplicate = async () => {
     if (mode !== 'create') return;
     const emailTrim = email.trim().toLowerCase();
@@ -177,7 +183,7 @@ function UserFormModal({
     const { data, error } = await supabase
       .from('app_users')
       .select('*')
-      .eq('email', emailTrim)
+      .ilike('email', emailTrim)
       .maybeSingle();
     setCheckingDupe(false);
     if (error) { console.warn('[security] dupe check', error); return; }

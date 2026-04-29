@@ -310,12 +310,19 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
     if (!toZone || fromZone === toZone) return;
     const affected = countsByZone.get(fromZone) ?? 0;
     if (!confirm(`Move all ${affected} entries from "${fromZone}" to "${toZone}"?\n\nEntries can't be split — every row in "${fromZone}" gets the new zone.`)) return;
-    const { error } = await supabase
+    // .select('id') returns the rows actually updated, so the toast can
+    // surface the real count instead of the cached countsByZone value
+    // (which can drift if a counter adds rows to the orphan zone between
+    // the confirm dialog and the UPDATE landing).
+    const { data, error } = await supabase
       .from('kount_entries')
       .update({ zone: toZone })
       .eq('audit_id', audit.id)
-      .eq('zone', fromZone);
+      .eq('zone', fromZone)
+      .select('id');
     if (error) { alert('Move entries failed: ' + error.message); return; }
+    const moved = (data ?? []).length;
+    alert(`Moved ${moved} ${moved === 1 ? 'entry' : 'entries'} from "${fromZone}" to "${toZone}".`);
   };
 
   const removeZone = async (zoneName: string) => {

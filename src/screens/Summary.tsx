@@ -223,7 +223,12 @@ function SummaryDetail({
   /* Reactivate a cancelled audit. Flips status back to 'active' and clears
      completed_at so it re-appears in Variance / Counts as in-progress. The
      count_phase is left as-is so a mid-count1 cancellation picks up where
-     it stopped — admin can advance the phase from Counts.tsx if needed. */
+     it stopped — admin can advance the phase from Counts.tsx if needed.
+     v0.25: also clear count1_closed_at / count2_closed_at when their phase
+     hasn't been completed yet — otherwise an audit cancelled mid-count2
+     ends up with status='active', count_phase='count2', count2_closed_at
+     non-null, which is contradictory state the phone's flow doesn't
+     handle cleanly. */
   const reactivate = async () => {
     if (!audit || !canReactivate) return;
     if (audit.status !== 'cancelled') return;
@@ -233,9 +238,25 @@ function SummaryDetail({
       'All previously-recorded entries are preserved.'
     )) return;
     setReactBusy(true);
+    // Phases at or after the current one shouldn't carry a closed_at —
+    // those are forward-looking phases that still need to be reached.
+    // count1 cancelled mid-count1 → both nulled (back to fresh)
+    // review cancelled → count1_closed_at preserved (count1 actually finished),
+    //   count2_closed_at cleared
+    // count2 cancelled → both preserved up through count1, count2 cleared
+    // final cancelled → all preserved (audit was already done; reactivating
+    //   restores it as-was)
+    const phase = audit.count_phase;
+    const patch: Partial<KountAudit> = { status: 'active', completed_at: null };
+    if (phase === 'count1') {
+      patch.count1_closed_at = null;
+      patch.count2_closed_at = null;
+    } else if (phase === 'review' || phase === 'count2') {
+      patch.count2_closed_at = null;
+    }
     const { error } = await supabase
       .from('kount_audits')
-      .update({ status: 'active', completed_at: null })
+      .update(patch)
       .eq('id', audit.id);
     setReactBusy(false);
     if (error) { alert('Reactivate failed: ' + error.message); return; }
