@@ -11,8 +11,10 @@ import { Issues } from '@/screens/Issues';
 import { Approvals } from '@/screens/Approvals';
 import { Catalog } from '@/screens/Catalog';
 import { Counts } from '@/screens/Counts';
+import { VenueSettings } from '@/screens/VenueSettings';
 import { AI } from '@/screens/_placeholders';
-import { refreshAccessList, resolveAccess } from '@/lib/access';
+import { refreshAccessList, refreshVenues, resolveAccess } from '@/lib/access';
+import { refreshVenueLookups } from '@/lib/venueMap';
 import type { AccessEntry } from '@/lib/access';
 import { NotificationProvider } from '@/lib/notifications';
 import { NotificationBell, NotificationToaster } from '@/components/NotificationUI';
@@ -71,12 +73,19 @@ export default function App() {
 
   useEffect(() => { saveUser(user); }, [user]);
 
-  // Warm the access-list cache at boot so the Login form resolves fast,
-  // then re-validate the restored session against the live app_users
-  // table — a deactivation in the DB should kick the user immediately.
+  // Warm the access-list + venue caches at boot so the Login form +
+  // venue pickers resolve fast, then re-validate the restored session
+  // against the live app_users table — a deactivation in the DB should
+  // kick the user immediately. v0.28: venues table is now the source of
+  // truth for venues; the local VENUES const seeds first paint and gets
+  // overwritten by refreshVenues / refreshVenueLookups.
   useEffect(() => {
     void (async () => {
-      await refreshAccessList();
+      await Promise.all([
+        refreshAccessList(),
+        refreshVenues(),
+        refreshVenueLookups(),
+      ]);
       if (!user) return;
       const live = resolveAccess(user.email);
       if (!live || live.role === 'counter') {
@@ -115,6 +124,7 @@ export default function App() {
             <Route path="/approvals" element={(user.role === 'corporate' || user.role === 'manager') ? <Approvals user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/catalog"   element={user.role === 'corporate' ? <Catalog user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/security"  element={user.role === 'corporate' ? <Security user={user} /> : <Navigate to="/variance" replace />} />
+            <Route path="/venue-settings" element={user.role === 'corporate' ? <VenueSettings user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="*"         element={<Navigate to="/variance" replace />} />
           </Routes>
         </main>

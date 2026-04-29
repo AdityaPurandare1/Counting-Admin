@@ -38,7 +38,16 @@ const BASELINE: AccessEntry[] = [
 // Keep the list accessible even before a first fetch — seed with BASELINE.
 export let ACCESS_LIST: AccessEntry[] = loadCache() ?? BASELINE.slice();
 
-export const VENUES: Array<{ id: string; name: string }> = [
+/* v0.28: VENUES is now backed by a Supabase `venues` table (migration 0013).
+ * The const below stays as the boot-time fallback so the app still renders
+ * something usable on first paint and during a Supabase outage. After
+ * `refreshVenues()` runs, `VENUES` mutates in place to whatever the DB
+ * returned (active rows only, sorted by ordinal). All callers that import
+ * `VENUES` get the live list.
+ *
+ * The Venue type is intentionally narrow — admin UIs that need address,
+ * default_zones, store_aliases use `VenueRow` from `@/lib/types`. */
+const VENUES_BASELINE: Array<{ id: string; name: string }> = [
   { id: 'v1',  name: 'Delilah LA' },
   { id: 'v2',  name: 'Delilah Miami' },
   { id: 'v3',  name: 'The Nice Guy' },
@@ -50,6 +59,45 @@ export const VENUES: Array<{ id: string; name: string }> = [
   { id: 'v9',  name: 'Harriets' },
   { id: 'v10', name: '40 Love' },
 ];
+
+const VENUES_CACHE_KEY = 'kount_admin_venues_cache_v1';
+
+function loadVenuesCache(): Array<{ id: string; name: string }> | null {
+  try {
+    const raw = localStorage.getItem(VENUES_CACHE_KEY);
+    return raw ? JSON.parse(raw) as Array<{ id: string; name: string }> : null;
+  } catch { return null; }
+}
+
+export const VENUES: Array<{ id: string; name: string }> =
+  loadVenuesCache() ?? VENUES_BASELINE.slice();
+
+/** Pull the live venues table and refresh `VENUES` + cache in localStorage.
+ *  Silent fallback to existing list on error so a Supabase outage doesn't
+ *  blank the picker. Active rows only — soft-deleted (is_active=false)
+ *  venues are excluded from pickers but stay queryable for historic audits
+ *  via the dedicated VenueSettings screen. */
+export async function refreshVenues(): Promise<Array<{ id: string; name: string }>> {
+  try {
+    const { data, error } = await supabase
+      .from('kount_venues')
+      .select('id, name, ordinal')
+      .eq('is_active', true)
+      .order('ordinal')
+      .order('name');
+    if (error || !data) return VENUES;
+    const mapped = (data as Array<{ id: string; name: string; ordinal: number }>).map(v => ({
+      id: v.id,
+      name: v.name,
+    }));
+    if (mapped.length > 0) {
+      VENUES.length = 0;
+      for (const v of mapped) VENUES.push(v);
+      try { localStorage.setItem(VENUES_CACHE_KEY, JSON.stringify(mapped)); } catch {}
+    }
+    return VENUES;
+  } catch { return VENUES; }
+}
 
 interface AppUserRow {
   email: string;

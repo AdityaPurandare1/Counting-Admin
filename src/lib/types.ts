@@ -136,6 +136,23 @@ export interface KountVenueZone {
   added_at: string;
 }
 
+/** Mirror of public.venues (migration 0013). The single source of truth for
+ *  venues — replaces the four hardcoded copies that lived in the phone app's
+ *  appState.venues, the admin's VENUES const, STORE_MAP, and DEFAULT_VENUE_ZONES.
+ *  Soft-deleted (is_active=false) venues stay queryable so historic audits
+ *  resolve their venue_name, but are hidden from new-audit pickers. */
+export interface VenueRow {
+  id: string;
+  name: string;
+  address: string | null;
+  default_zones: string[];
+  store_aliases: string[];
+  ordinal: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 /** Mirror of public.kount_pending_items (migration 0009). New-item suggestions
  *  submitted by counters/managers when they hit a gap in the catalog. Admin
  *  approves → approve_pending_item RPC mints a purchase_items row and links it
