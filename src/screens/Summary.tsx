@@ -27,6 +27,8 @@ export function Summary({ user }: Props) {
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(auditParam);
   const [venueFilter, setVenueFilter] = useState<string>('');
+  const [sweepBusy, setSweepBusy] = useState(false);
+  const canSweep = user.role === 'corporate';
   // Submitted is the more common review case (closed-out audits) so it's
   // the default. Cancelled is its own bucket — bad audits, mistakes, walk-
   // aways. "All" stays available because the cross-cutting view is useful
@@ -83,6 +85,79 @@ export function Summary({ user }: Props) {
     }
   }, [filtered, selectedId]);
 
+  /* Sweep all *empty* cancelled audits in the user's venue scope. Built
+     for the bulk-cleanup workflow after StaleAuditsPrompt mass-cancels —
+     typically 10+ audits with 0 entries each. Deletes only the empties;
+     audits with entries are skipped intentionally so admin doesn't lose
+     data via a button-mash. Two-query flow:
+       1. List cancelled audits in scope (filterVisible reuses the same
+          venue-access predicate the rest of the screen uses).
+       2. One IN.(<ids>) query against kount_entries → set of audit_ids
+          that have any entry. Audits NOT in that set are the empties.
+     The DELETE itself is a single round trip with .in('id', emptyIds)
+     and a status='cancelled' guard so a parallel Reactivate wins. */
+  const sweepEmptyCancelled = async () => {
+    if (!canSweep) return;
+    setSweepBusy(true);
+    try {
+      const { data: cancelled, error: cErr } = await supabase
+        .from('kount_audits')
+        .select('id, join_code, venue_id, venue_name')
+        .eq('status', 'cancelled');
+      if (cErr) { alert('Sweep failed (load): ' + cErr.message); return; }
+      const visible = filterVisible((cancelled ?? []) as KountAudit[]);
+      if (visible.length === 0) {
+        alert('No cancelled audits in scope to sweep.');
+        return;
+      }
+      const ids = visible.map(a => a.id);
+      const { data: entryHits, error: eErr } = await supabase
+        .from('kount_entries')
+        .select('audit_id')
+        .in('audit_id', ids);
+      if (eErr) { alert('Sweep failed (entries probe): ' + eErr.message); return; }
+      const withEntries = new Set((entryHits ?? []).map(r => (r as { audit_id: string }).audit_id));
+      const empty = visible.filter(a => !withEntries.has(a.id));
+      if (empty.length === 0) {
+        alert(
+          `No empty cancelled audits to sweep.\n\n` +
+          `${visible.length} cancelled audit${visible.length === 1 ? '' : 's'} in scope, all of them have entries on file. ` +
+          `Use the per-audit Delete button on each one if you really want to remove them.`
+        );
+        return;
+      }
+      const skipped = visible.length - empty.length;
+      const msg = `Permanently delete ${empty.length} empty cancelled audit${empty.length === 1 ? '' : 's'}?` +
+        (skipped > 0 ? `\n\n${skipped} cancelled audit${skipped === 1 ? '' : 's'} with entries on file will NOT be touched.` : '') +
+        `\n\nThis cannot be undone.`;
+      if (!confirm(msg)) return;
+      const { data: deleted, error: dErr } = await supabase
+        .from('kount_audits')
+        .delete()
+        .in('id', empty.map(a => a.id))
+        .eq('status', 'cancelled')
+        .select('id');
+      if (dErr) { alert('Sweep failed (delete): ' + dErr.message); return; }
+      const got = (deleted ?? []).length;
+      // Migration 0012 silently filters DELETEs to 0 rows when the policy
+      // isn't applied — surface that here so admin doesn't think the click
+      // worked when it didn't.
+      if (got === 0 && empty.length > 0) {
+        alert(
+          'Sweep returned 0 deletions despite ' + empty.length + ' candidates.\n\n' +
+          'This usually means migration 0012 (anon DELETE policy on kount_audits) ' +
+          'has not been applied to Supabase yet. Apply 0012_delete_policies.sql ' +
+          'in the SQL editor and try again.'
+        );
+        return;
+      }
+      alert(`Deleted ${got} empty cancelled audit${got === 1 ? '' : 's'}.`);
+      await load();
+    } finally {
+      setSweepBusy(false);
+    }
+  };
+
   return (
     <>
       <div className="topbar">
@@ -101,6 +176,18 @@ export function Summary({ user }: Props) {
               return <option key={v} value={v}>{name}</option>;
             })}
           </select>
+          {canSweep && cancelledCount > 0 && (
+            <Btn
+              variant="critical"
+              size="sm"
+              leading={Ic.close(14)}
+              onClick={() => void sweepEmptyCancelled()}
+              disabled={sweepBusy}
+              title="Permanently delete every cancelled audit that has zero count entries. Audits with entries are skipped."
+            >
+              {sweepBusy ? 'Sweeping…' : 'Sweep empty cancelled'}
+            </Btn>
+          )}
           <Btn variant="secondary" size="sm" onClick={() => void load()}>Refresh</Btn>
         </div>
       </div>
