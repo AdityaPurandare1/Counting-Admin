@@ -70,7 +70,10 @@ export function Reports({ user }: Props) {
       .limit(200);
     if (cutoff) aq = aq.gte('started_at', cutoff);
     const { data: auditRows, error: auditErr } = await aq;
-    if (auditErr) { console.error('[reports] audits', auditErr); setLoading(false); return; }
+    // Clear rows on error — otherwise the previous successful load lingers
+    // visibly with loading=false, which makes the user think the failed
+    // query succeeded.
+    if (auditErr) { console.error('[reports] audits', auditErr); setRows([]); setAudits([]); setLoading(false); return; }
 
     const allAudits = (auditRows ?? []) as KountAudit[];
     const visibleAudits = allAudits.filter(a => {
@@ -95,7 +98,7 @@ export function Reports({ user }: Props) {
       .in('audit_id', auditIds)
       .order('created_at', { ascending: false })
       .limit(5000);
-    if (recountErr) { console.error('[reports] recounts', recountErr); setLoading(false); return; }
+    if (recountErr) { console.error('[reports] recounts', recountErr); setRows([]); setLoading(false); return; }
 
     const auditById = new Map(visibleAudits.map(a => [a.id, a]));
     const auditResultLabel = (r: KountRecount): string => {
@@ -135,9 +138,16 @@ export function Reports({ user }: Props) {
     const header = ['Item', 'Category', 'Issue Type', 'Variance', 'Replacement Value', 'Audit Results', 'Counter Initials', 'Context'];
     const escape = (v: string | number | null): string => {
       if (v === null || v === undefined) return '';
-      const s = String(v);
+      let s = String(v);
+      // CSV formula-injection guard: a field starting with =, +, -, or @
+      // is interpreted by Excel / Sheets / Numbers as a formula. A
+      // counter who names a custom item `=cmd|'/c calc'!A1` could
+      // execute commands when the report is opened. Prefix a single
+      // tab character (which spreadsheet apps treat as a no-op text
+      // hint) to neutralize without changing the visible cell.
+      if (/^[=+\-@\t\r]/.test(s)) s = '\t' + s;
       // RFC 4180: wrap in double-quotes, double the inner double-quotes.
-      if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+      if (/[",\n\r\t]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
       return s;
     };
     const fmtCurrency = (n: number | null): string => {
@@ -192,7 +202,19 @@ export function Reports({ user }: Props) {
       </div>
 
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
-        <select style={pickerStyle} value={venue} onChange={e => setVenue(e.target.value)}>
+        <select
+          style={pickerStyle}
+          value={venue}
+          onChange={e => {
+            // Changing venue invalidates any pinned audit — the audit may
+            // belong to a different venue, in which case our visibility
+            // filter would drop it and the table would silently show "No
+            // rows match" with no explanation. Reset auditId so the user
+            // sees the full audit list for the new venue.
+            setVenue(e.target.value);
+            setAuditId('');
+          }}
+        >
           <option value="">All venues</option>
           {visibleVenues.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
         </select>
@@ -206,7 +228,16 @@ export function Reports({ user }: Props) {
               </option>
             ))}
         </select>
-        <select style={pickerStyle} value={window_} onChange={e => setWindow_(e.target.value as WindowChoice)}>
+        <select
+          style={pickerStyle}
+          value={window_}
+          onChange={e => {
+            // Same rationale as the venue reset: a window change can
+            // strand an auditId that's no longer in the visible set.
+            setWindow_(e.target.value as WindowChoice);
+            setAuditId('');
+          }}
+        >
           <option value="7d">Last 7 days</option>
           <option value="30d">Last 30 days</option>
           <option value="all">All time</option>
