@@ -190,4 +190,11 @@ export interface KountRecount {
   status: 'pending' | 'done' | 'dismissed';
   created_at: string;
   resolved_at: string | null;
+  // Migration 0014 — recount audit decision + admin Reports columns.
+  audit_result?: 'corrected' | 'verified' | null;
+  audit_reason?: string | null;
+  zone?: string | null;
+  category?: string | null;
+  counter_initials?: string | null;
+  variance_qty?: number | null;
 }

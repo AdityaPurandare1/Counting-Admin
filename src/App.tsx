@@ -12,6 +12,7 @@ import { Approvals } from '@/screens/Approvals';
 import { Catalog } from '@/screens/Catalog';
 import { Counts } from '@/screens/Counts';
 import { VenueSettings } from '@/screens/VenueSettings';
+import { Reports } from '@/screens/Reports';
 import { AI } from '@/screens/_placeholders';
 import { refreshAccessList, refreshVenues, resolveAccess } from '@/lib/access';
 import { refreshVenueLookups } from '@/lib/venueMap';
@@ -119,6 +120,7 @@ export default function App() {
             <Route path="/counts"   element={(user.role === 'corporate' || user.role === 'manager') ? <Counts user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/recount"  element={<Recount user={user} />} />
             <Route path="/summary"  element={<Summary user={user} />} />
+            <Route path="/reports"  element={user.role === 'corporate' ? <Reports user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/issues"   element={<Issues user={user} />} />
             <Route path="/ai"       element={<AI />} />
             <Route path="/approvals" element={(user.role === 'corporate' || user.role === 'manager') ? <Approvals user={user} /> : <Navigate to="/variance" replace />} />
