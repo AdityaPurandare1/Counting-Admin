@@ -36,6 +36,9 @@ interface ReportRow {
   _startedAt: string;
 }
 
+const AUDIT_LIMIT   = 200;
+const RECOUNT_LIMIT = 5000;
+
 type WindowChoice = 'all' | '30d' | '7d';
 
 export function Reports({ user }: Props) {
@@ -45,6 +48,11 @@ export function Reports({ user }: Props) {
   const [venue, setVenue] = useState<string>('');
   const [auditId, setAuditId] = useState<string>('');
   const [window_, setWindow_] = useState<WindowChoice>('30d');
+  // Track when a query hits the hard cap so we can surface a banner
+  // instead of silently truncating. The cap protects against a runaway
+  // 100k-row pull, but the user needs to know they're seeing a window.
+  const [auditTrunc,   setAuditTrunc]   = useState(false);
+  const [recountTrunc, setRecountTrunc] = useState(false);
 
   const visibleVenues = useMemo(() => {
     if (user.role === 'corporate' || user.venueIds === 'all') return VENUES;
@@ -67,13 +75,14 @@ export function Reports({ user }: Props) {
       .from('kount_audits')
       .select('*')
       .order('started_at', { ascending: false })
-      .limit(200);
+      .limit(AUDIT_LIMIT);
     if (cutoff) aq = aq.gte('started_at', cutoff);
     const { data: auditRows, error: auditErr } = await aq;
     // Clear rows on error — otherwise the previous successful load lingers
     // visibly with loading=false, which makes the user think the failed
     // query succeeded.
-    if (auditErr) { console.error('[reports] audits', auditErr); setRows([]); setAudits([]); setLoading(false); return; }
+    if (auditErr) { console.error('[reports] audits', auditErr); setRows([]); setAudits([]); setAuditTrunc(false); setRecountTrunc(false); setLoading(false); return; }
+    setAuditTrunc((auditRows?.length ?? 0) >= AUDIT_LIMIT);
 
     const allAudits = (auditRows ?? []) as KountAudit[];
     const visibleAudits = allAudits.filter(a => {
@@ -97,8 +106,9 @@ export function Reports({ user }: Props) {
       .select('*')
       .in('audit_id', auditIds)
       .order('created_at', { ascending: false })
-      .limit(5000);
-    if (recountErr) { console.error('[reports] recounts', recountErr); setRows([]); setLoading(false); return; }
+      .limit(RECOUNT_LIMIT);
+    if (recountErr) { console.error('[reports] recounts', recountErr); setRows([]); setRecountTrunc(false); setLoading(false); return; }
+    setRecountTrunc((recountRows?.length ?? 0) >= RECOUNT_LIMIT);
 
     const auditById = new Map(visibleAudits.map(a => [a.id, a]));
     const auditResultLabel = (r: KountRecount): string => {
@@ -173,11 +183,13 @@ export function Reports({ user }: Props) {
     });
 
     // Prepend BOM so Excel on Windows picks UTF-8 instead of treating the
-    // first character as Latin-1. The byte sequence is EF BB BF — encoding
-    // as `﻿` (the BOM character) at the start of the string and writing
-    // through TextEncoder via Blob's UTF-8 default lands the right bytes.
-    const csv = '﻿' + lines.join('\r\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    // first character as Latin-1. We pass the raw EF BB BF byte sequence
+    // as a Uint8Array part of the Blob — relying on a JS string '﻿'
+    // to round-trip cleanly through Blob's encoder is browser-dependent
+    // and Safari has historically dropped it.
+    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+    const csv = lines.join('\r\n');
+    const blob = new Blob([bom, csv], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -224,7 +236,11 @@ export function Reports({ user }: Props) {
             .filter(a => !venue || a.venue_id === venue)
             .map(a => (
               <option key={a.id} value={a.id}>
-                {a.venue_name} · {a.join_code} · {new Date(a.started_at).toLocaleDateString()}
+                {/* ISO YYYY-MM-DD instead of toLocaleDateString so the same
+                    audit reads identically for a US user and an EU user
+                    sharing a screenshot. The wider report still uses
+                    locale formatting where free-form is fine. */}
+                {a.venue_name} · {a.join_code} · {a.started_at.slice(0, 10)}
               </option>
             ))}
         </select>
@@ -246,6 +262,14 @@ export function Reports({ user }: Props) {
         <Pill tone="neutral" size="sm">{loading ? 'loading…' : totalCount + ' row' + (totalCount === 1 ? '' : 's')}</Pill>
         <Btn variant="primary" size="sm" onClick={exportCSV} disabled={rows.length === 0}>Export CSV</Btn>
       </div>
+
+      {(auditTrunc || recountTrunc) && !loading && (
+        <div style={{ marginBottom: 12, padding: '10px 12px', borderRadius: 8, background: 'rgba(255,193,7,0.10)', border: '1px solid rgba(255,193,7,0.4)', fontSize: 12, color: 'var(--fg)' }}>
+          ⚠ Result set is capped — narrow the date window or pick a single audit to see the rest.
+          {auditTrunc   && <> Audit list hit the {AUDIT_LIMIT}-row cap.</>}
+          {recountTrunc && <> Recount rows hit the {RECOUNT_LIMIT}-row cap.</>}
+        </div>
+      )}
 
       <Card>
         {loading && <div style={{ padding: 24, textAlign: 'center', color: 'var(--fg-muted)' }}>Loading reports…</div>}
