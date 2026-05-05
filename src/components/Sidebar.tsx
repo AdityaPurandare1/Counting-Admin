@@ -17,6 +17,7 @@ const NAV_TEAM = [
 const NAV_ADMIN = [
   { to: '/approvals',      label: 'UPC approvals',  manager: true  },
   { to: '/reports',        label: 'Reports',        manager: false },
+  { to: '/inventory',      label: 'Inventory',      manager: false },
   { to: '/catalog',        label: 'Catalog',        manager: false },
   { to: '/venue-settings', label: 'Venue settings', manager: false },
   { to: '/security',       label: 'Security',       manager: false },

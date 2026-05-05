@@ -13,6 +13,7 @@ import { Catalog } from '@/screens/Catalog';
 import { Counts } from '@/screens/Counts';
 import { VenueSettings } from '@/screens/VenueSettings';
 import { Reports } from '@/screens/Reports';
+import { Inventory } from '@/screens/Inventory';
 import { AI } from '@/screens/_placeholders';
 import { refreshAccessList, refreshVenues, resolveAccess } from '@/lib/access';
 import { refreshVenueLookups } from '@/lib/venueMap';
@@ -125,6 +126,7 @@ export default function App() {
             <Route path="/ai"       element={<AI />} />
             <Route path="/approvals" element={(user.role === 'corporate' || user.role === 'manager') ? <Approvals user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/catalog"   element={user.role === 'corporate' ? <Catalog user={user} /> : <Navigate to="/variance" replace />} />
+            <Route path="/inventory" element={user.role === 'corporate' ? <Inventory user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/security"  element={user.role === 'corporate' ? <Security user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/venue-settings" element={user.role === 'corporate' ? <VenueSettings user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="*"         element={<Navigate to="/variance" replace />} />
