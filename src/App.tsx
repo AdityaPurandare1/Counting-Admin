@@ -70,6 +70,68 @@ function saveUser(user: AccessEntry | null) {
   } catch { /* quota / private mode */ }
 }
 
+/* Phase 3 helper: heuristic for "this SIGNED_IN is from clicking an invite
+ * link" vs a normal repeat sign-in. created_at and last_sign_in_at land
+ * within seconds of each other on the very first session and diverge
+ * meaningfully on every later one. 5-minute slop covers clock skew + the
+ * window between user-creation and the user actually clicking the email.
+ * False if either timestamp is missing — better to silently proceed with
+ * a normal SIGNED_IN than spuriously prompt an existing user. */
+function _isFirstLoginSession(session: { user?: { created_at?: string; last_sign_in_at?: string } } | null): boolean {
+  if (!session || !session.user) return false;
+  const createdAt    = session.user.created_at;
+  const lastSignInAt = session.user.last_sign_in_at;
+  if (!createdAt || !lastSignInAt) return false;
+  const created = new Date(createdAt).getTime();
+  const last    = new Date(lastSignInAt).getTime();
+  if (!Number.isFinite(created) || !Number.isFinite(last)) return false;
+  return Math.abs(last - created) < 5 * 60 * 1000;
+}
+
+/* Phase 3 helper: shared password-set prompt for invite + reset flows.
+ * Mirrors the phone app's handlePasswordRecoveryFlow. window.prompt is
+ * intentionally minimal — a fancier modal can come later. On cancel /
+ * too-short / updateUser failure we sign the temp session OUT so the
+ * email link stays re-usable (the user can just click it again). */
+async function runPasswordRecoveryFlow(
+  setUser: (u: AccessEntry | null) => void,
+  nav: (path: string) => void,
+): Promise<void> {
+  const newPassword = window.prompt('Welcome — set a password to finish signing in. Minimum 8 characters.');
+  if (!newPassword || newPassword.length < 8) {
+    alert('Password not set — signing out. Re-open your email link to try again.');
+    await supabase.auth.signOut().catch(() => {});
+    return;
+  }
+  const { error: updateErr } = await supabase.auth.updateUser({ password: newPassword });
+  if (updateErr) {
+    alert('Couldn\'t set password: ' + (updateErr.message || 'unknown') + '. Signing out — try the link again.');
+    await supabase.auth.signOut().catch(() => {});
+    return;
+  }
+  // Hydrate from the live session: app_users lookup gives role + venues.
+  await refreshAccessList();
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.user?.email) {
+    alert('Password set but session lookup failed — please sign in again.');
+    await supabase.auth.signOut().catch(() => {});
+    return;
+  }
+  const profile = resolveAccess(session.user.email);
+  if (!profile) {
+    alert('Password set but no app profile found. Ask another admin to assign your role.');
+    await supabase.auth.signOut().catch(() => {});
+    return;
+  }
+  if (profile.role === 'counter') {
+    alert('Password set, but the desktop app is for managers and admins only. Use the phone app instead.');
+    await supabase.auth.signOut().catch(() => {});
+    return;
+  }
+  setUser(profile);
+  nav('/variance');
+}
+
 export default function App() {
   const [user, setUser] = useState<AccessEntry | null>(() => loadUser());
   const nav = useNavigate();
@@ -102,16 +164,33 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Phase 3 (Supabase Auth): if the auth session disappears server-side
-  // (admin disabled the user, or the refresh window lapsed past 30 days),
-  // SIGNED_OUT fires and we yank the user back to the login screen
-  // instead of letting them keep using stale UI. Legacy ACCESS_LIST users
-  // never had a Supabase session, so this is a no-op for them.
+  // Phase 3 (Supabase Auth) auth-state subscription. Three events to handle:
+  //   - SIGNED_OUT: session disappeared server-side (admin disabled the
+  //     user, or refresh window past 30 days). Yank to login.
+  //   - PASSWORD_RECOVERY: user landed via a reset-password email link.
+  //     Prompt them to set a new password, then route through the post-
+  //     login profile lookup.
+  //   - SIGNED_IN: fires on every login including the FIRST one after
+  //     clicking an invite email. We detect first-login (created_at ≈
+  //     last_sign_in_at within 5 min) and treat it the same as
+  //     PASSWORD_RECOVERY — the invited user has no usable password yet
+  //     and must set one before their session expires.
+  // Legacy ACCESS_LIST users never had a Supabase session at all, so
+  // none of these fire for them.
   useEffect(() => {
-    const { data: sub } = supabase.auth.onAuthStateChange((event) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === 'SIGNED_OUT') {
         setUser(null);
         nav('/');
+        return;
+      }
+      if (event === 'PASSWORD_RECOVERY') {
+        void runPasswordRecoveryFlow(setUser, nav);
+        return;
+      }
+      if (event === 'SIGNED_IN' && session && _isFirstLoginSession(session)) {
+        void runPasswordRecoveryFlow(setUser, nav);
+        return;
       }
     });
     return () => { sub.subscription.unsubscribe(); };

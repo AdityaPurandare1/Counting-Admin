@@ -78,6 +78,23 @@ export function findAvtHeaderColumns(rows: string[][]): {
   return null;
 }
 
+/** Encode a single value for CSV output: handles RFC-4180 quoting AND
+ *  formula-injection protection. Cells starting with =, +, -, @, tab, or
+ *  carriage return can execute as formulas when the CSV is opened in
+ *  Excel/Google Sheets — we prefix those with a single quote so the
+ *  spreadsheet treats them as text. Then standard quote-escape if the
+ *  cell contains any character that needs quoting. */
+export function csvCell(value: unknown): string {
+  let s = String(value ?? '');
+  if (s.length > 0 && /^[=+\-@\t\r]/.test(s)) {
+    s = "'" + s;
+  }
+  if (/[",\r\n]/.test(s)) {
+    s = '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
+}
+
 /** Parse a single cell as a number, returning null for empty/non-numeric. */
 export function numOrNull(v: unknown): number | null {
   if (v === undefined || v === null) return null;

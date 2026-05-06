@@ -6,6 +6,7 @@ import { Btn, Card, Eyebrow, Pill, Segment } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
 import { parseBevagerWorkbook, matchBevagerRows } from '@/lib/bevagerImport';
 import type { MatchResult } from '@/lib/bevagerImport';
+import { csvCell } from '@/lib/csv';
 
 /* ───────────────────────────────────────────────────────────────────────
    Catalog screen (desktop v0.13)
@@ -211,7 +212,7 @@ export function Catalog({ user }: Props) {
     const lines = ['name,cu,category,quantity'];
     for (const r of importPreview.unmatched) {
       const row = [r.bevager.name, r.bevager.cu, r.bevager.category, String(r.bevager.quantity)]
-        .map(c => /[",\n]/.test(c) ? '"' + c.replace(/"/g, '""') + '"' : c).join(',');
+        .map(csvCell).join(',');
       lines.push(row);
     }
     const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });

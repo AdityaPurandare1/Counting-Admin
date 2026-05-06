@@ -128,8 +128,11 @@ function saveCache(list: AccessEntry[]) {
 }
 
 /** Pull the live app_users table and refresh ACCESS_LIST + the localStorage
- *  cache. Silently falls back to the existing list on error, so an offline
- *  page still boots with whatever was cached last time. */
+ *  cache. On a fetch error we keep the existing list (transient failure
+ *  shouldn't accidentally lock everyone out). On an EMPTY successful
+ *  result we DO replace — admin clearing the active list is the canonical
+ *  "lock everyone out" path and must propagate, not silently fall back to
+ *  the cached/baseline users. Same posture as the phone app. */
 export async function refreshAccessList(): Promise<AccessEntry[]> {
   try {
     const { data, error } = await supabase
@@ -140,10 +143,10 @@ export async function refreshAccessList(): Promise<AccessEntry[]> {
       .order('email');
     if (error || !data) return ACCESS_LIST;
     const mapped = data.map(r => rowToEntry(r as AppUserRow));
-    if (mapped.length > 0) {
-      ACCESS_LIST = mapped;
-      saveCache(mapped);
-    }
+    // Always apply the result — including [] — so a re-opened tab honors
+    // the revoked list even before Supabase responds again.
+    ACCESS_LIST = mapped;
+    saveCache(mapped);
     return ACCESS_LIST;
   } catch { return ACCESS_LIST; }
 }
@@ -151,6 +154,22 @@ export async function refreshAccessList(): Promise<AccessEntry[]> {
 export function resolveAccess(email: string): AccessEntry | null {
   const e = email.trim().toLowerCase();
   return ACCESS_LIST.find(a => a.email.toLowerCase() === e) ?? null;
+}
+
+/** Legacy (no-password) sign-in resolver — restricted to the HARDCODED
+ *  BASELINE only, NOT the runtime-loaded ACCESS_LIST. Rationale:
+ *    - During the auth migration we keep a no-password fallback so the
+ *      original team can still get in if Supabase Auth has an issue.
+ *    - But ANY user added via the Security UI (which writes to app_users)
+ *      should be forced to go through Supabase Auth — otherwise admins
+ *      could grant new accounts that bypass the password requirement
+ *      just by adding an email through the Security CRUD.
+ *    - The BASELINE is the closed set of original break-glass admins
+ *      from when the app shipped. Once Phase 5 is complete, delete this
+ *      function and the BASELINE constant entirely. */
+export function resolveLegacyBaseline(email: string): AccessEntry | null {
+  const e = email.trim().toLowerCase();
+  return BASELINE.find(a => a.email.toLowerCase() === e) ?? null;
 }
 
 /** Async variant — refreshes from Supabase first, then resolves. Falls back

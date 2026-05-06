@@ -11,7 +11,27 @@ export interface BevagerRow {
   quantity: number;         // on-hand count
 }
 
+// Hard cap on workbook size. The xlsx library has a known ReDoS CVE
+// (GHSA-5pgg-2g8v-p4x9) that a crafted file can trigger — bounding the
+// input size limits the worst-case CPU burn even if a malicious file
+// gets uploaded. Real Bevager exports are typically <2 MB; 10 MB is
+// generous headroom while still well below "spike the tab for minutes."
+const MAX_WORKBOOK_BYTES = 10 * 1024 * 1024;
+
+// SECURITY NOTE (deferred):
+//   xlsx@0.18.5 has two open advisories (prototype pollution + ReDoS,
+//   no patch available). We accept the residual risk for now because:
+//     - Catalog import is corporate-role-only via the Security gate.
+//     - Files come from a trusted SaaS (Bevager Director) export.
+//     - Our downstream usage doesn't iterate parsed object keys with
+//       for-in (which is the common vehicle for prototype-pollution
+//       exploitation) — we read explicit named columns only.
+//   Follow-up: replace with `exceljs` (active maintenance, no critical
+//   CVEs, similar bundle weight). Tracked separately.
 export async function parseBevagerWorkbook(file: File): Promise<BevagerRow[]> {
+  if (file.size > MAX_WORKBOOK_BYTES) {
+    throw new Error(`Workbook is ${Math.round(file.size / 1024 / 1024)} MB — limit is ${MAX_WORKBOOK_BYTES / 1024 / 1024} MB.`);
+  }
   // Lazy-load xlsx so the main bundle stays lean for counters / managers who
   // never open the Catalog import path.
   const XLSX = await import('xlsx');

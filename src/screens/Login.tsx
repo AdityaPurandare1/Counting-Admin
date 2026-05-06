@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { resolveAccess, refreshAccessList } from '@/lib/access';
+import { resolveAccess, resolveLegacyBaseline, refreshAccessList } from '@/lib/access';
 import type { AccessEntry } from '@/lib/access';
 import { supabase } from '@/lib/supabase';
 
@@ -56,7 +56,13 @@ export function Login({ onSignedIn }: Props) {
     //      path. Once Phase 5 migrates everyone, the legacy branch
     //      goes away.
 
-    const legacyEntry = resolveAccess(normalized);
+    // Legacy fallback is restricted to the HARDCODED BASELINE — runtime
+    // ACCESS_LIST entries (added via the Security UI) MUST go through
+    // Supabase Auth. Without this restriction, an admin could grant
+    // password-less sign-in just by adding an email through the
+    // Security CRUD. Once Phase 5 is complete, delete this whole
+    // legacy branch and resolveLegacyBaseline.
+    const legacyEntry = resolveLegacyBaseline(normalized);
 
     let authedOk = false;
     let authInvalidCredentials = false;

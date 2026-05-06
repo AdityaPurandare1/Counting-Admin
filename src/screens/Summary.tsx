@@ -5,6 +5,7 @@ import type { AccessEntry } from '@/lib/access';
 import type { KountAudit, KountEntry, KountMember } from '@/lib/types';
 import { Pill, Eyebrow, Card, Btn, Num, Avatar, Segment } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
+import { csvCell } from '@/lib/csv';
 
 /* ───────────────────────────────────────────────────────────────────────
    Summary screen (v0.8)
@@ -419,10 +420,7 @@ function SummaryDetail({
         r.counted_by_name || r.counted_by_email, r.timestamp, String(r.is_recount),
       ]),
     ];
-    const csv = rows.map(row => row.map(cell => {
-      const s = String(cell ?? '');
-      return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-    }).join(',')).join('\n');
+    const csv = rows.map(row => row.map(csvCell).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
