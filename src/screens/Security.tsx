@@ -5,6 +5,7 @@ import type { AccessEntry } from '@/lib/access';
 import type { Role } from '@/lib/types';
 import { Card, Btn, Pill, Eyebrow } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
+import { adminUserMgmt, AdminFunctionError, type UpdateProfileArgs } from '@/lib/adminUserMgmt';
 
 /* ───────────────────────────────────────────────────────────────────────
    Security screen (v0.5)
@@ -29,6 +30,7 @@ export function Security({ user }: Props) {
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<AppUserRow | null>(null);
   const [creating, setCreating] = useState(false);
+  const [migrating, setMigrating] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -70,7 +72,8 @@ export function Security({ user }: Props) {
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <Btn variant="secondary" size="sm" onClick={() => void load()}>Refresh</Btn>
-          <Btn variant="primary" size="sm" leading={Ic.plus(14)} onClick={() => setCreating(true)}>Add user</Btn>
+          <Btn variant="ghost" size="sm" onClick={() => setMigrating(true)}>Migrate legacy users</Btn>
+          <Btn variant="primary" size="sm" leading={Ic.plus(14)} onClick={() => setCreating(true)}>Invite user</Btn>
         </div>
       </div>
 
@@ -104,6 +107,7 @@ export function Security({ user }: Props) {
 
       {creating && <UserFormModal mode="create" onClose={() => setCreating(false)} onSaved={() => { setCreating(false); void load(); void refreshAccessList(); }} />}
       {editing  && <UserFormModal mode="edit" initial={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); void load(); void refreshAccessList(); }} />}
+      {migrating && <MigrateLegacyModal onClose={() => setMigrating(false)} />}
     </>
   );
 }
@@ -211,24 +215,67 @@ function UserFormModal({
     const emailTrim = email.trim().toLowerCase();
     if (!emailTrim) { setErr('Email required'); return; }
     setBusy(true);
-    const payload = {
-      email: emailTrim,
-      name: name.trim() || null,
-      role,
-      venue_ids: role === 'corporate' ? [] : venueIds,
-      is_active: isActive,
-    };
-    const q = mode === 'create'
-      ? supabase.from('app_users').insert(payload).select().single()
-      : supabase.from('app_users').update(payload).eq('email', editingRow!.email).select().single();
-    const { error } = await q;
-    setBusy(false);
-    if (error) {
-      // Race fallback: the pre-flight blur check might have missed (user
-      // clicked Save without losing focus, or another admin inserted the
-      // same email between our check and our INSERT). Catch the unique
-      // violation, fetch the conflicting row, and surface the same banner.
-      if (mode === 'create' && /23505|duplicate key|unique constraint/i.test(error.message)) {
+
+    try {
+      if (mode === 'create') {
+        // Phase 3: invite via Edge Function. The user receives an email
+        // with a link to set their own password — admin never picks it.
+        // The function writes both auth.users + app_users in one shot
+        // (with rollback if the second write fails).
+        await adminUserMgmt.invite({
+          email: emailTrim,
+          name: name.trim() || undefined,
+          role,
+          venue_ids: role === 'corporate' ? [] : venueIds,
+        });
+        setBusy(false);
+        onSaved();
+        return;
+      }
+
+      // Edit mode: split the status flip from other field updates so the
+      // auth ban toggles in lockstep with app_users.is_active. Without
+      // this, deactivating someone in the form would only set the flag —
+      // they could still authenticate via Supabase until the next role
+      // recheck on the phone.
+      if (isActive !== editingRow!.is_active) {
+        await (isActive
+          ? adminUserMgmt.enable(editingRow!.email)
+          : adminUserMgmt.disable(editingRow!.email));
+      }
+
+      // Other-field changes go through update_profile. Skip the call
+      // entirely if nothing changed (avoids a network round-trip when
+      // the admin only flipped Status).
+      const profileUpdate: UpdateProfileArgs = { email: editingRow!.email };
+      let hasUpdate = false;
+      const newName = name.trim() || null;
+      if (newName !== (editingRow!.name ?? null)) {
+        profileUpdate.name = newName ?? undefined;
+        hasUpdate = true;
+      }
+      if (role !== editingRow!.role) {
+        profileUpdate.role = role;
+        hasUpdate = true;
+      }
+      const newVenueIds = role === 'corporate' ? [] : venueIds;
+      const oldVenueIds = editingRow!.venue_ids ?? [];
+      if (JSON.stringify(newVenueIds.slice().sort()) !== JSON.stringify(oldVenueIds.slice().sort())) {
+        profileUpdate.venue_ids = newVenueIds;
+        hasUpdate = true;
+      }
+      if (hasUpdate) {
+        await adminUserMgmt.updateProfile(profileUpdate);
+      }
+
+      setBusy(false);
+      onSaved();
+    } catch (e) {
+      setBusy(false);
+      // 409 from invite means user already exists in auth — switch the
+      // form to edit mode against the existing app_users row, mirroring
+      // the prior 23505/duplicate-key handling.
+      if (mode === 'create' && e instanceof AdminFunctionError && e.status === 409) {
         const { data: existing } = await supabase
           .from('app_users')
           .select('*')
@@ -240,20 +287,48 @@ function UserFormModal({
           return;
         }
       }
-      setErr(error.message);
-      return;
+      const msg = e instanceof AdminFunctionError ? e.detail : (e as Error).message;
+      setErr(msg || 'Save failed');
     }
-    onSaved();
   };
 
   const remove = async () => {
     if (!editingRow) return;
-    if (!confirm(`Delete ${editingRow.email}? This can't be undone.`)) return;
+    if (!confirm(`Delete ${editingRow.email}? This can't be undone — they'll lose access immediately.`)) return;
     setBusy(true);
-    const { error } = await supabase.from('app_users').delete().eq('email', editingRow.email);
-    setBusy(false);
-    if (error) { setErr(error.message); return; }
-    onSaved();
+    try {
+      await adminUserMgmt.delete(editingRow.email);
+      setBusy(false);
+      onSaved();
+    } catch (e) {
+      setBusy(false);
+      const msg = e instanceof AdminFunctionError ? e.detail : (e as Error).message;
+      setErr(msg || 'Delete failed');
+    }
+  };
+
+  const resetPassword = async () => {
+    if (!editingRow) return;
+    if (!confirm(`Send a password-reset email to ${editingRow.email}?`)) return;
+    setBusy(true);
+    try {
+      const result = await adminUserMgmt.resetPassword(editingRow.email);
+      setBusy(false);
+      setErr(null);
+      // Surface the action_link so admin can copy + send manually if
+      // email delivery is flaky. The function emails it automatically
+      // either way.
+      const baseMsg = 'Reset email sent to ' + editingRow.email;
+      if (result.action_link) {
+        alert(baseMsg + '.\n\nIf they don\'t receive it, copy and send this link manually:\n\n' + result.action_link);
+      } else {
+        alert(baseMsg);
+      }
+    } catch (e) {
+      setBusy(false);
+      const msg = e instanceof AdminFunctionError ? e.detail : (e as Error).message;
+      setErr(msg || 'Reset failed');
+    }
   };
 
   return (
@@ -341,25 +416,41 @@ function UserFormModal({
           </Field>
         )}
 
-        <Field label="Status">
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-            <input type="checkbox" checked={isActive} onChange={e => setIsActive(e.target.checked)} /> Active
-          </label>
-        </Field>
+        {mode === 'edit' && (
+          <Field label="Status">
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+              <input type="checkbox" checked={isActive} onChange={e => setIsActive(e.target.checked)} /> Active
+            </label>
+            <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 4 }}>
+              Toggling this also bans / un-bans the auth account so existing sessions invalidate within ~1 hour.
+            </div>
+          </Field>
+        )}
 
         {err && <div style={{ color: 'var(--raspberry-300)', fontSize: 12, marginBottom: 10 }}>{err}</div>}
 
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 14 }}>
-          <div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 14, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: 8 }}>
             {mode === 'edit' && (
-              <Btn variant="ghost" size="sm" onClick={remove} disabled={busy} style={{ color: 'var(--raspberry-300)' }}>Delete</Btn>
+              <>
+                <Btn variant="ghost" size="sm" onClick={remove} disabled={busy} style={{ color: 'var(--raspberry-300)' }}>Delete</Btn>
+                <Btn variant="ghost" size="sm" onClick={resetPassword} disabled={busy}>Reset password</Btn>
+              </>
             )}
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <Btn variant="secondary" size="sm" onClick={onClose} disabled={busy}>Cancel</Btn>
-            <Btn variant="primary"   size="sm" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save'}</Btn>
+            <Btn variant="primary"   size="sm" onClick={save} disabled={busy}>
+              {busy ? 'Saving…' : (mode === 'create' ? 'Send invite' : 'Save')}
+            </Btn>
           </div>
         </div>
+
+        {mode === 'create' && (
+          <div style={{ marginTop: 12, padding: 10, fontSize: 11, color: 'var(--fg-muted)', background: 'var(--canvas)', border: '1px solid var(--border)', borderRadius: 6 }}>
+            Send invite emails the user a sign-up link. They pick their own password — admins never see or set it.
+          </div>
+        )}
       </div>
     </div>
   );
@@ -381,6 +472,176 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
         color: 'var(--fg-muted)', marginBottom: 6,
       }}>{label}</label>
       {children}
+    </div>
+  );
+}
+
+/* ───────────────────────────────────────────────────────────────────────
+   Phase 5: bulk-migrate legacy users
+   One-shot tool that walks every active app_users row, finds the ones
+   with no matching auth.users yet, and (after a confirmation step)
+   sends each an invite email so they can set their password.
+   Always runs a dry-run first so admin can confirm the candidate set.
+   ─────────────────────────────────────────────────────────────────── */
+function MigrateLegacyModal({ onClose }: { onClose: () => void }) {
+  type Phase = 'loading' | 'preview' | 'applying' | 'done' | 'error';
+  const [phase, setPhase] = useState<Phase>('loading');
+  const [err, setErr] = useState<string | null>(null);
+
+  // Preview shape (dry_run=true)
+  const [preview, setPreview] = useState<{
+    totalActive: number;
+    alreadyAuthed: number;
+    candidates: Array<{ email: string; name: string | null; role: string }>;
+  } | null>(null);
+
+  // Apply result (dry_run=false)
+  const [applied, setApplied] = useState<{
+    invited: number;
+    failed: number;
+    results: Array<{ email: string; ok: boolean; error?: string }>;
+  } | null>(null);
+
+  // Run the dry-run on mount.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await adminUserMgmt.migrateLegacy({ dryRun: true });
+        if (cancelled) return;
+        setPreview({
+          totalActive: res.total_active ?? 0,
+          alreadyAuthed: res.already_authed ?? 0,
+          candidates: res.would_invite ?? [],
+        });
+        setPhase('preview');
+      } catch (e) {
+        if (cancelled) return;
+        const msg = e instanceof AdminFunctionError ? e.detail : (e as Error).message;
+        setErr(msg || 'Dry-run failed');
+        setPhase('error');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const apply = async () => {
+    setPhase('applying');
+    setErr(null);
+    try {
+      const res = await adminUserMgmt.migrateLegacy({ dryRun: false });
+      setApplied({
+        invited: res.invited ?? 0,
+        failed: res.failed ?? 0,
+        results: res.results ?? [],
+      });
+      setPhase('done');
+    } catch (e) {
+      const msg = e instanceof AdminFunctionError ? e.detail : (e as Error).message;
+      setErr(msg || 'Migration failed');
+      setPhase('error');
+    }
+  };
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(13,10,8,0.45)', zIndex: 60,
+        display: 'grid', placeItems: 'center', padding: 20,
+      }}
+      onClick={onClose}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          width: '100%', maxWidth: 600, maxHeight: '85vh', overflow: 'auto',
+          background: '#FFF', border: '1px solid var(--border)',
+          borderRadius: 12, padding: 22,
+        }}
+      >
+        <Eyebrow>Migrate legacy users</Eyebrow>
+        <h2 style={{ margin: '6px 0 14px', fontSize: 18 }}>Bulk invite to Supabase Auth</h2>
+        <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginBottom: 14 }}>
+          Sends an invite email to every active app_user that doesn't yet have a Supabase Auth account.
+          Each user will receive a "set your password" link. Safe to re-run — already-migrated users are skipped.
+        </div>
+
+        {phase === 'loading' && (
+          <div style={{ padding: '20px 0', color: 'var(--fg-muted)' }}>Scanning app_users vs. auth.users…</div>
+        )}
+
+        {phase === 'preview' && preview && (
+          <>
+            <div style={{ display: 'flex', gap: 12, marginBottom: 14, fontSize: 12 }}>
+              <Pill tone="ink"      size="sm">{preview.totalActive} active</Pill>
+              <Pill tone="positive" size="sm">{preview.alreadyAuthed} already migrated</Pill>
+              <Pill tone="gold"     size="sm">{preview.candidates.length} to invite</Pill>
+            </div>
+            {preview.candidates.length === 0 ? (
+              <div style={{ padding: 12, fontSize: 13, color: 'var(--fg-muted)' }}>
+                Everyone is already on Supabase Auth — nothing to do.
+              </div>
+            ) : (
+              <div style={{
+                maxHeight: 300, overflow: 'auto', border: '1px solid var(--border)',
+                borderRadius: 8, padding: 8, marginBottom: 14, fontSize: 12,
+              }}>
+                {preview.candidates.map(c => (
+                  <div key={c.email} style={{ padding: '4px 6px', display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                    <span style={{ fontFamily: 'JetBrains Mono, monospace' }}>{c.email}</span>
+                    <span style={{ color: 'var(--fg-muted)' }}>{c.name ?? '—'} · {c.role}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {phase === 'applying' && (
+          <div style={{ padding: '20px 0', color: 'var(--fg-muted)' }}>
+            Sending invite emails… this can take ~1s per user.
+          </div>
+        )}
+
+        {phase === 'done' && applied && (
+          <>
+            <div style={{ display: 'flex', gap: 12, marginBottom: 14, fontSize: 12 }}>
+              <Pill tone="positive" size="sm">{applied.invited} invited</Pill>
+              {applied.failed > 0 && <Pill tone="ghost" size="sm">{applied.failed} failed</Pill>}
+            </div>
+            <div style={{
+              maxHeight: 300, overflow: 'auto', border: '1px solid var(--border)',
+              borderRadius: 8, padding: 8, marginBottom: 14, fontSize: 12,
+            }}>
+              {applied.results.map(r => (
+                <div key={r.email} style={{ padding: '4px 6px', display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                  <span style={{ fontFamily: 'JetBrains Mono, monospace' }}>{r.email}</span>
+                  <span style={{ color: r.ok ? 'var(--positive-300)' : 'var(--raspberry-300)' }}>
+                    {r.ok ? 'invited' : (r.error || 'failed')}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {phase === 'error' && (
+          <div style={{ padding: 12, color: 'var(--raspberry-300)', fontSize: 13 }}>
+            {err || 'Unknown error'}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
+          {phase === 'preview' && preview && preview.candidates.length > 0 && (
+            <Btn variant="primary" size="sm" onClick={() => void apply()}>
+              Send {preview.candidates.length} invite{preview.candidates.length === 1 ? '' : 's'}
+            </Btn>
+          )}
+          <Btn variant="secondary" size="sm" onClick={onClose}>
+            {phase === 'done' || phase === 'error' || (phase === 'preview' && preview?.candidates.length === 0) ? 'Close' : 'Cancel'}
+          </Btn>
+        </div>
+      </div>
     </div>
   );
 }

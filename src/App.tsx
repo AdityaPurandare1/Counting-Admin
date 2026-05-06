@@ -21,6 +21,7 @@ import type { AccessEntry } from '@/lib/access';
 import { NotificationProvider } from '@/lib/notifications';
 import { NotificationBell, NotificationToaster } from '@/components/NotificationUI';
 import { StaleAuditsPrompt } from '@/components/StaleAuditsPrompt';
+import { supabase } from '@/lib/supabase';
 
 const STORAGE_KEY  = 'kount_admin_user_v1';
 const SESSION_MS   = 8 * 60 * 60 * 1000; // 8 hours
@@ -101,6 +102,21 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Phase 3 (Supabase Auth): if the auth session disappears server-side
+  // (admin disabled the user, or the refresh window lapsed past 30 days),
+  // SIGNED_OUT fires and we yank the user back to the login screen
+  // instead of letting them keep using stale UI. Legacy ACCESS_LIST users
+  // never had a Supabase session, so this is a no-op for them.
+  useEffect(() => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_OUT') {
+        setUser(null);
+        nav('/');
+      }
+    });
+    return () => { sub.subscription.unsubscribe(); };
+  }, [nav]);
+
   if (!user) {
     return <Login onSignedIn={(u) => { setUser(u); nav('/variance'); }} />;
   }
@@ -111,7 +127,17 @@ export default function App() {
         <Sidebar
           userName={user.name}
           userRole={user.role}
-          onSignOut={() => { setUser(null); nav('/'); }}
+          onSignOut={() => {
+            // Invalidate the Supabase Auth session too. signOut() fires
+            // SIGNED_OUT which our auth-state effect picks up and clears
+            // local state; we still call setUser/nav synchronously so
+            // the screen flips immediately even if the network call is
+            // slow. Legacy ACCESS_LIST users have no session, so signOut
+            // is a no-op for them.
+            void supabase.auth.signOut().catch(() => {});
+            setUser(null);
+            nav('/');
+          }}
         />
         <main className="main">
           <Routes>
