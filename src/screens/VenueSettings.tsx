@@ -212,6 +212,43 @@ function VenueFormModal({
   const [busy,          setBusy]          = useState(false);
   const [err,           setErr]           = useState<string | null>(null);
 
+  // v0.30: list and prune custom zones (kount_venue_zones rows) added
+  // during audits at this venue. The default-zones textarea above only
+  // edits venues.default_zones — custom zones live in a separate table
+  // and would otherwise pile up forever with no admin entry point to
+  // remove them outside an active /counts session.
+  const [customZones, setCustomZones] = useState<{ id: string; zone_name: string }[]>([]);
+  const [zonesLoading, setZonesLoading] = useState(false);
+
+  const loadCustomZones = useCallback(async () => {
+    if (mode !== 'edit' || !initial) return;
+    setZonesLoading(true);
+    const { data, error } = await supabase
+      .from('kount_venue_zones')
+      .select('id, zone_name')
+      .eq('venue_id', initial.id)
+      .order('zone_name');
+    setZonesLoading(false);
+    if (error) { console.error('[venue-settings] zones load', error); return; }
+    setCustomZones((data ?? []) as { id: string; zone_name: string }[]);
+  }, [mode, initial]);
+
+  useEffect(() => { void loadCustomZones(); }, [loadCustomZones]);
+
+  const removeCustomZone = async (row: { id: string; zone_name: string }) => {
+    if (!confirm(
+      `Remove custom zone "${row.zone_name}" from this venue?\n\n` +
+      'Existing count entries that reference this zone stay on the server but ' +
+      'the zone disappears from the tab list on phones until someone re-adds it.'
+    )) return;
+    const { error } = await supabase
+      .from('kount_venue_zones')
+      .delete()
+      .eq('id', row.id);
+    if (error) { alert('Remove zone failed: ' + error.message); return; }
+    void loadCustomZones();
+  };
+
   const parseList = (s: string) =>
     s.split('\n').map(line => line.trim()).filter(Boolean);
 
@@ -342,6 +379,43 @@ function VenueFormModal({
             These are the zones the phone seeds the zone-tab list with on this venue. Counters can still add custom zones at audit time.
           </div>
         </Field>
+
+        {mode === 'edit' && (
+          <Field label="Custom zones (added during audits)">
+            {zonesLoading ? (
+              <div style={{ fontSize: 12, color: 'var(--fg-muted)', padding: '6px 0' }}>Loading…</div>
+            ) : customZones.length === 0 ? (
+              <div style={{ fontSize: 12, color: 'var(--fg-muted)', padding: '6px 0' }}>
+                No custom zones for this venue. Counters can add zones from the phone during audits.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {customZones.map(row => (
+                  <div
+                    key={row.id}
+                    style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                      gap: 10, padding: '8px 10px',
+                      background: 'var(--off-200)', borderRadius: 6,
+                      border: '1px solid var(--border)',
+                    }}
+                  >
+                    <span style={{ fontSize: 13, fontWeight: 500 }}>{row.zone_name}</span>
+                    <Btn
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => void removeCustomZone(row)}
+                      style={{ color: 'var(--raspberry-300)' }}
+                    >Remove</Btn>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 6 }}>
+              Removing a custom zone deletes the row from kount_venue_zones — count entries that still reference it stay on the server but disappear from the phone's zone tabs until someone re-adds the zone with the exact same name.
+            </div>
+          </Field>
+        )}
 
         <Field label="Store aliases (Craftable AVT labels, one per line)">
           <textarea value={storeAliases} onChange={e => setStoreAliases(e.target.value)}
