@@ -218,17 +218,28 @@ function UserFormModal({
 
     try {
       if (mode === 'create') {
-        // Phase 3: invite via Edge Function. The user receives an email
-        // with a link to set their own password — admin never picks it.
-        // The function writes both auth.users + app_users in one shot
-        // (with rollback if the second write fails).
-        await adminUserMgmt.invite({
+        // Phase 3: invite via Edge Function. Three possible outcomes:
+        //   - new auth user created + app_users row inserted, invite
+        //     email sent (normal path)
+        //   - email already had an auth.users row from a sibling app on
+        //     this Supabase project; we link them to app_users without
+        //     sending an email (linked_existing_user: true)
+        //   - email is already in BOTH auth.users AND app_users → 409,
+        //     handled by the catch block below as a true duplicate.
+        const result = await adminUserMgmt.invite({
           email: emailTrim,
           name: name.trim() || undefined,
           role,
           venue_ids: role === 'corporate' ? [] : venueIds,
         });
         setBusy(false);
+        if (result.linked_existing_user) {
+          window.alert(
+            emailTrim + ' already had an account on this Supabase project ' +
+            '(probably from another app). They\'ve been added to Counting-App ' +
+            'and can sign in with their existing password — no invite email was sent.'
+          );
+        }
         onSaved();
         return;
       }

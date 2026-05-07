@@ -39,6 +39,11 @@ interface OkResponse {
   updated_fields?: string[];
   action_link?: string | null;
   note?: string;
+  // True when invite resolved against an existing auth.users row (likely
+  // from a sibling app on the same Supabase project) — we just added the
+  // user to app_users; no invite email was sent because they already
+  // have credentials.
+  linked_existing_user?: boolean;
 
   // migrate_legacy fields
   dry_run?: boolean;
