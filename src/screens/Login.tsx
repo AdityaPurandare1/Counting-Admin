@@ -156,6 +156,34 @@ export function Login({ onSignedIn }: Props) {
     setInfo('If that email is registered, a reset link is on its way.');
   }
 
+  async function magicLink() {
+    const normalized = email.trim().toLowerCase();
+    if (!EMAIL_RX.test(normalized)) {
+      setErr('Type your email above first, then click Email me a sign-in link.');
+      return;
+    }
+    setErr(null);
+    setBusy(true);
+    try {
+      // shouldCreateUser:false because signups are disabled — only existing
+      // app_users emails should work. Supabase still returns a generic
+      // success either way (no account-existence leak), but this avoids
+      // accidentally creating a stray auth.users row if Supabase's signup
+      // policy ever changes.
+      await supabase.auth.signInWithOtp({
+        email: normalized,
+        options: {
+          shouldCreateUser: false,
+          emailRedirectTo: window.location.origin,
+        },
+      });
+    } catch (e) {
+      console.warn('[admin-auth] signInWithOtp threw:', e);
+    }
+    setBusy(false);
+    setInfo('If that email is registered, a sign-in link is on its way. Click it from the same browser to sign in.');
+  }
+
   return (
     <div className="login-wrap">
       <form className="login-card" onSubmit={submit}>
@@ -188,6 +216,20 @@ export function Login({ onSignedIn }: Props) {
 
         <button type="submit" disabled={busy || Date.now() < lockedUntil}>
           {busy ? 'Checking…' : 'Sign in'}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => void magicLink()}
+          disabled={busy}
+          style={{
+            marginTop: 10, padding: '8px 12px',
+            background: 'transparent', color: 'var(--gold-300)',
+            border: '1px solid var(--gold-300)', borderRadius: 6,
+            cursor: busy ? 'wait' : 'pointer', fontSize: 13, fontWeight: 500,
+          }}
+        >
+          Email me a sign-in link instead
         </button>
 
         <button
