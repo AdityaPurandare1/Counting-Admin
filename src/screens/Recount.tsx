@@ -95,6 +95,10 @@ export function Recount({ user }: Props) {
 function RecountDetail({ auditId, auditLabel, user }: { auditId: string; auditLabel: string; user: AccessEntry }) {
   const [rows, setRows] = useState<KountRecount[]>([]);
   const [loading, setLoading] = useState(true);
+  // v0.30: per-zone recount filter. With migration 0019, the same item
+  // can have multiple recount rows (one per zone). Admin can filter to a
+  // single zone to focus on a specific bartender's section.
+  const [zoneFilter, setZoneFilter] = useState<string>('all');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -127,26 +131,44 @@ function RecountDetail({ auditId, auditLabel, user }: { auditId: string; auditLa
     if (error) alert('Dismiss failed: ' + error.message);
   };
 
+  // Distinct zones across all recount rows, alpha-sorted with "—" last.
+  const zonesPresent = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of rows) set.add(r.zone || '—');
+    return [...set].sort((a, b) => {
+      if (a === '—') return 1;
+      if (b === '—') return -1;
+      return a.localeCompare(b);
+    });
+  }, [rows]);
+
+  // Filter applies BEFORE bucketing by severity so the severity tables
+  // only show rows in the chosen zone.
+  const filteredRows = useMemo(() => {
+    if (zoneFilter === 'all') return rows;
+    return rows.filter(r => (r.zone || '—') === zoneFilter);
+  }, [rows, zoneFilter]);
+
   const grouped = useMemo(() => {
     const map = new Map<Severity, KountRecount[]>();
     for (const sev of SEVERITY_ORDER) map.set(sev, []);
-    for (const r of rows) {
+    for (const r of filteredRows) {
       const bucket = map.get(r.severity as Severity) ?? map.get('LOW')!;
       bucket.push(r);
     }
     return map;
-  }, [rows]);
+  }, [filteredRows]);
 
   const stats = useMemo(() => {
     let pending = 0, done = 0, dismissed = 0, totalVariance = 0;
-    for (const r of rows) {
+    for (const r of filteredRows) {
       if (r.status === 'pending')   pending++;
       if (r.status === 'done')      done++;
       if (r.status === 'dismissed') dismissed++;
       totalVariance += Number(r.variance_value ?? 0);
     }
     return { pending, done, dismissed, totalVariance };
-  }, [rows]);
+  }, [filteredRows]);
 
   if (loading) return <Card padding={24}><div style={{ color: 'var(--fg-muted)' }}>Loading recount list…</div></Card>;
   if (rows.length === 0) return (
@@ -163,12 +185,38 @@ function RecountDetail({ auditId, auditLabel, user }: { auditId: string; auditLa
       {/* Summary strip */}
       <Card padding={14}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
-          <StatCell label="Flagged total" value={<Num value={rows.length} />} />
+          <StatCell label="Flagged total" value={<Num value={filteredRows.length} />} />
           <StatCell label="Pending"       value={<Num value={stats.pending} color={stats.pending ? 'var(--copper-300)' : undefined} />} />
           <StatCell label="Recounted"     value={<Num value={stats.done} color="var(--teal-300)" />} />
           <StatCell label="Net variance"  value={<Money value={stats.totalVariance} showSign />} />
         </div>
       </Card>
+
+      {/* Zone filter (v0.30, ties to migration 0019 / phone v1.41).
+          Same item across multiple zones now produces multiple recount
+          rows; admin can narrow to one zone to follow a specific
+          bartender's section. "All zones" stays the default. */}
+      {zonesPresent.length > 1 && (
+        <Card padding={12}>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+            <Eyebrow>Zone</Eyebrow>
+            <select
+              value={zoneFilter}
+              onChange={e => setZoneFilter(e.target.value)}
+              style={{ padding: '6px 10px', border: '1px solid var(--border-strong)', borderRadius: 6, fontFamily: 'inherit', fontSize: 13, background: '#FFF' }}
+            >
+              <option value="all">All zones ({rows.length})</option>
+              {zonesPresent.map(z => {
+                const count = rows.filter(r => (r.zone || '—') === z).length;
+                return <option key={z} value={z}>{z} ({count})</option>;
+              })}
+            </select>
+            {zoneFilter !== 'all' && (
+              <Btn variant="ghost" size="sm" onClick={() => setZoneFilter('all')}>Clear</Btn>
+            )}
+          </div>
+        </Card>
+      )}
 
       {SEVERITY_ORDER.map(sev => {
         const bucket = grouped.get(sev) ?? [];
@@ -183,6 +231,7 @@ function RecountDetail({ auditId, auditLabel, user }: { auditId: string; auditLa
               <thead>
                 <tr style={{ textAlign: 'left', color: 'var(--fg-muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1 }}>
                   <th style={{ padding: '4px 4px' }}>Item</th>
+                  <th style={{ padding: '4px 4px' }}>Zone</th>
                   <th style={{ padding: '4px 4px' }}>Count 1</th>
                   <th style={{ padding: '4px 4px' }}>Count 2</th>
                   <th style={{ padding: '4px 4px' }}>Variance</th>
@@ -194,6 +243,7 @@ function RecountDetail({ auditId, auditLabel, user }: { auditId: string; auditLa
                 {bucket.map(r => (
                   <tr key={r.id} style={{ borderBottom: '1px solid var(--border)' }}>
                     <td style={{ padding: '8px 4px', fontWeight: 500 }}>{r.item_name}</td>
+                    <td style={{ padding: '8px 4px', fontSize: 12, color: 'var(--fg-muted)' }}>{r.zone || '—'}</td>
                     <td style={{ padding: '8px 4px', fontFamily: 'JetBrains Mono, monospace' }}>
                       {r.count1_qty !== null ? Number(r.count1_qty).toFixed(1) : '—'}
                     </td>
