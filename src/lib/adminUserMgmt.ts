@@ -44,6 +44,13 @@ interface OkResponse {
   // user to app_users; no invite email was sent because they already
   // have credentials.
   linked_existing_user?: boolean;
+  // Sibling apps the user is also tagged with via auth.users.user_metadata.apps.
+  // Surfaced on link-existing AND on smart-delete so admin can see the
+  // cross-app context.
+  other_apps?: string[];
+  // True on delete when the auth.users account was preserved because the
+  // user is multi-app — we only removed app_users + stripped the kount tag.
+  kept_auth_account?: boolean;
 
   // migrate_legacy fields
   dry_run?: boolean;

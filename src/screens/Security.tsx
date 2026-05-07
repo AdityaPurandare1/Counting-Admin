@@ -234,10 +234,14 @@ function UserFormModal({
         });
         setBusy(false);
         if (result.linked_existing_user) {
+          const otherApps = (result.other_apps || []).filter(Boolean);
+          const otherAppsLine = otherApps.length > 0
+            ? '\n\nThis user is also active in: ' + otherApps.join(', ') + '.'
+            : '';
           window.alert(
-            emailTrim + ' already had an account on this Supabase project ' +
-            '(probably from another app). They\'ve been added to Counting-App ' +
-            'and can sign in with their existing password — no invite email was sent.'
+            emailTrim + ' already had an account on this Supabase project. ' +
+            'They\'ve been added to Counting-App and can sign in with their ' +
+            'existing password — no invite email was sent.' + otherAppsLine
           );
         }
         onSaved();
@@ -305,11 +309,19 @@ function UserFormModal({
 
   const remove = async () => {
     if (!editingRow) return;
-    if (!confirm(`Delete ${editingRow.email}? This can't be undone — they'll lose access immediately.`)) return;
+    if (!confirm(`Delete ${editingRow.email}?\n\nIf they're only in Counting-App, their auth account will be removed too. If they're also active in another app on this Supabase project (e.g. Keva), only their Counting-App access is removed.`)) return;
     setBusy(true);
     try {
-      await adminUserMgmt.delete(editingRow.email);
+      const result = await adminUserMgmt.delete(editingRow.email);
       setBusy(false);
+      if (result.kept_auth_account) {
+        const otherApps = (result.other_apps || []).filter(Boolean);
+        const apps = otherApps.length > 0 ? otherApps.join(', ') : 'another app';
+        window.alert(
+          editingRow.email + ' was removed from Counting-App. Their auth account was ' +
+          'preserved because they\'re still active in: ' + apps + '.'
+        );
+      }
       onSaved();
     } catch (e) {
       setBusy(false);
