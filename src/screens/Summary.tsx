@@ -286,10 +286,13 @@ function SummaryDetail({
   const [reactBusy, setReactBusy] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
 
-  // Drill-down is admin-only because some buckets (counters, issues) reveal
-  // submitter identities that managers/counters wouldn't normally see in the
-  // summary read-only view. Same gate the Reactivate / Delete actions use.
-  const canDrill      = user.role === 'corporate';
+  // Drill-down: corporate + manager. Counters stay read-only — they don't
+  // need (and shouldn't see) per-counter attribution buckets. Earlier this
+  // was corporate-only out of identity-privacy caution, but managers run
+  // the audits and need to filter live to see how each zone / counter is
+  // progressing — without drill-down there's no real filter available
+  // and the audit-state cards become decorative.
+  const canDrill      = user.role === 'corporate' || user.role === 'manager';
   const canReactivate = user.role === 'corporate';
   const canDelete     = user.role === 'corporate';
 
