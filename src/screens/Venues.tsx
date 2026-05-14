@@ -70,9 +70,21 @@ export function Venues({ user }: Props) {
   }, []);
 
   const loadItemCount = useCallback(async () => {
+    // Post Path B: counting targets master_items (in-scope categories).
+    // Counting only the bar/bev/liquor/wine masters gives a number that's
+    // meaningful to the venue card ("8.2k items the phone will search").
     const { count } = await supabase
-      .from('purchase_items')
-      .select('id', { head: true, count: 'exact' }) as unknown as { count: number };
+      .from('master_items')
+      .select('id', { head: true, count: 'exact' })
+      .eq('is_active', true)
+      .in('category', [
+        'Wine Cost', 'wine', 'Wine',
+        'Liquor Cost', 'liquor', 'Liquor',
+        'Beer Cost', 'beer',
+        'N/A Beverage Cost', 'non_alcoholic_beverage',
+        'Bar Consumables', 'bar_consumable',
+        'Bar Supplies',
+      ]) as unknown as { count: number };
     setItemCount(typeof count === 'number' ? count : null);
   }, []);
 

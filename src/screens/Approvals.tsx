@@ -13,8 +13,8 @@ import { Ic } from '@/components/Icons';
      2. New items  — pending kount_pending_items rows  (RPC approve_pending_item)
 
    The phone app submits to either queue. Admin / manager approves or
-   rejects; the RPCs do the side effects (purchase_items.upc copy on UPC
-   approve, mint a new purchase_items row on item approve) server-side.
+   rejects; the RPCs do the side effects (insert master_item_upcs on UPC
+   approve, mint a new master_items row on item approve) server-side.
    ─────────────────────────────────────────────────────────────────────── */
 
 interface Props { user: AccessEntry }
@@ -149,47 +149,76 @@ function UpcQueue({ user, onCount }: { user: AccessEntry; onCount: (n: number) =
   };
 
   /* Escape hatch: bypass the RPC and directly commit the mapping. Useful
-     when approve_upc_mapping errors out (missing RPC, column drift, RLS
-     on purchase_items update, etc.). Only corporate can use it. */
+     when approve_upc_mapping errors out (missing RPC, column drift, etc.).
+     Only corporate can use it.
+
+     Post Path B: writes to master_item_upcs instead of touching
+     purchase_items.upc. The mapping must have a master_item_id (set
+     either by the phone at submit time or by an admin in the regular
+     approve path). */
   const forceApprove = async (row: UpcMapping) => {
     if (user.role !== 'corporate') return;
-
-    // Look up the catalog's current UPC so the confirm can warn about
-    // overwriting an existing (possibly correct) UPC. If we can't read
-    // it, fall back to the unspecific confirm rather than blocking the
-    // escape hatch entirely.
-    let existingUpc: string | null = null;
-    let existingNorm = '';
-    const newNorm = (row.barcode_raw || '').replace(/\D/g, '').replace(/^0+/, '');
-    if (row.purchase_item_id) {
-      const { data: existing } = await supabase
-        .from('purchase_items')
-        .select('upc')
-        .eq('id', row.purchase_item_id)
-        .maybeSingle();
-      existingUpc = (existing && (existing as { upc: string | null }).upc) || null;
-      existingNorm = existingUpc ? existingUpc.replace(/\D/g, '').replace(/^0+/, '') : '';
+    if (!row.master_item_id) {
+      alert(
+        `Force-approve requires a master_item_id on the mapping row.\n\n` +
+        `This row has none — use the regular Approve button, which will let ` +
+        `the RPC do name-fallback resolution.`
+      );
+      return;
     }
 
-    const overwriteWarning = (existingNorm && existingNorm !== newNorm)
-      ? `\n\n⚠️ ${row.item_name} already has UPC ${existingUpc}. Force-approve will REPLACE it.\nIf the existing UPC is the real one, future scans of the real bottle will stop matching.`
+    const newNorm = (row.barcode_raw || '').replace(/\D/g, '').replace(/^0+/, '');
+    if (!newNorm) {
+      alert('Barcode has no digits — cannot link.');
+      return;
+    }
+
+    // Check master_item_upcs for an existing owner of this UPC. If
+    // another master already owns it, the unique index would block our
+    // insert — surface the conflict to the admin first.
+    let existingOwnerName: string | null = null;
+    {
+      const { data: existing } = await supabase
+        .from('master_item_upcs')
+        .select('master_item_id,master_items(name)')
+        .eq('upc_normalized', newNorm)
+        .maybeSingle();
+      if (existing) {
+        const o = existing as unknown as { master_item_id: string; master_items: { name: string } | null };
+        if (o.master_item_id && o.master_item_id !== row.master_item_id) {
+          existingOwnerName = (o.master_items && o.master_items.name) || o.master_item_id;
+        }
+      }
+    }
+
+    const overwriteWarning = existingOwnerName
+      ? `\n\n⚠️ UPC ${row.barcode_raw} is currently linked to "${existingOwnerName}". Force-approve will MOVE the link to "${row.item_name}".\nCounters scanning the original bottle will start hitting the new item.`
       : '';
     if (!confirm(
       `Force-approve ${row.barcode_raw} → ${row.item_name}?${overwriteWarning}\n\n` +
-      `Bypasses approve_upc_mapping RPC. Updates purchase_items.upc + marks upc_mappings row approved directly.`
+      `Bypasses approve_upc_mapping RPC. Writes master_item_upcs + marks upc_mappings row approved directly.`
     )) return;
 
     setBusyId(row.id);
     setLastError(null);
     try {
-      // Skip the catalog write if the existing UPC already matches — no-op.
-      if (row.purchase_item_id && existingNorm !== newNorm) {
-        const { error: piErr } = await supabase
-          .from('purchase_items')
-          .update({ upc: row.barcode_raw })
-          .eq('id', row.purchase_item_id);
-        if (piErr) throw new Error('purchase_items update: ' + piErr.message);
+      // If another master owns the UPC, delete the existing row first to
+      // avoid the unique-index conflict on our insert.
+      if (existingOwnerName) {
+        await supabase.from('master_item_upcs').delete().eq('upc_normalized', newNorm);
       }
+      const { error: miuErr } = await supabase
+        .from('master_item_upcs')
+        .insert({
+          master_item_id: row.master_item_id,
+          upc_raw:        row.barcode_raw,
+          upc_normalized: newNorm,
+          source:         'admin_force_approve',
+          notes:          'Force-approved by ' + user.email + ' via Approvals',
+          added_by_email: user.email,
+        });
+      if (miuErr) throw new Error('master_item_upcs insert: ' + miuErr.message);
+
       const { error: mapErr } = await supabase
         .from('upc_mappings')
         .update({
@@ -353,29 +382,64 @@ function ItemQueue({ user, onCount }: { user: AccessEntry; onCount: (n: number) 
     }
   };
 
-  /* Force-approve fallback: same shape as the UPC version. Bypasses the RPC
-     and writes purchase_items + kount_pending_items directly. Use if the
-     approve_pending_item function isn't deployed yet, or RLS gets weird. */
+  /* Force-approve fallback: bypasses the RPC and writes master_items +
+     kount_pending_items directly. Use if approve_pending_item is broken
+     or you want to verify a specific schema state. Post Path B the new
+     catalog row is created in master_items (purchase_items is procurement-
+     only now). Name is composed from brand + name + size to match the
+     existing master_items convention. */
   const forceApprove = async (row: KountPendingItem) => {
     if (user.role !== 'corporate') return;
-    if (!confirm(`Force-approve "${row.name}"?\n\nBypasses approve_pending_item RPC. Inserts a purchase_items row and marks the pending row approved directly.`)) return;
+    if (!confirm(`Force-approve "${row.name}"?\n\nBypasses approve_pending_item RPC. Inserts a master_items row and marks the pending row approved directly.`)) return;
     setBusyId(row.id);
     setLastError(null);
     try {
-      const { data: created, error: piErr } = await supabase
-        .from('purchase_items')
+      // Compose the display name the same way the RPC would
+      const composedName = [row.brand, row.name, row.size]
+        .filter(Boolean)
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      // Parse size text into base_size + base_unit (best-effort)
+      let baseSize: number | null = null;
+      let baseUnit: string | null = null;
+      const m = (row.size || '').match(/^\s*(\d+(?:\.\d+)?)\s*(ml|cl|l|oz|each|ea)\s*$/i);
+      if (m) {
+        baseSize = Number(m[1]);
+        baseUnit = m[2].toLowerCase();
+        if (baseUnit === 'cl') { baseSize = baseSize * 10; baseUnit = 'ml'; }
+      }
+
+      const { data: created, error: miErr } = await supabase
+        .from('master_items')
         .insert({
-          name:        row.name,
-          brand:       row.brand,
+          name:        composedName,
           category:    row.category,
           subcategory: row.subcategory,
-          upc:         row.upc,
-          size:        row.size,
+          base_size:   baseSize,
+          base_unit:   baseUnit,
+          is_active:   true,
         })
         .select()
         .single();
-      if (piErr || !created) throw new Error('purchase_items insert: ' + (piErr?.message ?? 'no row'));
-      const newId = (created as { id: string }).id;
+      if (miErr || !created) throw new Error('master_items insert: ' + (miErr?.message ?? 'no row'));
+      const newMasterId = (created as { id: string }).id;
+
+      // If the pending row carried a UPC, attach it to the new master.
+      const upcNorm = (row.upc || '').replace(/\D/g, '').replace(/^0+/, '');
+      if (upcNorm) {
+        await supabase.from('master_item_upcs').insert({
+          master_item_id: newMasterId,
+          upc_raw:        row.upc,
+          upc_normalized: upcNorm,
+          source:         'admin_force_approve_pending',
+          notes:          'From kount_pending_items via Approvals force-approve',
+          added_by_email: user.email,
+        }).then(({ error }) => {
+          if (error) console.warn('[approvals] master_item_upcs insert failed (continuing):', error);
+        });
+      }
+
       const { error: pendErr } = await supabase
         .from('kount_pending_items')
         .update({
@@ -383,7 +447,7 @@ function ItemQueue({ user, onCount }: { user: AccessEntry; onCount: (n: number) 
           reviewed_by_email: user.email,
           reviewed_by_name:  user.name,
           reviewed_at: new Date().toISOString(),
-          purchase_item_id: newId,
+          master_item_id: newMasterId,
         })
         .eq('id', row.id);
       if (pendErr) throw new Error('kount_pending_items update: ' + pendErr.message);
@@ -404,7 +468,7 @@ function ItemQueue({ user, onCount }: { user: AccessEntry; onCount: (n: number) 
             {lastError}
           </div>
           <div style={{ marginTop: 8, fontSize: 11, color: 'var(--fg-muted)' }}>
-            If the RPC isn't deployed yet, corporate admins can use <strong>Force approve</strong> to insert the purchase_items row directly.
+            If the RPC isn't deployed yet, corporate admins can use <strong>Force approve</strong> to insert the master_items row directly.
           </div>
         </Card>
       )}
@@ -412,7 +476,7 @@ function ItemQueue({ user, onCount }: { user: AccessEntry; onCount: (n: number) 
         <Pill tone={rows.length ? 'caution' : 'positive'} size="md">{rows.length} pending item{rows.length === 1 ? '' : 's'}</Pill>
         <Btn variant="secondary" size="sm" onClick={() => void load()}>Refresh</Btn>
         <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
-          Approving inserts a row into <code>purchase_items</code> and links it back via <code>purchase_item_id</code>.
+          Approving mints a row in <code>master_items</code> and links the pending row back via <code>master_item_id</code>.
         </span>
       </div>
       <Card padding={16}>

@@ -3,7 +3,8 @@ import { useSearchParams } from 'react-router-dom';
 import { supabase, selectAllPaged, selectAllPagedFiltered } from '@/lib/supabase';
 import { VENUES } from '@/lib/access';
 import type { AccessEntry } from '@/lib/access';
-import type { KountAudit, KountEntry, KountVenueZone, PurchaseItem } from '@/lib/types';
+import type { KountAudit, KountEntry, KountVenueZone, MasterItem } from '@/lib/types';
+import { IN_SCOPE_CATEGORIES } from '@/lib/types';
 import { Btn, Card, Eyebrow, Pill, Progress, Segment } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
 import { getDefaultZones } from '@/lib/venueMap';
@@ -183,7 +184,7 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
 
   const [entries, setEntries] = useState<KountEntry[]>([]);
   const [zonesDb, setZonesDb] = useState<KountVenueZone[]>([]);
-  const [catalog, setCatalog] = useState<PurchaseItem[]>([]);
+  const [catalog, setCatalog] = useState<MasterItem[]>([]);
   const [carried, setCarried] = useState<Set<string>>(new Set());
   const [currentZone, setCurrentZone] = useState<string>('');
   const [loadingCatalog, setLoadingCatalog] = useState(true);
@@ -224,12 +225,34 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
 
   const loadCatalogAndCarried = useCallback(async () => {
     setLoadingCatalog(true);
+    // Post Path B: catalog = master_items (in-scope only); carried set is
+    // keyed by master_item_id.
     const [cat, carr] = await Promise.all([
-      selectAllPaged<PurchaseItem>('purchase_items', 'id,name,brand,category,subcategory,upc,sku', 'name'),
-      selectAllPaged<{ purchase_item_id: string }>('kount_carried_items', 'purchase_item_id', 'purchase_item_id'),
+      (async () => {
+        const out: MasterItem[] = [];
+        for (let p = 0; p < 50; p++) {
+          const { data, error } = await supabase
+            .from('master_items')
+            .select('id,name,category,subcategory,base_unit,base_size,is_active')
+            .eq('is_active', true)
+            .in('category', IN_SCOPE_CATEGORIES as unknown as string[])
+            .order('name')
+            .range(p * 1000, p * 1000 + 999);
+          if (error) throw error;
+          if (!data || data.length === 0) break;
+          out.push(...(data as unknown as MasterItem[]));
+          if (data.length < 1000) break;
+        }
+        return out;
+      })(),
+      selectAllPaged<{ master_item_id: string }>(
+        'kount_carried_items',
+        'master_item_id',
+        'master_item_id',
+      ),
     ]);
     setCatalog(cat);
-    setCarried(new Set(carr.map(r => r.purchase_item_id)));
+    setCarried(new Set(carr.map(r => r.master_item_id).filter(Boolean) as string[]));
     setLoadingCatalog(false);
   }, []);
 
@@ -358,7 +381,7 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
 
   // ── Entry CRUD ─────────────────────────────────────────────────────
   const insertEntry = async (payload: {
-    item: PurchaseItem | null;
+    item: MasterItem | null;
     customName: string;
     qty: number;
     zone: string;
@@ -368,7 +391,7 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
   }) => {
     if (isReadOnly) { alert('Audit is not active'); return; }
     const item = payload.item;
-    const itemName = item ? (item.brand ? `${item.brand} — ${item.name}` : item.name) : payload.customName.trim();
+    const itemName = item ? item.name : payload.customName.trim();
     if (!itemName) { alert('Item name required'); return; }
     if (!payload.zone) { alert('Pick a zone first'); return; }
 
@@ -380,9 +403,14 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
     // (the merge key is `audit_id, zone, item, is_recount`), so two devices
     // counting the same bottle in the same zone during count2 would create
     // two rows instead of merging.
+    // Post Path B: writes BOTH item_id (back-compat) AND master_item_id.
+    // master_items has no sku/upc columns — those come from purchase_items
+    // and master_item_upcs respectively. Leave the sku/upc payload fields
+    // null on admin-typed entries; the phone fills them via its scan path.
     const row = {
       audit_id:         audit.id,
       item_id:          item?.id ?? null,
+      master_item_id:   item?.id ?? null,
       item_name:        itemName,
       category:         item?.category ?? null,
       qty:              payload.qty,
@@ -390,8 +418,8 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
       method:           payload.method,
       issue:            payload.issue === 'none' ? null : payload.issue,
       issue_notes:      payload.issueNotes.trim() || null,
-      sku:              item?.sku ?? null,
-      upc:              item?.upc ?? null,
+      sku:              null,
+      upc:              null,
       counted_by_email: user.email,
       counted_by_name:  user.name,
       is_recount:       false,
@@ -461,38 +489,52 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
   };
 
   // ── UPC linker ─────────────────────────────────────────────────────
-  const linkUpc = async (barcode: string, item: PurchaseItem) => {
+  // Post Path B: barcodes are attached to master_items via the
+  // master_item_upcs table (one master → many UPCs allowed). The legacy
+  // path that wrote into purchase_items.upc is gone — that was the
+  // source of the cross-size propagation issue cleaned up in 0022.
+  const linkUpc = async (barcode: string, item: MasterItem) => {
     if (!isAdminish) return;
     const norm = barcode.replace(/\D/g, '').replace(/^0+/, '');
     if (!norm) { alert('Enter a barcode (digits only)'); return; }
 
-    // Check the catalog's current UPC before writing. If the item already
-    // has a different UPC, force the admin to acknowledge the overwrite
-    // — a wrong/counterfeit scan that silently replaces the real UPC
-    // would corrupt every future scan of the real bottle.
-    const { data: existing, error: existingErr } = await supabase
-      .from('purchase_items')
-      .select('upc')
-      .eq('id', item.id)
+    // Check master_item_upcs for an existing owner of this UPC. If the
+    // barcode is already attached to a DIFFERENT master, force the admin
+    // to acknowledge the reassign — silently moving a barcode breaks
+    // every counter who was scanning the original bottle.
+    const { data: existingOwner } = await supabase
+      .from('master_item_upcs')
+      .select('master_item_id,master_items(name)')
+      .eq('upc_normalized', norm)
       .maybeSingle();
-    if (existingErr) { alert('Could not check existing UPC: ' + existingErr.message); return; }
-    const existingUpc = (existing && (existing as { upc: string | null }).upc) || null;
-    const existingNorm = existingUpc ? existingUpc.replace(/\D/g, '').replace(/^0+/, '') : '';
-    if (existingNorm && existingNorm !== norm) {
-      const ok = confirm(
-        `${item.name} already has UPC ${existingUpc}.\n\n` +
-        `Replace with ${barcode}?\n\n` +
-        `If this is wrong, the real bottle's scans will stop matching.`
-      );
-      if (!ok) return;
+    if (existingOwner) {
+      const owner = (existingOwner as unknown as { master_item_id: string; master_items: { name: string } | null });
+      if (owner.master_item_id && owner.master_item_id !== item.id) {
+        const ownerName = (owner.master_items && owner.master_items.name) || owner.master_item_id;
+        const ok = confirm(
+          `UPC ${barcode} is currently linked to "${ownerName}".\n\n` +
+          `Move it to "${item.name}"?\n\n` +
+          `Counters scanning the original bottle will start hitting the new item.`
+        );
+        if (!ok) return;
+        // Delete the existing row first; unique constraint on upc_normalized
+        // would otherwise reject our insert below.
+        await supabase.from('master_item_upcs').delete().eq('upc_normalized', norm);
+      } else if (owner.master_item_id === item.id) {
+        alert(`UPC ${barcode} is already linked to ${item.name}.`);
+        return;
+      }
     }
 
-    const payload = {
+    // 1. Mapping row (audit trail for the approval) — status=approved
+    //    directly since admin is approving inline.
+    const mappingPayload = {
       barcode_raw:        barcode,
       barcode_normalized: norm,
-      purchase_item_id:   item.id,
+      master_item_id:     item.id,
+      purchase_item_id:   null,
       item_name:          item.name,
-      item_brand:         item.brand ?? null,
+      item_brand:         null,                  // master_items has no brand col
       item_category:      item.category ?? null,
       submitted_by_email: user.email,
       submitted_by_name:  user.name,
@@ -501,13 +543,23 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
       reviewed_by_name:   user.name,
       reviewed_at:        new Date().toISOString(),
     };
-    const { error } = await supabase.from('upc_mappings').insert(payload);
-    if (error) { alert('UPC link failed: ' + error.message); return; }
-    // Mirror the phone's purchase_items.upc write-back so non-cache lookups
-    // work too. Skip if the existing UPC already normalizes to the same
-    // value — no-op write.
-    if (existingNorm !== norm) {
-      await supabase.from('purchase_items').update({ upc: barcode }).eq('id', item.id);
+    const { error: mapErr } = await supabase.from('upc_mappings').insert(mappingPayload);
+    if (mapErr) { alert('UPC mapping write failed: ' + mapErr.message); return; }
+
+    // 2. The actual barcode → master link.
+    const { error: miuErr } = await supabase.from('master_item_upcs').insert({
+      master_item_id: item.id,
+      upc_raw:        barcode,
+      upc_normalized: norm,
+      source:         'admin_inline_link',
+      notes:          'Linked via Counts.linkUpc by ' + user.email,
+      added_by_email: user.email,
+    });
+    if (miuErr) {
+      // The mapping row above is fine; surface the master_item_upcs failure
+      // so admin sees what happened (e.g. unique violation race).
+      alert('UPC mapping recorded, but master_item_upcs insert failed: ' + miuErr.message);
+      return;
     }
     alert(`Linked UPC ${barcode} → ${item.name}`);
   };
@@ -801,15 +853,15 @@ function ZoneTabs({
 function AddEntryCard({
   catalog, carried, loadingCatalog, zone, onSubmit,
 }: {
-  catalog: PurchaseItem[];
+  catalog: MasterItem[];
   carried: Set<string>;
   loadingCatalog: boolean;
   zone: string;
-  onSubmit: (p: { item: PurchaseItem | null; customName: string; qty: number; zone: string; method: string; issue: IssueKind; issueNotes: string }) => void;
+  onSubmit: (p: { item: MasterItem | null; customName: string; qty: number; zone: string; method: string; issue: IssueKind; issueNotes: string }) => void;
 }) {
   const [mode, setMode] = useState<'search' | 'manual' | 'upc'>('search');
   const [search, setSearch] = useState('');
-  const [picked, setPicked] = useState<PurchaseItem | null>(null);
+  const [picked, setPicked] = useState<MasterItem | null>(null);
   const [customName, setCustomName] = useState('');
   const [qty, setQty] = useState('1');
   const [issue, setIssue] = useState<IssueKind>('none');
@@ -820,13 +872,16 @@ function AddEntryCard({
     const q = search.trim().toLowerCase();
     if (q.length < 2) return [];
     const words = q.split(/\s+/);
-    function match(item: PurchaseItem) {
-      const hay = (`${item.name} ${item.brand ?? ''} ${item.sku ?? ''} ${item.upc ?? ''} ${item.subcategory ?? ''}`).toLowerCase();
+    function match(item: MasterItem) {
+      // master_items has no brand/sku/upc columns — those live in
+      // master_item_upcs or are embedded in the name. Search across
+      // what's actually on the row.
+      const hay = (`${item.name} ${item.category ?? ''} ${item.subcategory ?? ''}`).toLowerCase();
       return words.every(w => hay.includes(w));
     }
     // Phone behaviour: prefer carried subset; fall back to full catalog if none match
     const useCarried = carried.size > 0;
-    const out: PurchaseItem[] = [];
+    const out: MasterItem[] = [];
     if (useCarried) {
       for (const it of catalog) {
         if (out.length >= 12) break;
@@ -841,18 +896,12 @@ function AddEntryCard({
     return out;
   }, [search, catalog, carried]);
 
-  const findByUpc = (raw: string): PurchaseItem | null => {
-    const norm = raw.replace(/\D/g, '');
-    if (!norm) return null;
-    const noZ = norm.replace(/^0+/, '');
-    return catalog.find(it => {
-      const u = (it.upc ?? '').replace(/\D/g, '');
-      if (!u) return false;
-      if (u === norm) return true;
-      if (u.replace(/^0+/, '') === noZ && noZ.length >= 6) return true;
-      if (norm.length >= 8 && u.length >= 8 && (norm.includes(u) || u.includes(norm))) return true;
-      return false;
-    }) ?? null;
+  const findByUpc = (_raw: string): MasterItem | null => {
+    // Post Path B, UPCs live in master_item_upcs (separate table) — not
+    // on the local catalog rows. Inline UPC lookup from this picker is
+    // no longer supported; admin types name instead, or scans on the
+    // phone where the upcMappingsCache covers the lookup.
+    return null;
   };
 
   const reset = () => {
@@ -906,13 +955,13 @@ function AddEntryCard({
               <input
                 value={search}
                 onChange={e => { setSearch(e.target.value); setPicked(null); }}
-                placeholder={loadingCatalog ? 'Loading catalog…' : 'Search name, brand, SKU…'}
+                placeholder={loadingCatalog ? 'Loading catalog…' : 'Search name or category…'}
                 disabled={loadingCatalog}
                 style={inputStyle()}
               />
               {picked && (
                 <div style={{ marginTop: 6, fontSize: 12, color: 'var(--teal-300)' }}>
-                  ✓ {picked.brand ? `${picked.brand} — ` : ''}{picked.name}
+                  ✓ {picked.name}
                   <button onClick={() => setPicked(null)} style={linkButton()}> change</button>
                 </div>
               )}
@@ -920,12 +969,12 @@ function AddEntryCard({
                 <div style={suggestionsStyle()}>
                   {matches.map(it => (
                     <div key={it.id} onClick={() => setPicked(it)} style={suggestionRow()}>
-                      <div style={{ fontWeight: 500, fontSize: 13 }}>
-                        {it.brand ? `${it.brand} — ` : ''}{it.name}
-                      </div>
+                      <div style={{ fontWeight: 500, fontSize: 13 }}>{it.name}</div>
                       <div style={{ fontSize: 11, color: 'var(--fg-muted)', display: 'flex', gap: 6 }}>
                         <span>{it.category ?? 'other'}</span>
-                        {it.upc && <><span>·</span><span style={{ fontFamily: 'JetBrains Mono, monospace' }}>{it.upc}</span></>}
+                        {it.base_size != null && it.base_unit && (
+                          <><span>·</span><span>{`${it.base_size}${String(it.base_unit).toLowerCase()}`}</span></>
+                        )}
                         {carried.has(it.id) && <Pill tone="positive" size="sm">carried</Pill>}
                       </div>
                     </div>
@@ -949,10 +998,10 @@ function AddEntryCard({
               />
               <div style={{ marginTop: 6, fontSize: 12, color: picked ? 'var(--teal-300)' : 'var(--fg-muted)' }}>
                 {picked
-                  ? `✓ ${picked.brand ? picked.brand + ' — ' : ''}${picked.name}`
+                  ? `✓ ${picked.name}`
                   : upcInput
-                    ? 'No catalog item matches this UPC. Use Manual entry, or link the UPC below.'
-                    : 'Catalog is matched by exact / leading-zero-stripped digits.'}
+                    ? 'Inline UPC lookup is phone-only post Path B. Use Manual entry here, or scan from the phone.'
+                    : 'Inline UPC lookup is phone-only post Path B.'}
               </div>
             </>
           )}
@@ -1169,22 +1218,22 @@ function EntryRow({
 function UpcLinkerCard({
   catalog, loadingCatalog, onLink,
 }: {
-  catalog: PurchaseItem[];
+  catalog: MasterItem[];
   loadingCatalog: boolean;
-  onLink: (barcode: string, item: PurchaseItem) => Promise<void>;
+  onLink: (barcode: string, item: MasterItem) => Promise<void>;
 }) {
   const [barcode, setBarcode] = useState('');
   const [search, setSearch] = useState('');
-  const [picked, setPicked] = useState<PurchaseItem | null>(null);
+  const [picked, setPicked] = useState<MasterItem | null>(null);
 
   const matches = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (q.length < 2) return [];
     const words = q.split(/\s+/);
-    const out: PurchaseItem[] = [];
+    const out: MasterItem[] = [];
     for (const it of catalog) {
       if (out.length >= 8) break;
-      const hay = (`${it.name} ${it.brand ?? ''} ${it.sku ?? ''} ${it.upc ?? ''}`).toLowerCase();
+      const hay = (`${it.name} ${it.category ?? ''} ${it.subcategory ?? ''}`).toLowerCase();
       if (words.every(w => hay.includes(w))) out.push(it);
     }
     return out;
@@ -1200,7 +1249,7 @@ function UpcLinkerCard({
     <Card padding={16}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
         <Eyebrow>Link UPC to item</Eyebrow>
-        <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>Admin-direct approve · writes to upc_mappings + purchase_items.upc</span>
+        <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>Admin-direct approve · writes to master_item_upcs</span>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr auto', gap: 10, alignItems: 'flex-start' }}>
         <input
@@ -1219,7 +1268,7 @@ function UpcLinkerCard({
           />
           {picked && (
             <div style={{ marginTop: 6, fontSize: 12, color: 'var(--teal-300)' }}>
-              ✓ {picked.brand ? `${picked.brand} — ` : ''}{picked.name}
+              ✓ {picked.name}
               <button onClick={() => setPicked(null)} style={linkButton()}> change</button>
             </div>
           )}
@@ -1227,10 +1276,12 @@ function UpcLinkerCard({
             <div style={suggestionsStyle()}>
               {matches.map(it => (
                 <div key={it.id} onClick={() => setPicked(it)} style={suggestionRow()}>
-                  <div style={{ fontWeight: 500, fontSize: 13 }}>{it.brand ? `${it.brand} — ` : ''}{it.name}</div>
+                  <div style={{ fontWeight: 500, fontSize: 13 }}>{it.name}</div>
                   <div style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
                     {it.category ?? 'other'}
-                    {it.upc && <> · existing UPC: <span style={{ fontFamily: 'JetBrains Mono, monospace' }}>{it.upc}</span></>}
+                    {it.base_size != null && it.base_unit && (
+                      <> · {`${it.base_size}${String(it.base_unit).toLowerCase()}`}</>
+                    )}
                   </div>
                 </div>
               ))}

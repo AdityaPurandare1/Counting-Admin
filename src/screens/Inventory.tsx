@@ -262,10 +262,12 @@ export function Inventory({ user }: Props) {
     <>
       <div className="page-head">
         <div>
-          <Eyebrow>Inventory</Eyebrow>
+          <Eyebrow>Inventory (procurement)</Eyebrow>
           <h1 className="page-title">Upload inventory CSV</h1>
           <div className="page-sub">
-            Upload the items this group carries. New rows are added to the master catalog; existing rows get their UPC / size / category enriched from the CSV. The phone app's typed search and photo matching narrow to this set, so a counter doesn't have to pick from 23 k rows.
+            Bulk-writes the procurement catalog (purchase_items). Use this when you have a vendor / R365 / Craftable export to bring in.
+            <br />
+            <strong>For bar-side carrying updates</strong> (what shows up in the counter app), use <code>Catalog → Upload Bevager XLSX</code> instead — that path targets <code>master_items</code> + <code>kount_carried_items.master_item_id</code>.
           </div>
         </div>
       </div>

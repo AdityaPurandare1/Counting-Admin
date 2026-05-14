@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase, selectAllPaged } from '@/lib/supabase';
 import type { AccessEntry } from '@/lib/access';
-import type { PurchaseItem } from '@/lib/types';
+import type { MasterItem } from '@/lib/types';
+import { IN_SCOPE_CATEGORIES } from '@/lib/types';
 import { Btn, Card, Eyebrow, Pill, Segment } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
 import { parseBevagerWorkbook, matchBevagerRows } from '@/lib/bevagerImport';
@@ -9,18 +10,19 @@ import type { MatchResult } from '@/lib/bevagerImport';
 import { csvCell } from '@/lib/csv';
 
 /* ───────────────────────────────────────────────────────────────────────
-   Catalog screen (desktop v0.13)
+   Catalog screen (desktop, post Path B)
 
-   Admin (corporate) surface for curating which purchase_items rows are
+   Admin (corporate) surface for curating which master_items rows are
    actively carried. Scanning and searching in the phone app narrows to
-   this set when it's non-empty, so a bar counter doesn't have to pick
-   the right Campari row from ten near-duplicates.
+   this set, so a bar counter doesn't have to pick the right Campari
+   from ten near-duplicates.
 
    Data sources:
-     - public.purchase_items (full catalog, read-only here)
-     - public.kount_carried_items (this screen's target — insert to add,
-       delete to remove). Realtime channel keeps the toggle state live
-       across devices.
+     - public.master_items (canonical catalog, filtered to in-scope
+       bar/bev/liquor/wine categories). Read-only on this screen.
+     - public.kount_carried_items.master_item_id (this screen's target —
+       insert to add, delete to remove). Realtime channel keeps the
+       toggle state live across devices.
    ─────────────────────────────────────────────────────────────────────── */
 
 interface Props { user: AccessEntry }
@@ -29,8 +31,32 @@ const PAGE_SIZE = 50;
 
 type FilterChoice = 'all' | 'carried' | 'uncarried';
 
+// Helper: pull every in-scope active master_item from Supabase.
+// selectAllPaged orders by name so the pagination is deterministic.
+async function fetchInScopeMasters(): Promise<MasterItem[]> {
+  // The IN_SCOPE_FILTER constant in types.ts is the PostgREST format
+  // ('category=in.("a","b",...)') — but supabase-js .in() wants the raw
+  // array. Use the array directly here.
+  const out: MasterItem[] = [];
+  const PAGE = 1000;
+  for (let p = 0; p < 50; p++) {
+    const { data, error } = await supabase
+      .from('master_items')
+      .select('id,name,category,subcategory,base_unit,base_size,is_active')
+      .eq('is_active', true)
+      .in('category', IN_SCOPE_CATEGORIES as unknown as string[])
+      .order('name')
+      .range(p * PAGE, p * PAGE + PAGE - 1);
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    out.push(...(data as unknown as MasterItem[]));
+    if (data.length < PAGE) break;
+  }
+  return out;
+}
+
 export function Catalog({ user }: Props) {
-  const [items, setItems] = useState<PurchaseItem[]>([]);
+  const [items, setItems] = useState<MasterItem[]>([]);
   const [carried, setCarried] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<FilterChoice>('all');
@@ -54,15 +80,26 @@ export function Catalog({ user }: Props) {
   // insert when carried > 1000 rows in DB).
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [cat, carr] = await Promise.all([
-      selectAllPaged<PurchaseItem>('purchase_items', 'id,name,category,subcategory,upc,sku', 'name'),
-      selectAllPaged<{ purchase_item_id: string }>('kount_carried_items', 'purchase_item_id', 'purchase_item_id'),
-    ]);
-    setItems(cat);
-    const carrSet = new Set<string>();
-    for (const row of carr) carrSet.add(row.purchase_item_id);
-    setCarried(carrSet);
-    setLoading(false);
+    try {
+      const [cat, carr] = await Promise.all([
+        fetchInScopeMasters(),
+        selectAllPaged<{ master_item_id: string }>(
+          'kount_carried_items',
+          'master_item_id',
+          'master_item_id',
+        ),
+      ]);
+      setItems(cat);
+      const carrSet = new Set<string>();
+      for (const row of carr) {
+        if (row.master_item_id) carrSet.add(row.master_item_id);
+      }
+      setCarried(carrSet);
+    } catch (e) {
+      console.error('[catalog] load failed:', e);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => { void loadAll(); }, [loadAll]);
@@ -72,12 +109,12 @@ export function Catalog({ user }: Props) {
     const ch = supabase
       .channel('kount-carried-live')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'kount_carried_items' }, (evt) => {
-        const row = (evt.new || evt.old) as { purchase_item_id?: string } | undefined;
-        if (!row?.purchase_item_id) return;
+        const row = (evt.new || evt.old) as { master_item_id?: string } | undefined;
+        if (!row?.master_item_id) return;
         setCarried(prev => {
           const next = new Set(prev);
-          if (evt.eventType === 'DELETE') next.delete(row.purchase_item_id!);
-          else next.add(row.purchase_item_id!);
+          if (evt.eventType === 'DELETE') next.delete(row.master_item_id!);
+          else next.add(row.master_item_id!);
           return next;
         });
       })
@@ -91,7 +128,10 @@ export function Catalog({ user }: Props) {
       if (filter === 'carried'   && !carried.has(item.id)) return false;
       if (filter === 'uncarried' &&  carried.has(item.id)) return false;
       if (q) {
-        const hay = (item.name + ' ' + (item.brand || '') + ' ' + (item.upc || '') + ' ' + (item.sku || '')).toLowerCase();
+        // master_items doesn't have brand/upc/sku — names already embed
+        // brand and size (e.g. "Don Julio 1942 1.75L"). Category is
+        // searchable for "show me all wine" style queries.
+        const hay = (item.name + ' ' + (item.category || '') + ' ' + (item.subcategory || '')).toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -129,37 +169,33 @@ export function Catalog({ user }: Props) {
       // of trusting React state, which can be stale (mid-load on a fast click,
       // or out of sync if another admin curated in another tab).
       const [catalog, carriedRows] = await Promise.all([
-        selectAllPaged<PurchaseItem>(
-          'purchase_items',
-          'id,name,category,subcategory,upc,sku',
-          'name',
-        ),
-        selectAllPaged<{ purchase_item_id: string }>(
+        fetchInScopeMasters(),
+        selectAllPaged<{ master_item_id: string }>(
           'kount_carried_items',
-          'purchase_item_id',
-          'purchase_item_id',
+          'master_item_id',
+          'master_item_id',
         ),
       ]);
-      console.log('[import] fresh catalog rows:', catalog.length, 'carried rows:', carriedRows.length);
+      console.log('[import] fresh master_items rows:', catalog.length, 'carried rows:', carriedRows.length);
       if (catalog.length === 0) {
-        throw new Error('purchase_items came back empty. Check Supabase RLS / network, then retry.');
+        throw new Error('master_items came back empty. Check Supabase RLS / network, then retry.');
       }
-      const liveCarried = new Set(carriedRows.map(r => r.purchase_item_id));
+      const liveCarried = new Set(carriedRows.map(r => r.master_item_id).filter(Boolean));
 
       const results = matchBevagerRows(bevRows, catalog);
       const unmatched = results.filter(r => r.confidence === 'unmatched');
       const matched   = results.filter(r => r.confidence !== 'unmatched');
       console.log('[import] matched:', matched.length, 'unmatched:', unmatched.length);
 
-      const alreadyCarried = matched.filter(r => r.purchaseItemId && liveCarried.has(r.purchaseItemId));
-      // Dedupe on purchase_item_id for the insert list (multiple XLSX rows
-      // can collapse to the same purchase_items row via loose match).
+      const alreadyCarried = matched.filter(r => r.masterItemId && liveCarried.has(r.masterItemId));
+      // Dedupe on master_item_id for the insert list (multiple XLSX rows
+      // can collapse to the same master_items row via loose match).
       const seen = new Set<string>();
       const toInsert: MatchResult[] = [];
       for (const r of matched) {
-        if (!r.purchaseItemId || liveCarried.has(r.purchaseItemId)) continue;
-        if (seen.has(r.purchaseItemId)) continue;
-        seen.add(r.purchaseItemId);
+        if (!r.masterItemId || liveCarried.has(r.masterItemId)) continue;
+        if (seen.has(r.masterItemId)) continue;
+        seen.add(r.masterItemId);
         toInsert.push(r);
       }
       setImportPreview({ matches: matched, unmatched, alreadyCarried, toInsert });
@@ -183,7 +219,7 @@ export function Catalog({ user }: Props) {
     try {
       for (let i = 0; i < importPreview.toInsert.length; i += CHUNK) {
         const chunk = importPreview.toInsert.slice(i, i + CHUNK).map(r => ({
-          purchase_item_id: r.purchaseItemId!,
+          master_item_id:   r.masterItemId!,
           added_by_email:   user.email,
           added_by_name:    user.name,
           notes:            'imported from Bevager XLSX: ' + (r.matchedName ?? r.bevager.name),
@@ -193,7 +229,7 @@ export function Catalog({ user }: Props) {
         // dedupe), the call still succeeds rather than throwing on PK.
         const { error } = await supabase
           .from('kount_carried_items')
-          .upsert(chunk, { onConflict: 'purchase_item_id', ignoreDuplicates: true });
+          .upsert(chunk, { onConflict: 'master_item_id', ignoreDuplicates: true });
         if (error) throw new Error(error.message);
       }
       setImporting('done');
@@ -224,7 +260,7 @@ export function Catalog({ user }: Props) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
-  const toggle = async (item: PurchaseItem) => {
+  const toggle = async (item: MasterItem) => {
     if (busyId) return;
     setBusyId(item.id);
     const isOn = carried.has(item.id);
@@ -236,11 +272,11 @@ export function Catalog({ user }: Props) {
     });
     try {
       if (isOn) {
-        const { error } = await supabase.from('kount_carried_items').delete().eq('purchase_item_id', item.id);
+        const { error } = await supabase.from('kount_carried_items').delete().eq('master_item_id', item.id);
         if (error) throw new Error(error.message);
       } else {
         const { error } = await supabase.from('kount_carried_items').insert({
-          purchase_item_id: item.id,
+          master_item_id: item.id,
           added_by_email: user.email,
           added_by_name: user.name,
         });
@@ -327,9 +363,9 @@ export function Catalog({ user }: Props) {
                 <tr style={{ textAlign: 'left', color: 'var(--fg-muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, borderBottom: '1px solid var(--border)' }}>
                   <th style={{ padding: '10px 14px', width: 80 }}>Carried</th>
                   <th style={{ padding: '10px 14px' }}>Name</th>
-                  <th style={{ padding: '10px 14px' }}>Brand</th>
+                  <th style={{ padding: '10px 14px' }}>Size</th>
                   <th style={{ padding: '10px 14px' }}>Category</th>
-                  <th style={{ padding: '10px 14px' }}>UPC</th>
+                  <th style={{ padding: '10px 14px' }}>Subcategory</th>
                 </tr>
               </thead>
               <tbody>
@@ -353,11 +389,13 @@ export function Catalog({ user }: Props) {
                         </button>
                       </td>
                       <td style={{ padding: '8px 14px', fontWeight: 500 }}>{item.name}</td>
-                      <td style={{ padding: '8px 14px', color: 'var(--fg-muted)' }}>{item.brand || '—'}</td>
-                      <td style={{ padding: '8px 14px', color: 'var(--fg-muted)' }}>{item.category || '—'}</td>
-                      <td style={{ padding: '8px 14px', fontFamily: 'JetBrains Mono, monospace', fontSize: 12, color: item.upc ? 'var(--fg-primary)' : 'var(--fg-faint)' }}>
-                        {item.upc || '—'}
+                      <td style={{ padding: '8px 14px', color: 'var(--fg-muted)' }}>
+                        {item.base_size != null && item.base_unit
+                          ? `${item.base_size}${String(item.base_unit).toLowerCase()}`
+                          : '—'}
                       </td>
+                      <td style={{ padding: '8px 14px', color: 'var(--fg-muted)' }}>{item.category || '—'}</td>
+                      <td style={{ padding: '8px 14px', color: 'var(--fg-muted)' }}>{item.subcategory || '—'}</td>
                     </tr>
                   );
                 })}
