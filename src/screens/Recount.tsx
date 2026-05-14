@@ -54,9 +54,15 @@ export function Recount({ user }: Props) {
     return () => { supabase.removeChannel(ch); };
   }, [loadAudits]);
 
+  // URL is the source of truth — manual edits + back-button win.
   useEffect(() => {
-    if (selectedId && selectedId !== auditParam) setParams({ audit: selectedId }, { replace: true });
-  }, [selectedId, auditParam, setParams]);
+    if (auditParam !== selectedId) setSelectedId(auditParam);
+  }, [auditParam, selectedId]);
+
+  const selectAudit = (id: string | null) => {
+    setSelectedId(id);
+    setParams(id ? { audit: id } : {}, { replace: true });
+  };
 
   return (
     <>
@@ -68,7 +74,7 @@ export function Recount({ user }: Props) {
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <select
             value={selectedId ?? ''}
-            onChange={e => setSelectedId(e.target.value || null)}
+            onChange={e => selectAudit(e.target.value || null)}
             style={{ padding: '6px 10px', border: '1px solid var(--border-strong)', borderRadius: 6, fontFamily: 'inherit', fontSize: 13, minWidth: 240 }}>
             <option value="">Select an audit…</option>
             {audits.map(a => (

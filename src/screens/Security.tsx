@@ -105,8 +105,8 @@ export function Security({ user }: Props) {
         </Card>
       </div>
 
-      {creating && <UserFormModal mode="create" onClose={() => setCreating(false)} onSaved={() => { setCreating(false); void load(); void refreshAccessList(); }} />}
-      {editing  && <UserFormModal mode="edit" initial={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); void load(); void refreshAccessList(); }} />}
+      {creating && <UserFormModal mode="create" currentUserEmail={user.email} onClose={() => setCreating(false)} onSaved={() => { setCreating(false); void load(); void refreshAccessList(); }} />}
+      {editing  && <UserFormModal mode="edit" initial={editing} currentUserEmail={user.email} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); void load(); void refreshAccessList(); }} />}
       {migrating && <MigrateLegacyModal onClose={() => setMigrating(false)} />}
     </>
   );
@@ -138,10 +138,13 @@ function UserRow({ row, onEdit }: { row: AppUserRow; onEdit: () => void }) {
 }
 
 function UserFormModal({
-  mode: initialMode, initial, onClose, onSaved,
+  mode: initialMode, initial, currentUserEmail, onClose, onSaved,
 }: {
   mode: 'create' | 'edit';
   initial?: AppUserRow;
+  // Logged-in admin's email, used by the self-delete guard so the modal
+  // doesn't need to import AccessEntry / re-read the session.
+  currentUserEmail: string;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -210,6 +213,24 @@ function UserFormModal({
     setErr(null);
   };
 
+  /** Pre-flight count of other active corporate admins, excluding one
+   *  email. Used by the last-corporate-user guards to refuse a destructive
+   *  action that would drop the active corporate count to zero. Returns
+   *  -1 if the query itself fails (caller treats as fail-closed). */
+  const countOtherActiveCorporates = async (excludeEmail: string): Promise<number> => {
+    const { count, error } = await supabase
+      .from('app_users')
+      .select('email', { count: 'exact', head: true })
+      .eq('role', 'corporate')
+      .eq('is_active', true)
+      .neq('email', excludeEmail);
+    if (error) {
+      console.warn('[security] countOtherActiveCorporates failed:', error);
+      return -1;
+    }
+    return count ?? 0;
+  };
+
   const save = async () => {
     setErr(null);
     const emailTrim = email.trim().toLowerCase();
@@ -246,6 +267,28 @@ function UserFormModal({
         }
         onSaved();
         return;
+      }
+
+      // Last-corporate guard: demoting or disabling the last active
+      // corporate admin would leave nobody with /security, /catalog,
+      // /inventory, /reports, /venue-settings access. The system gets
+      // stuck until DB intervention. Block unless another active corp
+      // would remain after this save.
+      if (editingRow!.role === 'corporate' && editingRow!.is_active) {
+        const stayingCorpActive = role === 'corporate' && isActive;
+        if (!stayingCorpActive) {
+          const otherCorps = await countOtherActiveCorporates(editingRow!.email);
+          if (otherCorps < 0) {
+            setBusy(false);
+            setErr('Could not verify other corporate admins. Try again.');
+            return;
+          }
+          if (otherCorps === 0) {
+            setBusy(false);
+            setErr('Cannot demote or disable the last active corporate admin. Promote another user to corporate first.');
+            return;
+          }
+        }
       }
 
       // Edit mode: split the status flip from other field updates so the
@@ -309,6 +352,29 @@ function UserFormModal({
 
   const remove = async () => {
     if (!editingRow) return;
+
+    // Self-delete guard: deleting your own row would let your current
+    // session run until the next role check, then kick you with no quick
+    // recovery. Refuse and tell the admin to ask another corporate.
+    if (editingRow.email.toLowerCase() === currentUserEmail.toLowerCase()) {
+      setErr('You cannot delete your own account. Ask another admin to remove you.');
+      return;
+    }
+
+    // Last-corporate guard: refuse to delete the last active corporate
+    // admin (same rationale as the demote/disable guard in save()).
+    if (editingRow.role === 'corporate' && editingRow.is_active) {
+      const otherCorps = await countOtherActiveCorporates(editingRow.email);
+      if (otherCorps < 0) {
+        setErr('Could not verify other corporate admins. Try again.');
+        return;
+      }
+      if (otherCorps === 0) {
+        setErr('Cannot delete the last active corporate admin. Promote another user to corporate first.');
+        return;
+      }
+    }
+
     if (!confirm(`Delete ${editingRow.email}?\n\nIf they're only in Counting-App, their auth account will be removed too. If they're also active in another app on this Supabase project (e.g. Keva), only their Counting-App access is removed.`)) return;
     setBusy(true);
     try {

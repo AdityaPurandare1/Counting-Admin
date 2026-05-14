@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { supabase, selectAllPaged } from '@/lib/supabase';
+import { supabase, selectAllPaged, selectAllPagedFiltered } from '@/lib/supabase';
 import { VENUES } from '@/lib/access';
 import type { AccessEntry } from '@/lib/access';
 import type { KountAudit, KountEntry, KountVenueZone, PurchaseItem } from '@/lib/types';
@@ -119,9 +119,18 @@ export function Counts({ user }: Props) {
     return () => { supabase.removeChannel(ch); };
   }, [loadAudits]);
 
+  // URL is the source of truth — manual edits + back-button win.
   useEffect(() => {
-    if (selectedId && selectedId !== auditParam) setParams({ audit: selectedId }, { replace: true });
-  }, [selectedId, auditParam, setParams]);
+    if (auditParam !== selectedId) setSelected(auditParam);
+  }, [auditParam, selectedId]);
+
+  // Selecting an audit updates both local state (snappier UI) and the URL
+  // (so refresh/bookmark/share works). The URL change re-fires the effect
+  // above but the guard makes it a no-op.
+  const selectAudit = (id: string | null) => {
+    setSelected(id);
+    setParams(id ? { audit: id } : {}, { replace: true });
+  };
 
   const selectedAudit = audits.find(a => a.id === selectedId) ?? null;
 
@@ -135,7 +144,7 @@ export function Counts({ user }: Props) {
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <select
             value={selectedId ?? ''}
-            onChange={e => setSelected(e.target.value || null)}
+            onChange={e => selectAudit(e.target.value || null)}
             style={{ padding: '6px 10px', border: '1px solid var(--border-strong)', borderRadius: 6, fontFamily: 'inherit', fontSize: 13, minWidth: 280 }}>
             <option value="">Select an audit…</option>
             {audits.map(a => (
@@ -160,7 +169,7 @@ export function Counts({ user }: Props) {
       </div>
 
       {showStart && isAdminish && (
-        <StartAuditModal user={user} onClose={() => setShowStart(false)} onStarted={(id) => { setShowStart(false); setSelected(id); void loadAudits(); }} />
+        <StartAuditModal user={user} onClose={() => setShowStart(false)} onStarted={(id) => { setShowStart(false); selectAudit(id); void loadAudits(); }} />
       )}
     </>
   );
@@ -189,13 +198,18 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
 
   // ── Loaders ────────────────────────────────────────────────────────
   const loadEntries = useCallback(async () => {
-    const { data, error } = await supabase
-      .from('kount_entries')
-      .select('*')
-      .eq('audit_id', audit.id)
-      .order('timestamp', { ascending: false });
-    if (error) { console.error('[counts] load entries', error); return; }
-    setEntries((data ?? []) as KountEntry[]);
+    try {
+      // Paginated past the 1000-row default cap — busy audits can easily
+      // produce 1500+ entries and the unpaginated query was silently
+      // truncating zone tabs and stats.
+      const rows = await selectAllPagedFiltered<KountEntry>(
+        () => supabase.from('kount_entries').select('*').eq('audit_id', audit.id),
+        { column: 'timestamp', ascending: false },
+      );
+      setEntries(rows);
+    } catch (error) {
+      console.error('[counts] load entries', error);
+    }
   }, [audit.id]);
 
   const loadZones = useCallback(async () => {
@@ -451,6 +465,28 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
     if (!isAdminish) return;
     const norm = barcode.replace(/\D/g, '').replace(/^0+/, '');
     if (!norm) { alert('Enter a barcode (digits only)'); return; }
+
+    // Check the catalog's current UPC before writing. If the item already
+    // has a different UPC, force the admin to acknowledge the overwrite
+    // — a wrong/counterfeit scan that silently replaces the real UPC
+    // would corrupt every future scan of the real bottle.
+    const { data: existing, error: existingErr } = await supabase
+      .from('purchase_items')
+      .select('upc')
+      .eq('id', item.id)
+      .maybeSingle();
+    if (existingErr) { alert('Could not check existing UPC: ' + existingErr.message); return; }
+    const existingUpc = (existing && (existing as { upc: string | null }).upc) || null;
+    const existingNorm = existingUpc ? existingUpc.replace(/\D/g, '').replace(/^0+/, '') : '';
+    if (existingNorm && existingNorm !== norm) {
+      const ok = confirm(
+        `${item.name} already has UPC ${existingUpc}.\n\n` +
+        `Replace with ${barcode}?\n\n` +
+        `If this is wrong, the real bottle's scans will stop matching.`
+      );
+      if (!ok) return;
+    }
+
     const payload = {
       barcode_raw:        barcode,
       barcode_normalized: norm,
@@ -467,8 +503,12 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
     };
     const { error } = await supabase.from('upc_mappings').insert(payload);
     if (error) { alert('UPC link failed: ' + error.message); return; }
-    // Mirror the phone's purchase_items.upc write-back so non-cache lookups work too
-    await supabase.from('purchase_items').update({ upc: barcode }).eq('id', item.id);
+    // Mirror the phone's purchase_items.upc write-back so non-cache lookups
+    // work too. Skip if the existing UPC already normalizes to the same
+    // value — no-op write.
+    if (existingNorm !== norm) {
+      await supabase.from('purchase_items').update({ upc: barcode }).eq('id', item.id);
+    }
     alert(`Linked UPC ${barcode} → ${item.name}`);
   };
 

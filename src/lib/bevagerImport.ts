@@ -44,20 +44,25 @@ export async function parseBevagerWorkbook(file: File): Promise<BevagerRow[]> {
       const sheet = wb.Sheets[sheetName];
       const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '' });
 
-        // Find the header row (has ITEM column)
+        // Find the header row. A naive "any cell starts with ITEM" check
+        // false-positives on rows like "ITEMIZED CHANGES" in section
+        // headers; we require at least 3 of the expected columns (ID, CU,
+        // ITEM, CATEGORY, QUANTITY) to be present before locking in.
         let headerIdx = -1;
         const colIdx: Record<string, number> = {};
         for (let i = 0; i < Math.min(rows.length, 15); i++) {
           const r = rows[i].map(c => String(c || '').trim().toUpperCase());
-          if (r.some(c => c === 'ITEM' || c.startsWith('ITEM'))) {
+          const tentative: Record<string, number> = {};
+          r.forEach((cell, j) => {
+            if (cell === 'ID' || cell.startsWith('ID '))         tentative.id = j;
+            if (cell === 'CU' || cell.startsWith('CU '))         tentative.cu = j;
+            if (cell === 'ITEM' || cell.startsWith('ITEM '))     tentative.item = j;
+            if (cell.startsWith('CATEGORY'))                     tentative.category = j;
+            if (cell.startsWith('QUANTITY'))                     tentative.quantity = j;
+          });
+          if (Object.keys(tentative).length >= 3 && tentative.item !== undefined) {
             headerIdx = i;
-            r.forEach((cell, j) => {
-              if (cell === 'ID' || cell.startsWith('ID')) colIdx.id = j;
-              if (cell === 'CU' || cell.startsWith('CU '))  colIdx.cu = j;
-              if (cell === 'ITEM' || cell.startsWith('ITEM')) colIdx.item = j;
-              if (cell.startsWith('CATEGORY')) colIdx.category = j;
-              if (cell.startsWith('QUANTITY')) colIdx.quantity = j;
-            });
+            Object.assign(colIdx, tentative);
             break;
           }
         }
@@ -71,11 +76,17 @@ export async function parseBevagerWorkbook(file: File): Promise<BevagerRow[]> {
         const row = rows[i];
         const name = String(row[colIdx.item] || '').trim();
         if (!name) continue;
+        // Number() of any non-numeric string is NaN, which then rides
+        // through to the preview / CSV export as the literal "NaN".
+        // Coerce to 0 explicitly so neither the UI nor any consumer sees
+        // it.
+        const rawQty = row[colIdx.quantity ?? -1];
+        const qty = Number(rawQty);
         out.push({
           name,
           cu:       String(row[colIdx.cu ?? -1] || '').trim(),
           category: String(row[colIdx.category ?? -1] || '').trim(),
-          quantity: Number(row[colIdx.quantity ?? -1] || 0),
+          quantity: Number.isFinite(qty) ? qty : 0,
         });
       }
       resolve(out);

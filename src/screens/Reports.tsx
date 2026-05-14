@@ -168,7 +168,21 @@ export function Reports({ user }: Props) {
     };
     const fmtVariance = (n: number | null): string => n === null ? '' : n.toFixed(2);
 
-    const lines = [header.map(escape).join(',')];
+    const lines: string[] = [];
+    // If either server-side cap fired, mark the export so BI consumers can't
+    // ingest it thinking it's a complete dataset. Single-column comment row
+    // at the very top — the banner in the UI says the same thing but the
+    // downloaded file needs its own signal.
+    if (auditTrunc || recountTrunc) {
+      const caps: string[] = [];
+      if (auditTrunc)   caps.push(`audit list: ${AUDIT_LIMIT} max`);
+      if (recountTrunc) caps.push(`recount rows: ${RECOUNT_LIMIT} max`);
+      lines.push(escape(
+        `# TRUNCATED: this export hit a server-side cap (${caps.join('; ')}). ` +
+        `Narrow the date window or audit selection to see all rows.`,
+      ));
+    }
+    lines.push(header.map(escape).join(','));
     rows.forEach(r => {
       lines.push([
         r.item,
@@ -199,7 +213,7 @@ export function Reports({ user }: Props) {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-  }, [rows]);
+  }, [rows, auditTrunc, recountTrunc]);
 
   const totalCount = rows.length;
 

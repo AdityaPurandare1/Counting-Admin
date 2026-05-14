@@ -139,6 +139,13 @@ function UpcQueue({ user, onCount }: { user: AccessEntry; onCount: (n: number) =
       console.warn('[approvals] RPC failed:', { rpc, row, data, error });
       return;
     }
+    // Optimistic removal: without this, the only feedback the admin gets is
+    // the row disappearing via realtime — and realtime's 2 events/sec cap
+    // can throttle, leaving the admin staring at a row that "didn't
+    // respond" and re-clicking. Realtime will reconcile naturally.
+    const nextRows = rows.filter(r => r.id !== row.id);
+    setRows(nextRows);
+    onCount(nextRows.length);
   };
 
   /* Escape hatch: bypass the RPC and directly commit the mapping. Useful
@@ -146,11 +153,37 @@ function UpcQueue({ user, onCount }: { user: AccessEntry; onCount: (n: number) =
      on purchase_items update, etc.). Only corporate can use it. */
   const forceApprove = async (row: UpcMapping) => {
     if (user.role !== 'corporate') return;
-    if (!confirm(`Force-approve ${row.barcode_raw} → ${row.item_name}?\n\nBypasses approve_upc_mapping RPC. Updates purchase_items.upc + marks upc_mappings row approved directly.`)) return;
+
+    // Look up the catalog's current UPC so the confirm can warn about
+    // overwriting an existing (possibly correct) UPC. If we can't read
+    // it, fall back to the unspecific confirm rather than blocking the
+    // escape hatch entirely.
+    let existingUpc: string | null = null;
+    let existingNorm = '';
+    const newNorm = (row.barcode_raw || '').replace(/\D/g, '').replace(/^0+/, '');
+    if (row.purchase_item_id) {
+      const { data: existing } = await supabase
+        .from('purchase_items')
+        .select('upc')
+        .eq('id', row.purchase_item_id)
+        .maybeSingle();
+      existingUpc = (existing && (existing as { upc: string | null }).upc) || null;
+      existingNorm = existingUpc ? existingUpc.replace(/\D/g, '').replace(/^0+/, '') : '';
+    }
+
+    const overwriteWarning = (existingNorm && existingNorm !== newNorm)
+      ? `\n\n⚠️ ${row.item_name} already has UPC ${existingUpc}. Force-approve will REPLACE it.\nIf the existing UPC is the real one, future scans of the real bottle will stop matching.`
+      : '';
+    if (!confirm(
+      `Force-approve ${row.barcode_raw} → ${row.item_name}?${overwriteWarning}\n\n` +
+      `Bypasses approve_upc_mapping RPC. Updates purchase_items.upc + marks upc_mappings row approved directly.`
+    )) return;
+
     setBusyId(row.id);
     setLastError(null);
     try {
-      if (row.purchase_item_id) {
+      // Skip the catalog write if the existing UPC already matches — no-op.
+      if (row.purchase_item_id && existingNorm !== newNorm) {
         const { error: piErr } = await supabase
           .from('purchase_items')
           .update({ upc: row.barcode_raw })

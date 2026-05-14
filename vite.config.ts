@@ -11,5 +11,9 @@ export default defineConfig(({ command }) => ({
   resolve: {
     alias: { '@': path.resolve(__dirname, 'src') },
   },
+  // counting-admin doesn't use PostCSS. Pin the config locally so Vite
+  // doesn't walk up the monorepo and load the root postcss.config.mjs
+  // (which is for member-app and pulls in tailwindcss).
+  css: { postcss: { plugins: [] } },
   server: { port: 5173, strictPort: false },
 }));

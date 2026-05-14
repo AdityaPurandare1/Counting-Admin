@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { resolveAccess, resolveLegacyBaseline, refreshAccessList } from '@/lib/access';
+import { resolveAccess, refreshAccessList } from '@/lib/access';
 import type { AccessEntry } from '@/lib/access';
 import { supabase } from '@/lib/supabase';
 
@@ -12,9 +12,51 @@ interface Props {
 // app_users PK) is the actual gate.
 const EMAIL_RX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-// Slow down brute-force / enumeration attempts from the same browser session.
+// Slow down brute-force / enumeration attempts. State lives in
+// localStorage so a tab reload doesn't reset the counter — the previous
+// in-memory-only implementation was trivially bypassable by Cmd-R.
 const FAIL_LOCK_MS  = 15_000;
 const FAIL_LOCK_AT  = 5;
+const LOCK_STORAGE_KEY = 'kount_admin_login_fails_v1';
+
+function loadLockState(): { fails: number; lockedUntil: number } {
+  try {
+    const raw = localStorage.getItem(LOCK_STORAGE_KEY);
+    if (!raw) return { fails: 0, lockedUntil: 0 };
+    const parsed = JSON.parse(raw) as { fails?: number; lockedUntil?: number };
+    const lockedUntil = Number(parsed.lockedUntil) || 0;
+    // Expired lockout — wipe and start fresh.
+    if (lockedUntil && Date.now() >= lockedUntil) return { fails: 0, lockedUntil: 0 };
+    return { fails: Number(parsed.fails) || 0, lockedUntil };
+  } catch { return { fails: 0, lockedUntil: 0 }; }
+}
+
+function saveLockState(fails: number, lockedUntil: number) {
+  try { localStorage.setItem(LOCK_STORAGE_KEY, JSON.stringify({ fails, lockedUntil })); } catch { /* quota */ }
+}
+
+/** Sign out and verify it took. Falls back to local-scope signOut if the
+ *  default (global) signOut errors — at minimum we want the local session
+ *  storage cleared so the rejected user can't continue authenticated
+ *  requests. Returns true if the session is gone, false if we couldn't
+ *  confirm. */
+async function safeSignOut(): Promise<boolean> {
+  try {
+    const { error } = await supabase.auth.signOut();
+    if (!error) return true;
+    console.warn('[admin-auth] signOut(global) failed, retrying local:', error);
+    try {
+      const { error: localErr } = await supabase.auth.signOut({ scope: 'local' });
+      return !localErr;
+    } catch (e) {
+      console.warn('[admin-auth] signOut(local) threw:', e);
+      return false;
+    }
+  } catch (e) {
+    console.warn('[admin-auth] signOut threw:', e);
+    return false;
+  }
+}
 
 export function Login({ onSignedIn }: Props) {
   const [email, setEmail] = useState('');
@@ -22,8 +64,9 @@ export function Login({ onSignedIn }: Props) {
   const [err, setErr] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [fails, setFails] = useState(0);
-  const [lockedUntil, setLockedUntil] = useState(0);
+  const initialLock = loadLockState();
+  const [fails, setFails] = useState(initialLock.fails);
+  const [lockedUntil, setLockedUntil] = useState(initialLock.lockedUntil);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -42,98 +85,94 @@ export function Login({ onSignedIn }: Props) {
       return;
     }
 
+    if (!password) {
+      setErr('Password required. If you do not have one yet, tap "Email me a sign-in link" or "Forgot your password?" below.');
+      return;
+    }
+
     setBusy(true);
 
-    // Phase 3 dual-path (mirrors the phone app's handleLogin):
-    //   1. If a password was typed, try Supabase Auth first. Success
-    //      gives us a real JWT — that's what authorizes admin-user-mgmt
-    //      Edge Function calls and what RLS will gate on after Phase 4.
-    //   2. On invalid-credentials AND no legacy fallback, surface the
-    //      auth error. On invalid-credentials but legacy IS available,
-    //      fall back (handles "muscle memory typed a password they
-    //      don't have yet" without locking them out during transition).
-    //   3. No password OR transient auth failure → legacy ACCESS_LIST
-    //      path. Once Phase 5 migrates everyone, the legacy branch
-    //      goes away.
-
-    // Legacy fallback is restricted to the HARDCODED BASELINE — runtime
-    // ACCESS_LIST entries (added via the Security UI) MUST go through
-    // Supabase Auth. Without this restriction, an admin could grant
-    // password-less sign-in just by adding an email through the
-    // Security CRUD. Once Phase 5 is complete, delete this whole
-    // legacy branch and resolveLegacyBaseline.
-    const legacyEntry = resolveLegacyBaseline(normalized);
+    // Single-path auth: Supabase Auth is the only way in. Role + venue
+    // assignments come from app_users after sign-in succeeds. Users who
+    // don't have a password yet recover via signInWithOtp (magic link)
+    // or resetPasswordForEmail — both linked below this form.
 
     let authedOk = false;
     let authInvalidCredentials = false;
-    if (password) {
-      try {
-        const { data, error } = await supabase.auth.signInWithPassword({
-          email: normalized,
-          password,
-        });
-        if (!error && data.user) {
-          authedOk = true;
-        } else if (error && /invalid login|invalid_credentials|invalid grant/i.test(error.message)) {
-          authInvalidCredentials = true;
-        } else if (error) {
-          // Network / 5xx — log and fall through to legacy.
-          console.warn('[admin-auth] signInWithPassword transient error, trying legacy:', error);
-        }
-      } catch (e) {
-        console.warn('[admin-auth] signInWithPassword threw, trying legacy:', e);
+    let authTransientError = false;
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: normalized,
+        password,
+      });
+      if (!error && data.user) {
+        authedOk = true;
+      } else if (error && /invalid login|invalid_credentials|invalid grant/i.test(error.message)) {
+        authInvalidCredentials = true;
+      } else if (error) {
+        // Network / 5xx — surface as transient so the user knows to retry.
+        console.warn('[admin-auth] signInWithPassword transient error:', error);
+        authTransientError = true;
       }
+    } catch (e) {
+      console.warn('[admin-auth] signInWithPassword threw:', e);
+      authTransientError = true;
     }
 
     setBusy(false);
 
     const fail = (msg: string) => {
       const next = fails + 1;
-      setFails(next);
       if (next >= FAIL_LOCK_AT) {
-        setLockedUntil(Date.now() + FAIL_LOCK_MS);
+        const newLockedUntil = Date.now() + FAIL_LOCK_MS;
+        setLockedUntil(newLockedUntil);
         setFails(0);
+        saveLockState(0, newLockedUntil);
         setErr(`Too many failed attempts. Locked for ${FAIL_LOCK_MS / 1000}s.`);
       } else {
+        setFails(next);
+        saveLockState(next, lockedUntil);
         setErr(msg);
       }
     };
 
-    // If auth said "invalid" AND we have no legacy fallback, surface the
-    // real error. If a legacy candidate exists for this email, fall
-    // through to legacy (the typed password was just confused muscle
-    // memory).
-    if (authInvalidCredentials && !legacyEntry) {
-      return fail('Email or password incorrect. If you do not have a password yet, ask another admin for an invite.');
+    if (authTransientError) {
+      return fail('Sign-in temporarily unavailable. Try again in a moment, or use "Email me a sign-in link".');
+    }
+    if (authInvalidCredentials) {
+      return fail('Email or password incorrect. If you do not have a password yet, tap "Email me a sign-in link" or "Forgot your password?" below.');
+    }
+    if (!authedOk) {
+      return fail('Sign-in failed. Try again, or use "Email me a sign-in link".');
     }
 
-    let resolved: AccessEntry | null = null;
-    if (authedOk) {
-      // Authoritative role/venue lookup from the live app_users table.
-      // The legacy ACCESS_LIST cache is informational at this point.
-      await refreshAccessList();
-      resolved = resolveAccess(normalized);
-      if (!resolved) {
-        await supabase.auth.signOut().catch(() => {});
-        return fail('Signed in but no app profile found. Ask another admin to set your role.');
-      }
-    } else {
-      resolved = legacyEntry;
-    }
-
+    // Authoritative role/venue lookup from the live app_users table.
+    await refreshAccessList();
+    const resolved: AccessEntry | null = resolveAccess(normalized);
     if (!resolved) {
-      return fail('Access denied. Your email is not authorized.');
+      await safeSignOut();
+      return fail('Signed in but no app profile found. Ask another admin to set your role.');
     }
     if (resolved.role === 'counter') {
-      // Sign out the auth session too if we created one — counters do
-      // not belong here regardless of how they got in.
-      if (authedOk) await supabase.auth.signOut().catch(() => {});
+      // Counters do not belong on the desktop — invalidate the Supabase
+      // session before refusing entry. If signOut fails we cannot just
+      // refuse and trust the UI gate; the counter would still hold a
+      // valid JWT good for direct RPC / Edge Function calls. Surface a
+      // hard error telling them to close the tab so the session expires
+      // naturally rather than letting them continue with a leaked
+      // identity.
+      const cleared = await safeSignOut();
+      if (!cleared) {
+        setErr('Sign-in could not be completed cleanly. Close this tab and try again.');
+        return;
+      }
       return fail('The desktop app is for managers and admins. Use the phone app.');
     }
 
     // Use the canonical name from app_users — never the user's typed value.
     // This keeps audit columns (added_by_name, etc.) tamper-resistant.
     setFails(0);
+    saveLockState(0, 0);
     onSignedIn(resolved);
   }
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { supabase } from '@/lib/supabase';
+import { supabase, selectAllPagedFiltered } from '@/lib/supabase';
 import type { AccessEntry } from '@/lib/access';
 import type { KountAudit, KountEntry, KountMember } from '@/lib/types';
 import { Pill, Eyebrow, Card, Btn, Num, Avatar, Segment } from '@/components/atoms';
@@ -56,9 +56,15 @@ export function Summary({ user }: Props) {
 
   useEffect(() => { void load(); }, [load]);
 
+  // URL is the source of truth — manual edits + back-button win.
   useEffect(() => {
-    if (selectedId && selectedId !== auditParam) setParams({ audit: selectedId }, { replace: true });
-  }, [selectedId, auditParam, setParams]);
+    if (auditParam !== selectedId) setSelectedId(auditParam);
+  }, [auditParam, selectedId]);
+
+  const selectAudit = (id: string | null) => {
+    setSelectedId(id);
+    setParams(id ? { audit: id } : {}, { replace: true });
+  };
 
   const venues = useMemo(() => {
     const set = new Set(audits.map(a => a.venue_id));
@@ -82,7 +88,7 @@ export function Summary({ user }: Props) {
   // right pane doesn't show an audit the user can't see in the list.
   useEffect(() => {
     if (selectedId && !filtered.some(a => a.id === selectedId)) {
-      setSelectedId(null);
+      selectAudit(null);
     }
   }, [filtered, selectedId]);
 
@@ -224,7 +230,7 @@ export function Summary({ user }: Props) {
             </Card>
           )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {filtered.map(a => <SummaryListItem key={a.id} audit={a} selected={selectedId === a.id} onOpen={() => setSelectedId(a.id)} />)}
+            {filtered.map(a => <SummaryListItem key={a.id} audit={a} selected={selectedId === a.id} onOpen={() => selectAudit(a.id)} />)}
           </div>
         </aside>
 
@@ -297,13 +303,18 @@ function SummaryDetail({
   const canDelete     = user.role === 'corporate';
 
   const load = useCallback(async () => {
-    const [{ data: a }, { data: e }, { data: m }] = await Promise.all([
+    // kount_entries paginated past the 1000-row cap so the CSV export
+    // and zone breakdown don't silently lose rows from busy audits.
+    const [{ data: a }, e, { data: m }] = await Promise.all([
       supabase.from('kount_audits').select('*').eq('id', auditId).single(),
-      supabase.from('kount_entries').select('*').eq('audit_id', auditId).order('timestamp', { ascending: true }),
+      selectAllPagedFiltered<KountEntry>(
+        () => supabase.from('kount_entries').select('*').eq('audit_id', auditId),
+        { column: 'timestamp', ascending: true },
+      ).catch((err): KountEntry[] => { console.error('[summary] load entries', err); return []; }),
       supabase.from('kount_members').select('*').eq('audit_id', auditId),
     ]);
     setAudit((a as KountAudit) ?? null);
-    setEntries((e as KountEntry[]) ?? []);
+    setEntries(e);
     setMembers((m as KountMember[]) ?? []);
   }, [auditId]);
 

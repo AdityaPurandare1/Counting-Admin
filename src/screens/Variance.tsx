@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { supabase } from '@/lib/supabase';
+import { supabase, selectAllPagedFiltered } from '@/lib/supabase';
 import type { AccessEntry } from '@/lib/access';
 import type { KountAudit, KountEntry, KountMember, KountAvtReport, KountAvtRow } from '@/lib/types';
 import { Pill, Eyebrow, Card, Btn, Num, Money, Avatar } from '@/components/atoms';
@@ -73,10 +73,12 @@ export function Variance({ user }: Props) {
     return () => { supabase.removeChannel(ch); };
   }, [loadAudits]);
 
-  // Keep URL ?audit=... in sync with the selection
+  // URL is the source of truth — let manual edits + back-button win.
+  // Previously this effect wrote state INTO the URL on every selectedId
+  // change, which clobbered user-typed URL edits within milliseconds.
   useEffect(() => {
-    if (selectedId && selectedId !== auditParam) setSearchParams({ audit: selectedId }, { replace: true });
-  }, [selectedId, auditParam, setSearchParams]);
+    if (auditParam !== selectedId) setSelectedId(auditParam);
+  }, [auditParam, selectedId]);
 
   const openAudit = (id: string) => {
     const a = [...activeAudits, ...historicAudits].find(x => x.id === id);
@@ -86,6 +88,7 @@ export function Variance({ user }: Props) {
       if (!ok) return;
     }
     setSelectedId(id);
+    setSearchParams({ audit: id }, { replace: true });
   };
 
   return (
@@ -145,13 +148,19 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
   const [closing, setClosing] = useState(false);
 
   const load = useCallback(async () => {
-    const [{ data: a }, { data: e }, { data: m }] = await Promise.all([
+    // kount_entries paginated past the 1000-row cap so busy audits don't
+    // silently truncate stat tiles (totalEntries, totalQty, byZone,
+    // byCounter). Other queries here naturally fit under the cap.
+    const [{ data: a }, e, { data: m }] = await Promise.all([
       supabase.from('kount_audits').select('*').eq('id', auditId).single(),
-      supabase.from('kount_entries').select('*').eq('audit_id', auditId).order('timestamp', { ascending: false }),
+      selectAllPagedFiltered<KountEntry>(
+        () => supabase.from('kount_entries').select('*').eq('audit_id', auditId),
+        { column: 'timestamp', ascending: false },
+      ).catch((err): KountEntry[] => { console.error('[variance] load entries', err); return []; }),
       supabase.from('kount_members').select('*').eq('audit_id', auditId),
     ]);
     setAudit((a as KountAudit) ?? null);
-    setEntries((e as KountEntry[]) ?? []);
+    setEntries(e);
     setMembers((m as KountMember[]) ?? []);
   }, [auditId]);
 
@@ -178,6 +187,14 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { if (audit?.venue_id) void loadAvt(audit.venue_id); }, [audit?.venue_id, loadAvt]);
 
+  // Hold the latest venue_id in a ref so the realtime callback always
+  // reads the current value, not the value at subscription time. Without
+  // this the AVT-INSERT handler closes over the venue_id that was set
+  // when the subscription first fired (often null on first render),
+  // dropping events that arrive in the window before the audit loads.
+  const venueIdRef = useRef<string | null>(audit?.venue_id ?? null);
+  useEffect(() => { venueIdRef.current = audit?.venue_id ?? null; }, [audit?.venue_id]);
+
   useEffect(() => {
     const ch = supabase
       .channel('kount-audit-detail-' + auditId)
@@ -187,11 +204,12 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
       // New AVT reports touching this venue → refresh variance table
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'kount_avt_reports' }, (evt) => {
         const row = evt.new as KountAvtReport;
-        if (audit?.venue_id && row?.venue_ids?.includes(audit.venue_id)) void loadAvt(audit.venue_id);
+        const currentVenueId = venueIdRef.current;
+        if (currentVenueId && row?.venue_ids?.includes(currentVenueId)) void loadAvt(currentVenueId);
       })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
-  }, [auditId, load, loadAvt, audit?.venue_id]);
+  }, [auditId, load, loadAvt]);
 
   const stats = useMemo(() => {
     const totalEntries = entries.length;

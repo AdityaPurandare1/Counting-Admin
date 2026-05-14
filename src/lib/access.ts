@@ -3,12 +3,11 @@ import { supabase } from './supabase';
 
 /** Access-list rows mirror the app_users table (0003_app_users.sql).
  *
- *  Primary source of truth is Supabase; the BASELINE list below is a
- *  compile-time fallback so the desktop app can still log someone in if
- *  Supabase is unreachable (e.g. during a network blip or the very first
- *  time someone loads the app before 0003 is applied). Both apps also
- *  cache the Supabase list in localStorage so subsequent offline logins
- *  work. */
+ *  Supabase is the single source of truth. ACCESS_LIST is hydrated from a
+ *  localStorage cache for instant first paint, then refreshed live from
+ *  app_users on app boot. A fresh install starts empty — login waits for
+ *  the Supabase fetch to populate it (or accepts that an unknown email
+ *  will be denied until the admin invites them). */
 
 export interface AccessEntry {
   email: string;
@@ -19,24 +18,9 @@ export interface AccessEntry {
 
 const CACHE_KEY = 'kount_admin_app_users_cache_v1';
 
-/** Baseline / fallback — kept in sync with the seed rows in 0003_app_users.sql
- *  so fresh installs still log in without a DB round-trip. Any edits made
- *  through the Security screen will override these via the Supabase fetch. */
-const BASELINE: AccessEntry[] = [
-  { email: 'admin@hwood.com',    name: 'Admin',     role: 'corporate', venueIds: 'all' },
-  { email: 'ceo@hwood.com',      name: 'CEO',       role: 'corporate', venueIds: 'all' },
-  { email: 'manager1@hwood.com', name: 'Manager 1', role: 'manager',   venueIds: ['v1', 'v2', 'v3'] },
-  { email: 'manager2@hwood.com', name: 'Manager 2', role: 'manager',   venueIds: ['v4', 'v5', 'v6'] },
-  { email: 'manager3@hwood.com', name: 'Manager 3', role: 'manager',   venueIds: ['v7', 'v8', 'v9', 'v10'] },
-  { email: 'counter1@team.com',  name: 'Counter 1', role: 'counter',   venueIds: ['v1', 'v2'] },
-  { email: 'counter2@team.com',  name: 'Counter 2', role: 'counter',   venueIds: ['v3', 'v4'] },
-  { email: 'counter3@team.com',  name: 'Counter 3', role: 'counter',   venueIds: ['v5', 'v6'] },
-  { email: 'counter4@team.com',  name: 'Counter 4', role: 'counter',   venueIds: ['v7', 'v8'] },
-  { email: 'counter5@team.com',  name: 'Counter 5', role: 'counter',   venueIds: ['v9', 'v10'] },
-];
-
-// Keep the list accessible even before a first fetch — seed with BASELINE.
-export let ACCESS_LIST: AccessEntry[] = loadCache() ?? BASELINE.slice();
+// Start empty when there's no cache. refreshAccessList() populates it from
+// Supabase on App boot; until then, only cached users are resolvable.
+export let ACCESS_LIST: AccessEntry[] = loadCache() ?? [];
 
 /* v0.28: VENUES is now backed by a Supabase `venues` table (migration 0013).
  * The const below stays as the boot-time fallback so the app still renders
@@ -154,22 +138,6 @@ export async function refreshAccessList(): Promise<AccessEntry[]> {
 export function resolveAccess(email: string): AccessEntry | null {
   const e = email.trim().toLowerCase();
   return ACCESS_LIST.find(a => a.email.toLowerCase() === e) ?? null;
-}
-
-/** Legacy (no-password) sign-in resolver — restricted to the HARDCODED
- *  BASELINE only, NOT the runtime-loaded ACCESS_LIST. Rationale:
- *    - During the auth migration we keep a no-password fallback so the
- *      original team can still get in if Supabase Auth has an issue.
- *    - But ANY user added via the Security UI (which writes to app_users)
- *      should be forced to go through Supabase Auth — otherwise admins
- *      could grant new accounts that bypass the password requirement
- *      just by adding an email through the Security CRUD.
- *    - The BASELINE is the closed set of original break-glass admins
- *      from when the app shipped. Once Phase 5 is complete, delete this
- *      function and the BASELINE constant entirely. */
-export function resolveLegacyBaseline(email: string): AccessEntry | null {
-  const e = email.trim().toLowerCase();
-  return BASELINE.find(a => a.email.toLowerCase() === e) ?? null;
 }
 
 /** Async variant — refreshes from Supabase first, then resolves. Falls back

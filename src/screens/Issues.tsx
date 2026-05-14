@@ -101,11 +101,22 @@ export function Issues({ user }: Props) {
   useEffect(() => { void load(); }, [load]);
 
   useEffect(() => {
+    // Debounce: during a busy audit kount_entries fires many events per
+    // second, and load() re-runs the full filtered query each time.
+    // Coalesce bursts into a single reload after 500ms of quiet.
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const debouncedReload = () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => { void load(); }, 500);
+    };
     const ch = supabase
       .channel('kount-issues-live')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'kount_entries' }, () => { void load(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'kount_entries' }, debouncedReload)
       .subscribe();
-    return () => { supabase.removeChannel(ch); };
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      supabase.removeChannel(ch);
+    };
   }, [load]);
 
   const rendered = useMemo(() => {

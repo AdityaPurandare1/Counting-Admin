@@ -204,6 +204,38 @@ export function Inventory({ user }: Props) {
     if (!parsed || parsed.length === 0) return;
     setPhase('committing'); setError(null); setSummary(null);
     try {
+      // Replace-mode safety: the preview's `removeIds` set was computed when
+      // the file was picked. Between then and now, another admin could
+      // have added carried items via /catalog. The RPC re-reads state
+      // server-side and would remove those too — silently. Re-fetch and
+      // diff the wouldRemove set; if it drifted, force the admin to
+      // acknowledge before we commit. Merge-mode imports don't touch the
+      // carried set so this check is skipped.
+      if (replaceMode) {
+        const latestCarried = await selectAllPaged<{ purchase_item_id: string }>(
+          'kount_carried_items', 'purchase_item_id', 'purchase_item_id',
+        );
+        const latestCarriedSet = new Set(latestCarried.map(r => r.purchase_item_id));
+        const csvMatchedIds = new Set(fates.filter(x => x.matchedId).map(x => x.matchedId!));
+        const liveWouldRemove = Array.from(latestCarriedSet).filter(id => !csvMatchedIds.has(id));
+        const previewSet = new Set(removeIds);
+        const liveSet    = new Set(liveWouldRemove);
+        const added    = liveWouldRemove.filter(id => !previewSet.has(id));
+        const removed  = removeIds.filter(id => !liveSet.has(id));
+        if (added.length > 0 || removed.length > 0) {
+          const msg =
+            `Carried items changed since preview:\n` +
+            (added.length   > 0 ? `  +${added.length} would now also be removed (added to carried by another admin)\n` : '') +
+            (removed.length > 0 ? `  -${removed.length} are no longer carried (already removed)\n` : '') +
+            `\nReplace will remove ${liveWouldRemove.length} item${liveWouldRemove.length === 1 ? '' : 's'} total (preview said ${removeIds.length}).\n\n` +
+            `Proceed?`;
+          if (!confirm(msg)) {
+            setPhase(null);
+            return;
+          }
+        }
+      }
+
       // Use the RPC because purchase_items writes need SECURITY DEFINER.
       const { data, error } = await supabase.rpc('import_inventory_csv', {
         p_items: parsed,
@@ -218,7 +250,7 @@ export function Inventory({ user }: Props) {
       setError((e as Error).message || 'Import failed');
       setPhase(null);
     }
-  }, [parsed, replaceMode, user.email, user.name]);
+  }, [parsed, replaceMode, fates, removeIds, user.email, user.name]);
 
   const reset = () => {
     setParsed(null); setFates([]); setRemoveIds([]); setSummary(null); setError(null); setPhase(null);
