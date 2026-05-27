@@ -281,6 +281,9 @@ export interface KountRecount {
   id: string;
   audit_id: string;
   item_id: string | null;
+  // Migration 0029 — Path B forward read path; item_id stays for back-compat.
+  // Null on AVT/name-derived recount rows that have no master_items link.
+  master_item_id?: string | null;
   item_name: string;
   severity: Severity;
   variance_value: number | null;

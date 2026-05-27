@@ -403,13 +403,16 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
     // (the merge key is `audit_id, zone, item, is_recount`), so two devices
     // counting the same bottle in the same zone during count2 would create
     // two rows instead of merging.
-    // Post Path B: writes BOTH item_id (back-compat) AND master_item_id.
+    // Path B: the master id goes ONLY in master_item_id. item_id is the
+    // legacy purchase_items FK — writing a master_items.id there violates
+    // the FK (Postgres 23503), so it must be null for master-catalog entries.
+    // Mirrors the phone's syncEntryToSupabase fix (item_id: null).
     // master_items has no sku/upc columns — those come from purchase_items
     // and master_item_upcs respectively. Leave the sku/upc payload fields
     // null on admin-typed entries; the phone fills them via its scan path.
     const row = {
       audit_id:         audit.id,
-      item_id:          item?.id ?? null,
+      item_id:          null,
       master_item_id:   item?.id ?? null,
       item_name:        itemName,
       category:         item?.category ?? null,

@@ -2,7 +2,12 @@ import type { MasterItem } from './types';
 
 /** Parse a Bevager 'Director' inventory XLSX workbook and pull the item rows
  *  from the '2. Inventory' sheet (column layout observed from a real export).
- *  Returns both the raw cells and a normalized name for matching. */
+ *  Returns both the raw cells and a normalized name for matching.
+ *
+ *  Reading is done with `exceljs` (lazy-loaded). This replaced `xlsx`
+ *  (SheetJS), which had two open advisories with no patch available
+ *  (prototype pollution + ReDoS); exceljs is actively maintained and free of
+ *  those CVEs. */
 
 export interface BevagerRow {
   name: string;             // raw ITEM column
@@ -11,38 +16,82 @@ export interface BevagerRow {
   quantity: number;         // on-hand count
 }
 
-// Hard cap on workbook size. The xlsx library has a known ReDoS CVE
-// (GHSA-5pgg-2g8v-p4x9) that a crafted file can trigger — bounding the
-// input size limits the worst-case CPU burn even if a malicious file
-// gets uploaded. Real Bevager exports are typically <2 MB; 10 MB is
-// generous headroom while still well below "spike the tab for minutes."
+// Hard cap on workbook size. Bounding the input size keeps the worst-case
+// CPU/memory burn predictable even if a malicious file gets uploaded. Real
+// Bevager exports are typically <2 MB; 10 MB is generous headroom while
+// still well below "spike the tab for minutes."
 const MAX_WORKBOOK_BYTES = 10 * 1024 * 1024;
 
-// SECURITY NOTE (deferred):
-//   xlsx@0.18.5 has two open advisories (prototype pollution + ReDoS,
-//   no patch available). We accept the residual risk for now because:
-//     - Catalog import is corporate-role-only via the Security gate.
-//     - Files come from a trusted SaaS (Bevager Director) export.
-//     - Our downstream usage doesn't iterate parsed object keys with
-//       for-in (which is the common vehicle for prototype-pollution
-//       exploitation) — we read explicit named columns only.
-//   Follow-up: replace with `exceljs` (active maintenance, no critical
-//   CVEs, similar bundle weight). Tracked separately.
+// Coerce an ExcelJS cell value into the plain string/number the old
+// sheet_to_json (xlsx) path produced, so downstream column detection and
+// matching keys stay byte-for-byte identical.
+//
+// ExcelJS cell `.value` can be: string | number | boolean | Date | null |
+// { richText: [...] } | { formula, result } | { hyperlink, text } |
+// { sharedFormula, result } | { error }. We unwrap the rich variants to
+// their visible text/value; anything we can't resolve becomes ''.
+function cellValue(value: unknown): string | number {
+  if (value == null) return '';
+  if (typeof value === 'string' || typeof value === 'number') return value;
+  if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'object') {
+    const v = value as Record<string, unknown>;
+    // Rich text: concatenate the run texts.
+    if (Array.isArray(v.richText)) {
+      return (v.richText as Array<{ text?: unknown }>)
+        .map(r => (r && typeof r.text === 'string' ? r.text : ''))
+        .join('');
+    }
+    // Formula / shared formula: prefer the computed result.
+    if ('result' in v) return cellValue(v.result);
+    // Hyperlink: the displayed text is what a human reads in the cell.
+    if ('text' in v) return cellValue(v.text);
+    // Error cells (e.g. { error: '#N/A' }) have no usable value.
+  }
+  return '';
+}
+
 export async function parseBevagerWorkbook(file: File): Promise<BevagerRow[]> {
   if (file.size > MAX_WORKBOOK_BYTES) {
     throw new Error(`Workbook is ${Math.round(file.size / 1024 / 1024)} MB — limit is ${MAX_WORKBOOK_BYTES / 1024 / 1024} MB.`);
   }
-  // Lazy-load xlsx so the main bundle stays lean for counters / managers who
-  // never open the Catalog import path.
-  const XLSX = await import('xlsx');
+  // Lazy-load exceljs so the main bundle stays lean for counters / managers
+  // who never open the Catalog import path. exceljs is CommonJS: bundlers
+  // (Vite/Rollup) hoist its exports onto the namespace, but raw Node ESM nests
+  // them under `.default`. Resolve both so `ExcelJS.Workbook` works either way.
+  const mod = await import('exceljs');
+  const ExcelJS = ((mod as unknown as { default?: typeof import('exceljs') }).default ?? mod);
   const buf = await file.arrayBuffer();
   return new Promise((resolve, reject) => {
+    (async () => {
     try {
-      const wb = XLSX.read(buf, { type: 'array' });
-      const sheetName = wb.SheetNames.find(n => /inventory/i.test(n)) || wb.SheetNames[1] || wb.SheetNames[0];
-      if (!sheetName) { reject(new Error('Workbook has no sheets')); return; }
-      const sheet = wb.Sheets[sheetName];
-      const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '' });
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.load(buf);
+      // Mirror the old sheet selection: prefer a sheet whose name matches
+      // /inventory/i, else the 2nd sheet, else the 1st.
+      const ws =
+        wb.worksheets.find(s => /inventory/i.test(s.name)) ||
+        wb.worksheets[1] ||
+        wb.worksheets[0];
+      if (!ws) { reject(new Error('Workbook has no sheets')); return; }
+
+      // Build dense, 0-based rows of arrays matching xlsx's
+      // sheet_to_json({ header: 1, defval: '' }) output: every used row is
+      // present, every cell is a string/number (empty -> ''), and column
+      // index 0 == spreadsheet column A. ExcelJS rows/cells are 1-based and
+      // sparse, so we expand them explicitly.
+      const rows: Array<Array<string | number>> = [];
+      ws.eachRow({ includeEmpty: true }, (row) => {
+        const arr: Array<string | number> = [];
+        // cellCount is the highest populated column (1-based). Walk 1..N and
+        // emit a value for each, defaulting empties to '' (defval behavior).
+        const last = row.cellCount;
+        for (let c = 1; c <= last; c++) {
+          arr.push(cellValue(row.getCell(c).value));
+        }
+        rows.push(arr);
+      });
 
         // Find the header row. A naive "any cell starts with ITEM" check
         // false-positives on rows like "ITEMIZED CHANGES" in section
@@ -93,6 +142,7 @@ export async function parseBevagerWorkbook(file: File): Promise<BevagerRow[]> {
     } catch (e) {
       reject(e);
     }
+    })();
   });
 }
 
