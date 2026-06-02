@@ -186,6 +186,9 @@ export interface KountAvtReport {
   row_count: number;
   venue_ids: string[];
   notes: string | null;
+  source: 'uploaded' | 'computed';
+  audit_id: string | null;
+  computed_at: string | null;
 }
 
 export interface KountAvtRow {

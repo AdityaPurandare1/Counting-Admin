@@ -347,6 +347,9 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
           {avtReport
             ? <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
                 uploaded {new Date(avtReport.uploaded_at).toLocaleString()} · by {avtReport.uploaded_by_name || avtReport.uploaded_by_email} · {avtReport.file_name}
+                <span style={{ marginLeft: 6, fontSize: 11, color: avtReport.source === 'computed' ? 'var(--success)' : 'var(--fg-muted)' }}>
+                  · {avtReport.source === 'computed' ? 'Computed' : 'Uploaded'}
+                </span>
               </span>
             : <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>no report uploaded for this venue yet</span>}
         </div>
