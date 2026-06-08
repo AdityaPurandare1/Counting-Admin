@@ -31,22 +31,27 @@ const PAGE_SIZE = 50;
 
 type FilterChoice = 'all' | 'carried' | 'uncarried';
 
-// Helper: pull every in-scope active master_item from Supabase.
+// Helper: pull every in-scope master_item from Supabase.
 // selectAllPaged orders by name so the pagination is deterministic.
-async function fetchInScopeMasters(): Promise<MasterItem[]> {
+// When includeArchived is true, archived rows (is_active=false) are pulled
+// too — used by the "Show archived" toggle so admins can self-serve cleanup
+// (Anna @ Poppy 2026-06: "are we also able to delete variants that don't
+// correlate to inventory any longer").
+async function fetchInScopeMasters(includeArchived = false): Promise<MasterItem[]> {
   // The IN_SCOPE_FILTER constant in types.ts is the PostgREST format
   // ('category=in.("a","b",...)') — but supabase-js .in() wants the raw
   // array. Use the array directly here.
   const out: MasterItem[] = [];
   const PAGE = 1000;
   for (let p = 0; p < 50; p++) {
-    const { data, error } = await supabase
+    let q = supabase
       .from('master_items')
       .select('id,name,category,subcategory,base_unit,base_size,is_active')
-      .eq('is_active', true)
       .in('category', IN_SCOPE_CATEGORIES as unknown as string[])
       .order('name')
       .range(p * PAGE, p * PAGE + PAGE - 1);
+    if (!includeArchived) q = q.eq('is_active', true);
+    const { data, error } = await q;
     if (error) throw error;
     if (!data || data.length === 0) break;
     out.push(...(data as unknown as MasterItem[]));
@@ -63,6 +68,10 @@ export function Catalog({ user }: Props) {
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(0);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
+  // Independent flag so the row's Archive/Restore button can show a spinner
+  // without locking the Carried toggle (and vice versa).
+  const [archivingId, setArchivingId] = useState<string | null>(null);
   const [importPreview, setImportPreview] = useState<{
     matches: MatchResult[];
     unmatched: MatchResult[];
@@ -82,7 +91,7 @@ export function Catalog({ user }: Props) {
     setLoading(true);
     try {
       const [cat, carr] = await Promise.all([
-        fetchInScopeMasters(),
+        fetchInScopeMasters(showArchived),
         selectAllPaged<{ master_item_id: string }>(
           'kount_carried_items',
           'master_item_id',
@@ -100,7 +109,7 @@ export function Catalog({ user }: Props) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [showArchived]);
 
   useEffect(() => { void loadAll(); }, [loadAll]);
 
@@ -260,6 +269,61 @@ export function Catalog({ user }: Props) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
+  // Soft-delete: flip master_items.is_active to false. Counters' scan,
+  // search, and photo flows all already filter on is_active (Fix G + Path
+  // B catalog loader), so archiving makes the row invisible to future
+  // counts without breaking historical kount_entries that point at it.
+  // Anna @ Poppy 2026-06: "are we also able to delete variants that don't
+  // correlate to inventory any longer". (Self-serve so admin doesn't have
+  // to ping the dev team to run SQL.)
+  const archiveItem = async (item: MasterItem) => {
+    if (archivingId) return;
+    const confirmed = window.confirm(
+      `Archive "${item.name}"?\n\nIt will disappear from counter search/scan/photo. Historical counts that reference it stay intact. You can restore from "Show archived".`,
+    );
+    if (!confirmed) return;
+    setArchivingId(item.id);
+    // Optimistic: drop it from view (unless Show archived is on, in which
+    // case dim it via the is_active flag instead).
+    const prev = items;
+    setItems(curr =>
+      showArchived
+        ? curr.map(it => (it.id === item.id ? { ...it, is_active: false } : it))
+        : curr.filter(it => it.id !== item.id),
+    );
+    try {
+      const { error } = await supabase
+        .from('master_items')
+        .update({ is_active: false })
+        .eq('id', item.id);
+      if (error) throw new Error(error.message);
+    } catch (e) {
+      setItems(prev); // revert
+      alert('Archive failed: ' + (e as Error).message);
+    } finally {
+      setArchivingId(null);
+    }
+  };
+
+  const restoreItem = async (item: MasterItem) => {
+    if (archivingId) return;
+    setArchivingId(item.id);
+    const prev = items;
+    setItems(curr => curr.map(it => (it.id === item.id ? { ...it, is_active: true } : it)));
+    try {
+      const { error } = await supabase
+        .from('master_items')
+        .update({ is_active: true })
+        .eq('id', item.id);
+      if (error) throw new Error(error.message);
+    } catch (e) {
+      setItems(prev);
+      alert('Restore failed: ' + (e as Error).message);
+    } finally {
+      setArchivingId(null);
+    }
+  };
+
   const toggle = async (item: MasterItem) => {
     if (busyId) return;
     setBusyId(item.id);
@@ -348,6 +412,15 @@ export function Catalog({ user }: Props) {
                 ]}
               />
             </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--fg-muted)', userSelect: 'none', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={showArchived}
+                onChange={e => { setShowArchived(e.target.checked); setPage(0); }}
+                style={{ cursor: 'pointer' }}
+              />
+              Show archived
+            </label>
             <Eyebrow>{filtered.length} match{filtered.length === 1 ? '' : 'es'}</Eyebrow>
           </div>
         </Card>
@@ -366,29 +439,40 @@ export function Catalog({ user }: Props) {
                   <th style={{ padding: '10px 14px' }}>Size</th>
                   <th style={{ padding: '10px 14px' }}>Category</th>
                   <th style={{ padding: '10px 14px' }}>Subcategory</th>
+                  <th style={{ padding: '10px 14px', width: 100, textAlign: 'right' }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {pageItems.map(item => {
                   const on = carried.has(item.id);
+                  // is_active === false means archived. Dim the row and
+                  // swap the action button to "Restore" so admins can see
+                  // and undo accidental archives when "Show archived" is on.
+                  const isArchived = item.is_active === false;
+                  const rowBg = isArchived
+                    ? 'var(--off-200)'
+                    : (on ? 'var(--teal-100)' : undefined);
                   return (
-                    <tr key={item.id} style={{ borderBottom: '1px solid var(--border)', background: on ? 'var(--teal-100)' : undefined }}>
+                    <tr key={item.id} style={{ borderBottom: '1px solid var(--border)', background: rowBg, opacity: isArchived ? 0.6 : 1 }}>
                       <td style={{ padding: '8px 14px' }}>
                         <button
                           onClick={() => void toggle(item)}
-                          disabled={busyId === item.id}
+                          disabled={busyId === item.id || isArchived}
                           style={{
-                            width: 22, height: 22, borderRadius: 6, cursor: 'pointer',
+                            width: 22, height: 22, borderRadius: 6, cursor: isArchived ? 'not-allowed' : 'pointer',
                             border: '1px solid ' + (on ? 'var(--teal-300)' : 'var(--border-strong)'),
                             background: on ? 'var(--teal-300)' : '#FFF',
                             color: '#FFF', display: 'grid', placeItems: 'center',
                           }}
-                          title={on ? 'Remove from carried' : 'Mark as carried'}
+                          title={isArchived ? 'Archived — restore first to mark carried' : (on ? 'Remove from carried' : 'Mark as carried')}
                         >
                           {on ? Ic.check(14) : ''}
                         </button>
                       </td>
-                      <td style={{ padding: '8px 14px', fontWeight: 500 }}>{item.name}</td>
+                      <td style={{ padding: '8px 14px', fontWeight: 500 }}>
+                        {item.name}
+                        {isArchived && <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--copper-400)', textTransform: 'uppercase', letterSpacing: 1, fontWeight: 600 }}>archived</span>}
+                      </td>
                       <td style={{ padding: '8px 14px', color: 'var(--fg-muted)' }}>
                         {item.base_size != null && item.base_unit
                           ? `${item.base_size}${String(item.base_unit).toLowerCase()}`
@@ -396,6 +480,17 @@ export function Catalog({ user }: Props) {
                       </td>
                       <td style={{ padding: '8px 14px', color: 'var(--fg-muted)' }}>{item.category || '—'}</td>
                       <td style={{ padding: '8px 14px', color: 'var(--fg-muted)' }}>{item.subcategory || '—'}</td>
+                      <td style={{ padding: '8px 14px', textAlign: 'right' }}>
+                        {isArchived ? (
+                          <Btn variant="ghost" size="sm" onClick={() => void restoreItem(item)} disabled={archivingId === item.id}>
+                            {archivingId === item.id ? '…' : 'Restore'}
+                          </Btn>
+                        ) : (
+                          <Btn variant="ghost" size="sm" onClick={() => void archiveItem(item)} disabled={archivingId === item.id}>
+                            {archivingId === item.id ? '…' : 'Archive'}
+                          </Btn>
+                        )}
+                      </td>
                     </tr>
                   );
                 })}
