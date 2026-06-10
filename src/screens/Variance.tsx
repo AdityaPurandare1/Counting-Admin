@@ -5,7 +5,6 @@ import type { AccessEntry } from '@/lib/access';
 import type { KountAudit, KountEntry, KountMember, KountAvtReport, KountAvtRow } from '@/lib/types';
 import { Pill, Eyebrow, Card, Btn, Num, Money, Avatar } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
-import { AvtUpload } from '@/components/AvtUpload';
 
 /* ───────────────────────────────────────────────────────────────────────
    Variance screen (v0.3)
@@ -99,7 +98,6 @@ export function Variance({ user }: Props) {
           <h1>Active audits</h1>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <AvtUpload user={user} onUploaded={() => { /* detail pane re-fetches via realtime subscription on kount_avt_reports */ }} />
           <Btn variant="secondary" size="sm" onClick={() => void loadAudits()}>Refresh</Btn>
         </div>
       </div>
@@ -234,6 +232,15 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
 
   const closeCount1 = async () => {
     if (!audit || closing) return;
+    // Closing from the desktop does NOT build kount_recounts — only the
+    // phone's close flow generates the recount list. Keep the action
+    // available (corporate may need it) but make sure it's informed.
+    if (!confirm(
+      `Close Count 1 for ${audit.join_code} (${audit.venue_name})?\n\n` +
+      'WARNING: closing from the desktop will NOT generate the recount list — ' +
+      'that only happens when the counting manager closes Count 1 on the phone. ' +
+      'Count 2 will start without a recount list.\n\nProceed anyway?'
+    )) return;
     setClosing(true);
     const { error } = await supabase
       .from('kount_audits')
@@ -351,7 +358,7 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
                   · {avtReport.source === 'computed' ? 'Computed' : 'Uploaded'}
                 </span>
               </span>
-            : <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>no report uploaded for this venue yet</span>}
+            : <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>no AVT report for this venue yet — one is computed automatically when an audit's Count 2 closes on the phone</span>}
         </div>
         {avtReport && avtRows.length > 0 && (
           <>

@@ -203,9 +203,12 @@ function UpcQueue({ user, onCount }: { user: AccessEntry; onCount: (n: number) =
     setLastError(null);
     try {
       // If another master owns the UPC, delete the existing row first to
-      // avoid the unique-index conflict on our insert.
+      // avoid the unique-index conflict on our insert. Abort on failure —
+      // proceeding would leave the barcode linked to the old master while
+      // the mapping row claims it was moved.
       if (existingOwnerName) {
-        await supabase.from('master_item_upcs').delete().eq('upc_normalized', newNorm);
+        const { error: delErr } = await supabase.from('master_item_upcs').delete().eq('upc_normalized', newNorm);
+        if (delErr) throw new Error(`could not unlink UPC from "${existingOwnerName}": ${delErr.message} — nothing was changed`);
       }
       const { error: miuErr } = await supabase
         .from('master_item_upcs')
@@ -426,18 +429,25 @@ function ItemQueue({ user, onCount }: { user: AccessEntry; onCount: (n: number) 
       const newMasterId = (created as { id: string }).id;
 
       // If the pending row carried a UPC, attach it to the new master.
+      // A failure here doesn't roll back the approval (the master_items row
+      // already exists and is the thing being approved), but it must be
+      // surfaced — a silently dropped UPC means the barcode scans to
+      // nothing and nobody knows why.
+      let upcAttachError: string | null = null;
       const upcNorm = (row.upc || '').replace(/\D/g, '').replace(/^0+/, '');
       if (upcNorm) {
-        await supabase.from('master_item_upcs').insert({
+        const { error: upcErr } = await supabase.from('master_item_upcs').insert({
           master_item_id: newMasterId,
           upc_raw:        row.upc,
           upc_normalized: upcNorm,
           source:         'admin_force_approve_pending',
           notes:          'From kount_pending_items via Approvals force-approve',
           added_by_email: user.email,
-        }).then(({ error }) => {
-          if (error) console.warn('[approvals] master_item_upcs insert failed (continuing):', error);
         });
+        if (upcErr) {
+          console.warn('[approvals] master_item_upcs insert failed (continuing):', upcErr);
+          upcAttachError = upcErr.message;
+        }
       }
 
       const { error: pendErr } = await supabase
@@ -451,6 +461,13 @@ function ItemQueue({ user, onCount }: { user: AccessEntry; onCount: (n: number) 
         })
         .eq('id', row.id);
       if (pendErr) throw new Error('kount_pending_items update: ' + pendErr.message);
+
+      if (upcAttachError) {
+        setLastError(
+          `"${row.name}" was approved (master_items row created), BUT UPC ${row.upc} ` +
+          `could not be attached: ${upcAttachError}. Link it manually from Counts → Link UPC.`
+        );
+      }
     } catch (e: unknown) {
       const msg = (e as Error).message || 'unknown error';
       setLastError('Force-approve failed: ' + msg);

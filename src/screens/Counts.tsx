@@ -188,6 +188,7 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
   const [carried, setCarried] = useState<Set<string>>(new Set());
   const [currentZone, setCurrentZone] = useState<string>('');
   const [loadingCatalog, setLoadingCatalog] = useState(true);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
 
   const defaultZones = useMemo(() => getDefaultZones(audit.venue_id), [audit.venue_id]);
   const allZones = useMemo(() => {
@@ -225,35 +226,46 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
 
   const loadCatalogAndCarried = useCallback(async () => {
     setLoadingCatalog(true);
-    // Post Path B: catalog = master_items (in-scope only); carried set is
-    // keyed by master_item_id.
-    const [cat, carr] = await Promise.all([
-      (async () => {
-        const out: MasterItem[] = [];
-        for (let p = 0; p < 50; p++) {
-          const { data, error } = await supabase
-            .from('master_items')
-            .select('id,name,category,subcategory,base_unit,base_size,is_active')
-            .eq('is_active', true)
-            .in('category', IN_SCOPE_CATEGORIES as unknown as string[])
-            .order('name')
-            .range(p * 1000, p * 1000 + 999);
-          if (error) throw error;
-          if (!data || data.length === 0) break;
-          out.push(...(data as unknown as MasterItem[]));
-          if (data.length < 1000) break;
-        }
-        return out;
-      })(),
-      selectAllPaged<{ master_item_id: string }>(
-        'kount_carried_items',
-        'master_item_id',
-        'master_item_id',
-      ),
-    ]);
-    setCatalog(cat);
-    setCarried(new Set(carr.map(r => r.master_item_id).filter(Boolean) as string[]));
-    setLoadingCatalog(false);
+    setCatalogError(null);
+    // Wrapped in try/catch/finally (like Catalog.tsx's loadAll): the queries
+    // throw on error / selectAllPaged truncation, and this is invoked as
+    // `void` from a useEffect — an unhandled rejection here used to leave
+    // loadingCatalog stuck true and the entry inputs disabled forever.
+    try {
+      // Post Path B: catalog = master_items (in-scope only); carried set is
+      // keyed by master_item_id.
+      const [cat, carr] = await Promise.all([
+        (async () => {
+          const out: MasterItem[] = [];
+          for (let p = 0; p < 50; p++) {
+            const { data, error } = await supabase
+              .from('master_items')
+              .select('id,name,category,subcategory,base_unit,base_size,is_active')
+              .eq('is_active', true)
+              .in('category', IN_SCOPE_CATEGORIES as unknown as string[])
+              .order('name')
+              .range(p * 1000, p * 1000 + 999);
+            if (error) throw error;
+            if (!data || data.length === 0) break;
+            out.push(...(data as unknown as MasterItem[]));
+            if (data.length < 1000) break;
+          }
+          return out;
+        })(),
+        selectAllPaged<{ master_item_id: string }>(
+          'kount_carried_items',
+          'master_item_id',
+          'master_item_id',
+        ),
+      ]);
+      setCatalog(cat);
+      setCarried(new Set(carr.map(r => r.master_item_id).filter(Boolean) as string[]));
+    } catch (e) {
+      console.error('[counts] load catalog/carried', e);
+      setCatalogError((e as Error).message || 'Unknown error');
+    } finally {
+      setLoadingCatalog(false);
+    }
   }, []);
 
   useEffect(() => { void loadEntries(); }, [loadEntries]);
@@ -429,7 +441,47 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
       timestamp:        new Date().toISOString(),
     };
     const { error } = await supabase.from('kount_entries').insert(row);
-    if (error) { alert('Add entry failed: ' + error.message); return; }
+    if (error) {
+      // 23505 = the merge-key unique index (audit_id, zone, lower(item_name)
+      // when item_id is null, is_recount) — the item was already counted in
+      // this zone. Mirror the phone's merge semantics: add the qty onto the
+      // existing row instead of surfacing a raw duplicate-key error.
+      if (error.code === '23505') {
+        // ilike with % and _ escaped = exact case-insensitive name match,
+        // same comparison the lower(item_name) index key uses.
+        const namePattern = itemName.replace(/[\\%_]/g, ch => '\\' + ch);
+        const { data: dupes, error: findErr } = await supabase
+          .from('kount_entries')
+          .select('id,qty,item_name')
+          .eq('audit_id', audit.id)
+          .eq('zone', payload.zone)
+          .eq('is_recount', false)
+          .ilike('item_name', namePattern)
+          .limit(1);
+        const existing = (dupes ?? [])[0] as { id: string; qty: number; item_name: string } | undefined;
+        if (findErr || !existing) {
+          alert(
+            `"${itemName}" was already counted in ${payload.zone}, but the existing entry ` +
+            `could not be found to merge into${findErr ? ' (' + findErr.message + ')' : ''}.\n\n` +
+            `Refresh and edit the existing row in the entries table instead.`
+          );
+          return;
+        }
+        const mergedQty = Number(existing.qty) + payload.qty;
+        const { error: updErr } = await supabase
+          .from('kount_entries')
+          .update({ qty: mergedQty })
+          .eq('id', existing.id);
+        if (updErr) { alert('Merge failed: ' + updErr.message); return; }
+        alert(
+          `"${existing.item_name}" was already counted in ${payload.zone} — ` +
+          `added ${payload.qty} onto the existing entry (now ${mergedQty}).`
+        );
+        return;
+      }
+      alert('Add entry failed: ' + error.message);
+      return;
+    }
   };
 
   const editEntryQty = async (entryId: string, newQty: number) => {
@@ -458,7 +510,15 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
     if (!isAdminish || isReadOnly) return;
     const next = PHASE_NEXT[audit.count_phase];
     if (!next) return;
-    if (!confirm(`Advance audit to "${next}"? Counters will see the change immediately.`)) return;
+    // Closing Count 1 from the desktop does NOT build kount_recounts — only
+    // the phone's close flow generates the recount list. Keep the action
+    // available (corporate may need it) but make sure it's informed.
+    const recountWarning = next === 'review'
+      ? '\n\nWARNING: advancing from the desktop will NOT generate the recount list — ' +
+        'that only happens when the counting manager closes Count 1 on the phone. ' +
+        'Count 2 will start without a recount list.\n\nProceed anyway?'
+      : '';
+    if (!confirm(`Advance audit to "${next}"? Counters will see the change immediately.${recountWarning}`)) return;
     const patch: Partial<KountAudit> = { count_phase: next };
     if (next === 'count2') patch.count1_closed_at = new Date().toISOString();
     if (next === 'final')  patch.count2_closed_at = new Date().toISOString();
@@ -469,12 +529,29 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
   const submitAudit = async () => {
     if (!isAdminish || isReadOnly) return;
     if (!confirm('Submit this audit as final? Counters will be locked out of further edits.')) return;
-    const { error } = await supabase.from('kount_audits').update({
+    const now = new Date().toISOString();
+    const patch: Partial<KountAudit> = {
       status: 'submitted',
-      completed_at: new Date().toISOString(),
+      completed_at: now,
       count_phase: 'final',
-    }).eq('id', audit.id);
-    if (error) alert('Submit failed: ' + error.message);
+    };
+    const { error } = await supabase.from('kount_audits').update(patch).eq('id', audit.id);
+    if (error) { alert('Submit failed: ' + error.message); return; }
+    // Stamp the Count 2 close if the phone's close flow didn't already —
+    // computed AVT bounds its POS window on count2_closed_at, so a desktop
+    // submit that leaves it null corrupts the venue's AVT window chain.
+    // Guarded server-side (.is null) so we never overwrite a timestamp the
+    // phone stamped after our list state loaded.
+    const { error: stampErr } = await supabase
+      .from('kount_audits')
+      .update({ count2_closed_at: now })
+      .eq('id', audit.id)
+      .is('count2_closed_at', null);
+    if (stampErr) {
+      // Non-fatal: either it was already stamped, or the AVT window
+      // coalesce fallback will cover it.
+      console.warn('count2_closed_at stamp failed:', stampErr.message);
+    }
   };
 
   const cancelAudit = async () => {
@@ -521,8 +598,14 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
         );
         if (!ok) return;
         // Delete the existing row first; unique constraint on upc_normalized
-        // would otherwise reject our insert below.
-        await supabase.from('master_item_upcs').delete().eq('upc_normalized', norm);
+        // would otherwise reject our insert below. Abort on failure —
+        // proceeding would record a mapping while the barcode stays linked
+        // to the old master (or to nothing).
+        const { error: delErr } = await supabase.from('master_item_upcs').delete().eq('upc_normalized', norm);
+        if (delErr) {
+          alert(`Could not unlink UPC ${barcode} from "${ownerName}": ${delErr.message}\n\nNothing was changed.`);
+          return;
+        }
       } else if (owner.master_item_id === item.id) {
         alert(`UPC ${barcode} is already linked to ${item.name}.`);
         return;
@@ -589,6 +672,17 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
         canRemove={isAdminish && !isReadOnly}
         canAdd={!isReadOnly}
       />
+
+      {catalogError && (
+        <Card padding={14} style={{ borderColor: 'var(--raspberry-300)', background: 'var(--raspberry-100)' }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: 240, fontSize: 12, color: 'var(--raspberry-400)' }}>
+              Catalog failed to load: {catalogError} — item search and UPC linking are unavailable until it loads.
+            </div>
+            <Btn variant="secondary" size="sm" onClick={() => void loadCatalogAndCarried()}>Retry</Btn>
+          </div>
+        </Card>
+      )}
 
       {orphanZones.length > 0 && (
         <OrphanZoneBanner

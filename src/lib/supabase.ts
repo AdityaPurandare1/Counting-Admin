@@ -9,12 +9,10 @@ export const SUPABASE_ANON_KEY =
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   realtime: { params: { eventsPerSecond: 2 } },
   auth: {
-    // Phase 3 (Supabase Auth migration): admin signs in via Supabase Auth
-    // and the session persists across reloads. The JWT is also what
-    // authorizes admin-user-mgmt Edge Function calls — no JWT, no admin
-    // actions. Pre-migration users still in ACCESS_LIST keep working
-    // through Login.tsx's dual-path fallback until Phase 5 migrates
-    // everyone.
+    // Admin signs in via Supabase Auth (single path — the legacy
+    // ACCESS_LIST fallback is gone) and the session persists across
+    // reloads. The JWT is also what authorizes admin-user-mgmt Edge
+    // Function calls — no JWT, no admin actions.
     persistSession: true,
     autoRefreshToken: true,
     detectSessionInUrl: true,  // catches password-reset / invite redirects

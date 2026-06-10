@@ -99,8 +99,11 @@ export function Summary({ user }: Props) {
      data via a button-mash. Two-query flow:
        1. List cancelled audits in scope (filterVisible reuses the same
           venue-access predicate the rest of the screen uses).
-       2. One IN.(<ids>) query against kount_entries → set of audit_ids
-          that have any entry. Audits NOT in that set are the empties.
+       2. Per-audit head+count probes against kount_entries (same pattern
+          as StaleAuditsPrompt). The old single IN.(<ids>) row probe was
+          capped at 1000 rows by PostgREST, so audits whose entries fell
+          past the cap were misclassified "empty" and hard-deleted —
+          head+count never truncates.
      The DELETE itself is a single round trip with .in('id', emptyIds)
      and a status='cancelled' guard so a parallel Reactivate wins. */
   const sweepEmptyCancelled = async () => {
@@ -117,14 +120,23 @@ export function Summary({ user }: Props) {
         alert('No cancelled audits in scope to sweep.');
         return;
       }
-      const ids = visible.map(a => a.id);
-      const { data: entryHits, error: eErr } = await supabase
-        .from('kount_entries')
-        .select('audit_id')
-        .in('audit_id', ids);
-      if (eErr) { alert('Sweep failed (entries probe): ' + eErr.message); return; }
-      const withEntries = new Set((entryHits ?? []).map(r => (r as { audit_id: string }).audit_id));
-      const empty = visible.filter(a => !withEntries.has(a.id));
+      let entryCounts: number[];
+      try {
+        entryCounts = await Promise.all(visible.map(async a => {
+          const r = await supabase
+            .from('kount_entries')
+            .select('id', { count: 'exact', head: true })
+            .eq('audit_id', a.id);
+          if (r.error) throw r.error;
+          // null count (shouldn't happen with head+count, but this path
+          // hard-deletes) is treated as "has entries" → skipped, not swept.
+          return (r as unknown as { count: number | null }).count ?? -1;
+        }));
+      } catch (e) {
+        alert('Sweep failed (entries probe): ' + ((e as Error).message || String(e)));
+        return;
+      }
+      const empty = visible.filter((_, i) => entryCounts[i] === 0);
       if (empty.length === 0) {
         alert(
           `No empty cancelled audits to sweep.\n\n` +
