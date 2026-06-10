@@ -92,11 +92,9 @@ export function Summary({ user }: Props) {
     }
   }, [filtered, selectedId]);
 
-  /* Sweep all *empty* cancelled audits in the user's venue scope. Built
-     for the bulk-cleanup workflow after StaleAuditsPrompt mass-cancels —
-     typically 10+ audits with 0 entries each. Deletes only the empties;
-     audits with entries are skipped intentionally so admin doesn't lose
-     data via a button-mash. Two-query flow:
+  /* Sweep cancelled audits in the user's venue scope. Built for the
+     bulk-cleanup workflow after StaleAuditsPrompt mass-cancels —
+     typically 10+ audits with 0 entries each. Two-query flow:
        1. List cancelled audits in scope (filterVisible reuses the same
           venue-access predicate the rest of the screen uses).
        2. Per-audit head+count probes against kount_entries (same pattern
@@ -104,9 +102,15 @@ export function Summary({ user }: Props) {
           capped at 1000 rows by PostgREST, so audits whose entries fell
           past the cap were misclassified "empty" and hard-deleted —
           head+count never truncates.
-     The DELETE itself is a single round trip with .in('id', emptyIds)
-     and a status='cancelled' guard so a parallel Reactivate wins. */
-  const sweepEmptyCancelled = async () => {
+     Two-stage confirm: empties get the familiar confirm; audits that
+     still HAVE entries get a second, explicit confirm spelling out how
+     many counted entries get destroyed (v0.31 — previously they were
+     always skipped, which left admin with no bulk way to flush them).
+     Declining the second confirm falls back to empty-only. Probe-failed
+     audits (count -1) are never eligible for either branch.
+     The DELETE itself is a single round trip with .in('id', ids) and a
+     status='cancelled' guard so a parallel Reactivate wins. */
+  const sweepCancelled = async () => {
     if (!canSweep) return;
     setSweepBusy(true);
     try {
@@ -136,41 +140,75 @@ export function Summary({ user }: Props) {
         alert('Sweep failed (entries probe): ' + ((e as Error).message || String(e)));
         return;
       }
-      const empty = visible.filter((_, i) => entryCounts[i] === 0);
-      if (empty.length === 0) {
+      const empty    = visible.filter((_, i) => entryCounts[i] === 0);
+      const nonEmpty = visible.filter((_, i) => entryCounts[i] > 0);
+      // count -1 = probe returned a null count → protected. Never eligible
+      // for deletion, not even via the destructive second confirm.
+      const protectedCount = visible.length - empty.length - nonEmpty.length;
+      const nonEmptyEntryTotal = entryCounts.reduce((s, c) => s + (c > 0 ? c : 0), 0);
+      if (empty.length === 0 && nonEmpty.length === 0) {
         alert(
-          `No empty cancelled audits to sweep.\n\n` +
-          `${visible.length} cancelled audit${visible.length === 1 ? '' : 's'} in scope, all of them have entries on file. ` +
-          `Use the per-audit Delete button on each one if you really want to remove them.`
+          `No cancelled audits eligible to sweep.\n\n` +
+          `${visible.length} cancelled audit${visible.length === 1 ? '' : 's'} in scope, but the entry probes ` +
+          `came back without counts, so they stay protected.`
         );
         return;
       }
-      const skipped = visible.length - empty.length;
-      const msg = `Permanently delete ${empty.length} empty cancelled audit${empty.length === 1 ? '' : 's'}?` +
-        (skipped > 0 ? `\n\n${skipped} cancelled audit${skipped === 1 ? '' : 's'} with entries on file will NOT be touched.` : '') +
-        `\n\nThis cannot be undone.`;
-      if (!confirm(msg)) return;
+      // Stage 1 — empties, same confirm as before. Declining aborts the
+      // whole sweep (including the non-empty stage).
+      if (empty.length > 0) {
+        const msg = `Permanently delete ${empty.length} empty cancelled audit${empty.length === 1 ? '' : 's'}?` +
+          (nonEmpty.length > 0 ? `\n\n${nonEmpty.length} cancelled audit${nonEmpty.length === 1 ? '' : 's'} with entries on file — you'll be asked about ${nonEmpty.length === 1 ? 'it' : 'those'} next.` : '') +
+          `\n\nThis cannot be undone.\n(Cancel aborts the whole sweep — nothing will be deleted.)`;
+        if (!confirm(msg)) return;
+      }
+      // Stage 2 — audits that still hold counted entries get their own
+      // explicit confirm so the data loss is impossible to miss. Cancel
+      // here = old behavior: only the empties (if any) are swept.
+      let flushNonEmpty = false;
+      if (nonEmpty.length > 0) {
+        flushNonEmpty = confirm(
+          `${nonEmpty.length} cancelled audit${nonEmpty.length === 1 ? '' : 's'} still hold${nonEmpty.length === 1 ? 's' : ''} ` +
+          `${nonEmptyEntryTotal} counted entr${nonEmptyEntryTotal === 1 ? 'y' : 'ies'}. ` +
+          `Deleting ${nonEmpty.length === 1 ? 'it' : 'them'} permanently destroys those counts.\n\n` +
+          `Delete ${nonEmpty.length === 1 ? 'it' : 'them'} anyway?` +
+          (empty.length > 0 ? `\n\n(Cancel keeps ${nonEmpty.length === 1 ? 'it' : 'them'} and sweeps only the ${empty.length} empty one${empty.length === 1 ? '' : 's'}.)` : '')
+        );
+        if (!flushNonEmpty && empty.length === 0) return; // nothing left to sweep
+      }
+      const targets = flushNonEmpty ? [...empty, ...nonEmpty] : empty;
       const { data: deleted, error: dErr } = await supabase
         .from('kount_audits')
         .delete()
-        .in('id', empty.map(a => a.id))
-        .eq('status', 'cancelled')
+        .in('id', targets.map(a => a.id))
+        .eq('status', 'cancelled') // race guard: a parallel Reactivate wins
         .select('id');
       if (dErr) { alert('Sweep failed (delete): ' + dErr.message); return; }
       const got = (deleted ?? []).length;
       // Migration 0012 silently filters DELETEs to 0 rows when the policy
       // isn't applied — surface that here so admin doesn't think the click
       // worked when it didn't.
-      if (got === 0 && empty.length > 0) {
+      if (got === 0 && targets.length > 0) {
         alert(
-          'Sweep returned 0 deletions despite ' + empty.length + ' candidates.\n\n' +
+          'Sweep returned 0 deletions despite ' + targets.length + ' candidates.\n\n' +
           'This usually means migration 0012 (anon DELETE policy on kount_audits) ' +
           'has not been applied to Supabase yet. Apply 0012_delete_policies.sql ' +
           'in the SQL editor and try again.'
         );
+        // Refresh anyway: candidates may have been reactivated/RLS-filtered
+        // mid-sweep, so show the real state rather than the stale list.
+        await load();
         return;
       }
-      alert(`Deleted ${got} empty cancelled audit${got === 1 ? '' : 's'}.`);
+      // Skipped/protected tally: non-empties the admin chose to keep,
+      // probe-failed audits, and any race-guard misses (reactivated or
+      // RLS-filtered between the probe and the delete).
+      const raceSkipped = targets.length - got;
+      const kept = (flushNonEmpty ? 0 : nonEmpty.length) + protectedCount + raceSkipped;
+      alert(
+        `Deleted ${got} cancelled audit${got === 1 ? '' : 's'}.` +
+        (kept > 0 ? `\n\n${kept} skipped/protected (entries kept, reactivated mid-sweep, or probe failed).` : '')
+      );
       await load();
     } finally {
       setSweepBusy(false);
@@ -200,11 +238,11 @@ export function Summary({ user }: Props) {
               variant="critical"
               size="sm"
               leading={Ic.close(14)}
-              onClick={() => void sweepEmptyCancelled()}
+              onClick={() => void sweepCancelled()}
               disabled={sweepBusy}
-              title="Permanently delete every cancelled audit that has zero count entries. Audits with entries are skipped."
+              title="Permanently delete cancelled audits. Empty ones are swept first; audits that still hold counted entries require a second explicit confirmation."
             >
-              {sweepBusy ? 'Sweeping…' : 'Sweep empty cancelled'}
+              {sweepBusy ? 'Sweeping…' : 'Sweep cancelled'}
             </Btn>
           )}
           <Btn variant="secondary" size="sm" onClick={() => void load()}>Refresh</Btn>
@@ -400,13 +438,27 @@ function SummaryDetail({
       : `Permanently delete ${audit.join_code} (${audit.venue_name})?\n\nThis removes the audit AND ${entryCount} count entries from the server. CANNOT be undone.`;
     if (!confirm(msg)) return;
     setDeleteBusy(true);
-    const { error } = await supabase
+    const { data: deleted, error } = await supabase
       .from('kount_audits')
       .delete()
       .eq('id', audit.id)
-      .eq('status', 'cancelled'); // race guard: refuses if someone reactivated it just now
+      .eq('status', 'cancelled') // race guard: refuses if someone reactivated it just now
+      .select('id');
     setDeleteBusy(false);
     if (error) { alert('Delete failed: ' + error.message); return; }
+    // PostgREST reports success even when RLS or the status guard filtered
+    // the DELETE down to 0 rows — check the returned ids so a silent no-op
+    // (reactivated mid-flow, or migration 0012 missing) doesn't look like
+    // a successful delete.
+    if ((deleted ?? []).length === 0) {
+      alert(
+        'Nothing was deleted. The audit may have been reactivated by someone else, ' +
+        'or migration 0012 (anon DELETE policy on kount_audits) is not applied.'
+      );
+      await load();
+      onAuditChanged?.();
+      return;
+    }
     // Parent's useEffect clears selectedId once the audit drops out of the
     // filtered list; load() refreshes that list.
     onAuditChanged?.();
