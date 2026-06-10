@@ -38,7 +38,7 @@ export function Sidebar({ userName, userRole, onSignOut }: Props) {
         <div className="sidebar-mark">kΩ</div>
         <div>
           <div className="sidebar-title">kΩunt</div>
-          <div className="sidebar-sub">H.Wood Ops</div>
+          <div className="sidebar-sub">Keva Ops</div>
         </div>
       </div>
 
@@ -100,7 +100,7 @@ export function Sidebar({ userName, userRole, onSignOut }: Props) {
         </button>
       </div>
 
-      <div className="sidebar-footer">© H.Wood Group 2026 · v{APP_VERSION}</div>
+      <div className="sidebar-footer">© Keva 2026 · v{APP_VERSION}</div>
     </aside>
   );
 }
