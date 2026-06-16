@@ -339,11 +339,15 @@ export function Catalog({ user }: Props) {
         const { error } = await supabase.from('kount_carried_items').delete().eq('master_item_id', item.id);
         if (error) throw new Error(error.message);
       } else {
-        const { error } = await supabase.from('kount_carried_items').insert({
+        // upsert + ignoreDuplicates keeps this idempotent: a realtime re-add
+        // race can land the row before this insert, which would hit the unique
+        // index on master_item_id (23505) and trigger a spurious "Toggle failed"
+        // alert + bad revert. Mirrors the bulk-import path above.
+        const { error } = await supabase.from('kount_carried_items').upsert({
           master_item_id: item.id,
           added_by_email: user.email,
           added_by_name: user.name,
-        });
+        }, { onConflict: 'master_item_id', ignoreDuplicates: true });
         if (error) throw new Error(error.message);
       }
     } catch (e) {

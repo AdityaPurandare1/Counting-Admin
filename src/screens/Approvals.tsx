@@ -544,7 +544,7 @@ function ItemQueue({ user, onCount }: { user: AccessEntry; onCount: (n: number) 
                         <Btn variant="positive" size="sm" leading={Ic.check(12)} onClick={() => void approve(r)} disabled={busyId === r.id}>Approve</Btn>
                         <Btn variant="critical" size="sm" leading={Ic.close(12)} onClick={() => void reject(r)}  disabled={busyId === r.id}>Reject</Btn>
                         {user.role === 'corporate' && (
-                          <Btn variant="ghost" size="sm" onClick={() => void forceApprove(r)} disabled={busyId === r.id} title="Skip the RPC and insert into purchase_items directly. Use if Approve errors out.">Force</Btn>
+                          <Btn variant="ghost" size="sm" onClick={() => void forceApprove(r)} disabled={busyId === r.id} title="Skip the RPC and insert into master_items directly. Use if Approve errors out.">Force</Btn>
                         )}
                       </div>
                     ) : (

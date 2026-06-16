@@ -164,10 +164,17 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
 
   // Pull the most-recent AVT report that covers this audit's venue + its rows
   const loadAvt = useCallback(async (venueId: string) => {
+    // Uploaded AVT is DEPRECATED; the computed report is the product. Order by
+    // source ascending so 'computed' (< 'uploaded' alphabetically) deterministically
+    // outranks any uploaded Craftable export — even one uploaded AFTER Count 2 —
+    // then by uploaded_at desc within a source. Mirrors the phone's
+    // loadAvtFromSupabase ordering (source.asc,uploaded_at.desc). Uploaded only
+    // wins when no computed report exists for the venue.
     const { data: reports } = await supabase
       .from('kount_avt_reports')
       .select('*')
       .contains('venue_ids', [venueId])
+      .order('source', { ascending: true })
       .order('uploaded_at', { ascending: false })
       .limit(1);
     const rep = (reports?.[0] as KountAvtReport) ?? null;
