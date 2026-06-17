@@ -155,17 +155,22 @@ export function Reports({ user }: Props) {
       // execute commands when the report is opened. Prefix a single
       // tab character (which spreadsheet apps treat as a no-op text
       // hint) to neutralize without changing the visible cell.
-      if (/^[=+\-@\t\r]/.test(s)) s = '\t' + s;
+      // Number exception: a bare numeric value (incl. negatives like
+      // "-98.82") starts with "-" but is not an injection vector, and
+      // escaping it would turn it into TEXT and break SUM/sort. Leave
+      // real numbers unescaped.
+      const isNumeric = /^-?\d+(\.\d+)?$/.test(s);
+      if (!isNumeric && /^[=+\-@\t\r]/.test(s)) s = '\t' + s;
       // RFC 4180: wrap in double-quotes, double the inner double-quotes.
       if (/[",\n\r\t]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
       return s;
     };
-    const fmtCurrency = (n: number | null): string => {
-      if (n === null) return '';
-      // Sample: "-$98.82" — sign before the symbol
-      const sign = n < 0 ? '-' : '';
-      return sign + '$' + Math.abs(n).toFixed(2);
-    };
+    // Replacement Value exports as a bare number (no leading "-$"), so the
+    // column SUMs and sorts in Excel. The "$" prefix would have made every
+    // cell text; keeping it a plain number is the only way the value column
+    // is actually usable in a spreadsheet, and it stays consistent with the
+    // Variance column.
+    const fmtCurrency = (n: number | null): string => n === null ? '' : n.toFixed(2);
     const fmtVariance = (n: number | null): string => n === null ? '' : n.toFixed(2);
 
     const lines: string[] = [];

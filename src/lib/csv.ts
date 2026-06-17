@@ -52,7 +52,12 @@ export function parseCSV(text: string): string[][] {
  *  cell contains any character that needs quoting. */
 export function csvCell(value: unknown): string {
   let s = String(value ?? '');
-  if (s.length > 0 && /^[=+\-@\t\r]/.test(s)) {
+  // Number exception: a bare numeric value (incl. negatives like "-98.82")
+  // starts with "-" and would otherwise be escaped, turning it into TEXT in
+  // Excel and breaking SUM/sort. Real numbers are never a formula-injection
+  // vector, so leave them untouched; only escape genuine text cells.
+  const isNumeric = /^-?\d+(\.\d+)?$/.test(s);
+  if (!isNumeric && s.length > 0 && /^[=+\-@\t\r]/.test(s)) {
     s = "'" + s;
   }
   if (/[",\r\n]/.test(s)) {
