@@ -1,7 +1,15 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { supabase, selectAllPaged } from '@/lib/supabase';
 import type { AccessEntry } from '@/lib/access';
-import type { PurchaseItem } from '@/lib/types';
+import {
+  computeImportPreview,
+  type ParsedRow,
+  type RowFate,
+  type PurchaseItemLite,
+  type MasterItemLite,
+  type MasterItemUpcLite,
+  type CarriedLite,
+} from '@/lib/inventoryImport';
 import { parseCSV } from '@/lib/csv';
 import { Card, Eyebrow, Btn, Pill } from '@/components/atoms';
 
@@ -34,22 +42,6 @@ import { Card, Eyebrow, Btn, Pill } from '@/components/atoms';
 
 interface Props { user: AccessEntry }
 
-interface ParsedRow {
-  name: string;
-  brand: string;
-  size: string;
-  upc: string;
-  category: string;
-  sku: string;
-}
-
-interface RowFate {
-  row: ParsedRow;
-  status: 'new-master' | 'updated-master' | 'newly-carried' | 'already-carried';
-  matchedId?: string;
-  matchedName?: string;
-}
-
 // Forgiving header → field map. Lowercase + collapse whitespace before
 // comparing so "Item Name" and "ITEM_NAME" both resolve.
 const HEADER_ALIASES: Record<string, keyof ParsedRow> = {
@@ -81,6 +73,7 @@ export function Inventory({ user }: Props) {
   const [parsed, setParsed]   = useState<ParsedRow[] | null>(null);
   const [fates, setFates]     = useState<RowFate[]>([]);
   const [removeIds, setRemoveIds] = useState<string[]>([]); // purchase_item_ids that would be unmarked under Replace
+  const [unresolvedMasterCount, setUnresolvedMasterCount] = useState(0);
   const [replaceMode, setReplaceMode] = useState(false);
   const [phase, setPhase]     = useState<null | 'parsing' | 'matching' | 'committing' | 'done'>(null);
   const [error, setError]     = useState<string | null>(null);
@@ -90,6 +83,7 @@ export function Inventory({ user }: Props) {
     added_carried: number;
     removed_carried: number;
     skipped: number;
+    unresolved_master_count?: number;
   }>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -119,7 +113,7 @@ export function Inventory({ user }: Props) {
   }
 
   const handleFile = useCallback(async (file: File) => {
-    setError(null); setParsed(null); setFates([]); setRemoveIds([]); setSummary(null);
+    setError(null); setParsed(null); setFates([]); setRemoveIds([]); setUnresolvedMasterCount(0); setSummary(null);
     setPhase('parsing');
     try {
       const text = await file.text();
@@ -146,45 +140,28 @@ export function Inventory({ user }: Props) {
       setParsed(items);
 
       setPhase('matching');
-      const [catalog, carriedRows] = await Promise.all([
-        selectAllPaged<PurchaseItem>('purchase_items', 'id,name,upc', 'name'),
-        selectAllPaged<{ purchase_item_id: string }>('kount_carried_items', 'purchase_item_id', 'purchase_item_id'),
+      // Fetch exactly what the RPC mirror needs. master_items is ~7k rows so
+      // it must be paged (selectAllPaged caps at 50k with a loud throw). The
+      // carried fetch now selects BOTH keys — post Path B most carried rows
+      // are master-keyed with purchase_item_id NULL, and the preview must see
+      // them to match the RPC's master-keyed carried determination.
+      const [catalog, masterItems, masterItemUpcs, carriedRows] = await Promise.all([
+        selectAllPaged<PurchaseItemLite>('purchase_items', 'id,name,upc', 'name'),
+        selectAllPaged<MasterItemLite>('master_items', 'id,name,is_active', 'name'),
+        selectAllPaged<MasterItemUpcLite>('master_item_upcs', 'upc_normalized,master_item_id', 'upc_normalized'),
+        selectAllPaged<CarriedLite>('kount_carried_items', 'purchase_item_id,master_item_id', 'purchase_item_id'),
       ]);
-      const byUpc  = new Map<string, PurchaseItem>();
-      const byName = new Map<string, PurchaseItem>();
-      for (const c of catalog) {
-        if (c.upc) byUpc.set(c.upc, c);
-        byName.set(c.name.toLowerCase(), c);
-      }
-      const carried = new Set(carriedRows.map(r => r.purchase_item_id));
 
-      const seenMatched = new Set<string>(); // items where a master match was found this batch
-      const f: RowFate[] = items.map(row => {
-        let match: PurchaseItem | undefined;
-        if (row.upc)  match = byUpc.get(row.upc);
-        if (!match)   match = byName.get(row.name.toLowerCase());
-
-        if (!match) {
-          return { row, status: 'new-master' as const };
-        }
-        seenMatched.add(match.id);
-        // Heuristic for "updated-master" vs "no-op" — we say it'll
-        // update if the CSV has any non-empty field beyond name. The
-        // RPC's COALESCE-only-on-non-empty logic mirrors this.
-        const enriches = !!(row.brand || row.size || row.upc || row.category || row.sku);
-        const isCarried = carried.has(match.id);
-        if (enriches && !isCarried) return { row, status: 'updated-master' as const, matchedId: match.id, matchedName: match.name };
-        if (enriches &&  isCarried) return { row, status: 'updated-master' as const, matchedId: match.id, matchedName: match.name };
-        if (isCarried)              return { row, status: 'already-carried' as const, matchedId: match.id, matchedName: match.name };
-        return { row, status: 'newly-carried' as const, matchedId: match.id, matchedName: match.name };
+      const preview = computeImportPreview(items, {
+        purchaseItems: catalog,
+        masterItems,
+        masterItemUpcs,
+        carried: carriedRows,
+        replaceMode,
       });
-      setFates(f);
-
-      // For replace mode preview: which currently-carried IDs are NOT
-      // in the CSV and would be unmarked.
-      const csvMatchedIds = new Set(f.filter(x => x.matchedId).map(x => x.matchedId!));
-      const wouldRemove = Array.from(carried).filter(id => !csvMatchedIds.has(id));
-      setRemoveIds(wouldRemove);
+      setFates(preview.fates);
+      setRemoveIds(preview.removeIds);
+      setUnresolvedMasterCount(preview.unresolvedMasterCount);
 
       setPhase(null);
     } catch (e) {
@@ -212,12 +189,25 @@ export function Inventory({ user }: Props) {
       // acknowledge before we commit. Merge-mode imports don't touch the
       // carried set so this check is skipped.
       if (replaceMode) {
-        const latestCarried = await selectAllPaged<{ purchase_item_id: string }>(
-          'kount_carried_items', 'purchase_item_id', 'purchase_item_id',
-        );
-        const latestCarriedSet = new Set(latestCarried.map(r => r.purchase_item_id));
-        const csvMatchedIds = new Set(fates.filter(x => x.matchedId).map(x => x.matchedId!));
-        const liveWouldRemove = Array.from(latestCarriedSet).filter(id => !csvMatchedIds.has(id));
+        // Re-derive the removal set from FRESH state using the same pure
+        // master-aware logic as the preview (the RPC only deletes
+        // master_item_id-NULL purchase-keyed rows absent from the CSV). We
+        // re-fetch all four inputs so the live diff matches what the RPC
+        // will actually do.
+        const [latestCatalog, latestMasters, latestUpcs, latestCarried] = await Promise.all([
+          selectAllPaged<PurchaseItemLite>('purchase_items', 'id,name,upc', 'name'),
+          selectAllPaged<MasterItemLite>('master_items', 'id,name,is_active', 'name'),
+          selectAllPaged<MasterItemUpcLite>('master_item_upcs', 'upc_normalized,master_item_id', 'upc_normalized'),
+          selectAllPaged<CarriedLite>('kount_carried_items', 'purchase_item_id,master_item_id', 'purchase_item_id'),
+        ]);
+        const livePreview = computeImportPreview(parsed, {
+          purchaseItems: latestCatalog,
+          masterItems: latestMasters,
+          masterItemUpcs: latestUpcs,
+          carried: latestCarried,
+          replaceMode: true,
+        });
+        const liveWouldRemove = livePreview.removeIds;
         const previewSet = new Set(removeIds);
         const liveSet    = new Set(liveWouldRemove);
         const added    = liveWouldRemove.filter(id => !previewSet.has(id));
@@ -250,10 +240,10 @@ export function Inventory({ user }: Props) {
       setError((e as Error).message || 'Import failed');
       setPhase(null);
     }
-  }, [parsed, replaceMode, fates, removeIds, user.email, user.name]);
+  }, [parsed, replaceMode, removeIds, user.email, user.name]);
 
   const reset = () => {
-    setParsed(null); setFates([]); setRemoveIds([]); setSummary(null); setError(null); setPhase(null);
+    setParsed(null); setFates([]); setRemoveIds([]); setUnresolvedMasterCount(0); setSummary(null); setError(null); setPhase(null);
   };
 
   const busy = phase === 'parsing' || phase === 'matching' || phase === 'committing';
@@ -303,6 +293,9 @@ export function Inventory({ user }: Props) {
                 <Pill tone="neutral"  size="sm">{counts.updatedMaster} update master</Pill>
                 <Pill tone="positive" size="sm">{counts.newlyCarried} newly carried</Pill>
                 <Pill tone="neutral"  size="sm">{counts.alreadyCarried} already carried</Pill>
+                {unresolvedMasterCount > 0 && (
+                  <Pill tone="caution" size="sm">{unresolvedMasterCount} carried without a master link</Pill>
+                )}
                 {replaceMode && removeIds.length > 0 && (
                   <Pill tone="caution" size="sm">{removeIds.length} would be removed</Pill>
                 )}
@@ -380,6 +373,7 @@ export function Inventory({ user }: Props) {
               <Pill tone="positive">{summary.added_carried} added to carried</Pill>
               {summary.removed_carried > 0 && <Pill tone="caution">{summary.removed_carried} removed from carried</Pill>}
               {summary.skipped > 0 && <Pill tone="caution">{summary.skipped} skipped (missing name)</Pill>}
+              {(summary.unresolved_master_count ?? 0) > 0 && <Pill tone="caution">{summary.unresolved_master_count} carried without a master link</Pill>}
             </div>
             <Btn variant="primary" onClick={reset}>Upload another CSV</Btn>
           </div>

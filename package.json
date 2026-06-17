@@ -1,14 +1,14 @@
 {
   "name": "counting-admin",
   "private": true,
-  "version": "0.35.0",
+  "version": "0.36.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "tsx tests/bevagerImport.parse.test.ts && tsx tests/csv.test.ts"
+    "test": "tsx tests/bevagerImport.parse.test.ts && tsx tests/csv.test.ts && tsx tests/inventoryImport.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
