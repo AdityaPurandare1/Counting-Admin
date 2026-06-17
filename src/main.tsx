@@ -2,8 +2,20 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import App from './App';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { logClientError } from './lib/telemetry';
 import './styles/tokens.css';
 import './styles/global.css';
+
+// Global error telemetry — registered once at startup. Both handlers are
+// best-effort and the logger itself never throws/recurses, so they're safe
+// to leave on in prod. Uncaught render errors are handled by ErrorBoundary.
+window.addEventListener('error', (e) => {
+  logClientError('window.error', e.error ?? e.message);
+});
+window.addEventListener('unhandledrejection', (e) => {
+  logClientError('unhandledrejection', e.reason);
+});
 
 // SPA redirect restore: if we arrived via public/404.html's fallback, the
 // original path is parked in ?__redirect=... — swap it back into history
@@ -20,8 +32,10 @@ import './styles/global.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <BrowserRouter basename={import.meta.env.BASE_URL}>
-      <App />
-    </BrowserRouter>
+    <ErrorBoundary>
+      <BrowserRouter basename={import.meta.env.BASE_URL}>
+        <App />
+      </BrowserRouter>
+    </ErrorBoundary>
   </StrictMode>,
 );

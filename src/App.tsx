@@ -22,6 +22,7 @@ import { NotificationProvider } from '@/lib/notifications';
 import { NotificationBell, NotificationToaster } from '@/components/NotificationUI';
 import { StaleAuditsPrompt } from '@/components/StaleAuditsPrompt';
 import { supabase } from '@/lib/supabase';
+import { setTelemetryUser } from '@/lib/telemetry';
 
 const STORAGE_KEY  = 'kount_admin_user_v1';
 const SESSION_MS   = 8 * 60 * 60 * 1000; // 8 hours
@@ -136,7 +137,11 @@ export default function App() {
   const [user, setUser] = useState<AccessEntry | null>(() => loadUser());
   const nav = useNavigate();
 
-  useEffect(() => { saveUser(user); }, [user]);
+  useEffect(() => {
+    saveUser(user);
+    // Attribute telemetry to the signed-in admin (cleared on sign-out).
+    setTelemetryUser(user?.email ?? null);
+  }, [user]);
 
   // Warm the access-list + venue caches at boot so the Login form +
   // venue pickers resolve fast, then re-validate the restored session
