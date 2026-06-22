@@ -1,43 +1,36 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { supabase } from '@/lib/supabase';
+import { supabase, selectAllPagedFiltered } from '@/lib/supabase';
 import type { AccessEntry } from '@/lib/access';
 import { VENUES } from '@/lib/access';
-import type { KountAudit, KountRecount } from '@/lib/types';
+import type { KountAudit, KountAvtReport, KountAvtRow } from '@/lib/types';
 import { Card, Eyebrow, Btn, Pill } from '@/components/atoms';
+import { Ic } from '@/components/Icons';
+import { buildVarianceWorkbookBlob, type AvtLikeRow } from '@/lib/varianceReport';
 
 /* ───────────────────────────────────────────────────────────────────────
    Reports screen (corporate-only)
 
-   One row per recount item across the venues the user has access to.
-   Columns mirror the format the corporate team already uses internally:
-
-     Item · Category · Issue Type · Variance · Replacement Value
-        · Audit Results · Counter Initials · Context
-
-   Filters: venue + audit + date window. CSV export uses native Blob
-   download so we don't need a CSV writer dependency.
+   Re-sourced (v0.39) from the COMPUTED variance, not recounts: for every
+   audit visible under the venue / audit / date-window filters we load that
+   audit's latest computed kount_avt_reports row (source='computed', newest),
+   then pull all those reports' kount_avt_rows in one `.in('report_id', …)`
+   query, tag each row with its venue / join_code / audit date, and
+   concatenate. The on-screen table and the .xlsx export both come from this
+   one AVT dataset via the shared buildVarianceWorkbookBlob — the same rich,
+   multi-tab workbook the per-audit Variance screen produces.
    ─────────────────────────────────────────────────────────────────────── */
 
 interface Props { user: AccessEntry }
 
-interface ReportRow {
-  item: string;
-  category: string;
-  issueType: string;
-  variance: number | null;
-  replacementValue: number | null;
-  auditResult: string;
-  counterInitials: string;
-  context: string;
-  // Bookkeeping for the venue/audit filters; not surfaced as a column.
+/** One AVT row tagged with its source audit, for display + export. */
+interface ReportRow extends AvtLikeRow {
   _venueId: string;
-  _venueName: string;
   _auditId: string;
   _startedAt: string;
 }
 
-const AUDIT_LIMIT   = 200;
-const RECOUNT_LIMIT = 5000;
+const AUDIT_LIMIT = 200;
+const ROW_LIMIT = 20000;
 
 type WindowChoice = 'all' | '30d' | '7d';
 
@@ -48,11 +41,11 @@ export function Reports({ user }: Props) {
   const [venue, setVenue] = useState<string>('');
   const [auditId, setAuditId] = useState<string>('');
   const [window_, setWindow_] = useState<WindowChoice>('30d');
-  // Track when a query hits the hard cap so we can surface a banner
-  // instead of silently truncating. The cap protects against a runaway
-  // 100k-row pull, but the user needs to know they're seeing a window.
-  const [auditTrunc,   setAuditTrunc]   = useState(false);
-  const [recountTrunc, setRecountTrunc] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  // Track when a query hits the hard cap so we can surface a banner instead of
+  // silently truncating.
+  const [auditTrunc, setAuditTrunc] = useState(false);
+  const [rowTrunc, setRowTrunc] = useState(false);
 
   const visibleVenues = useMemo(() => {
     if (user.role === 'corporate' || user.venueIds === 'all') return VENUES;
@@ -68,9 +61,8 @@ export function Reports({ user }: Props) {
                  : window_ === '30d' ? new Date(now - 30 * 86_400_000).toISOString()
                  : null;
 
-    // Pull audits in window first so we can filter recounts by audit_id and
-    // also surface the audit picker. Hard cap so a runaway environment
-    // doesn't paginate forever.
+    // Pull audits in window first so we can scope report lookups by audit_id
+    // and also drive the audit picker.
     let aq = supabase
       .from('kount_audits')
       .select('*')
@@ -78,10 +70,7 @@ export function Reports({ user }: Props) {
       .limit(AUDIT_LIMIT);
     if (cutoff) aq = aq.gte('started_at', cutoff);
     const { data: auditRows, error: auditErr } = await aq;
-    // Clear rows on error — otherwise the previous successful load lingers
-    // visibly with loading=false, which makes the user think the failed
-    // query succeeded.
-    if (auditErr) { console.error('[reports] audits', auditErr); setRows([]); setAudits([]); setAuditTrunc(false); setRecountTrunc(false); setLoading(false); return; }
+    if (auditErr) { console.error('[reports] audits', auditErr); setRows([]); setAudits([]); setAuditTrunc(false); setRowTrunc(false); setLoading(false); return; }
     setAuditTrunc((auditRows?.length ?? 0) >= AUDIT_LIMIT);
 
     const allAudits = (auditRows ?? []) as KountAudit[];
@@ -91,50 +80,97 @@ export function Reports({ user }: Props) {
     });
     setAudits(visibleAudits);
 
-    if (visibleAudits.length === 0) { setRows([]); setLoading(false); return; }
+    if (visibleAudits.length === 0) { setRows([]); setRowTrunc(false); setLoading(false); return; }
 
-    // Restrict to a single audit if the user picked one. Otherwise pull
-    // recounts across every audit they can see.
-    const auditIds = auditId
-      ? visibleAudits.filter(a => a.id === auditId).map(a => a.id)
-      : visibleAudits.map(a => a.id);
+    // Apply venue + single-audit filters to the set of audits we report on.
+    const scopedAudits = visibleAudits.filter(a => {
+      if (auditId && a.id !== auditId) return false;
+      if (venue && a.venue_id !== venue) return false;
+      return true;
+    });
+    if (scopedAudits.length === 0) { setRows([]); setRowTrunc(false); setLoading(false); return; }
 
-    if (auditIds.length === 0) { setRows([]); setLoading(false); return; }
+    const auditIds = scopedAudits.map(a => a.id);
 
-    const { data: recountRows, error: recountErr } = await supabase
-      .from('kount_recounts')
+    // Pull every COMPUTED report for the scoped audits, then keep the newest
+    // per audit (computed_at, falling back to uploaded_at). Uploaded reports
+    // are DEPRECATED and intentionally excluded — the computed report is the
+    // product.
+    const { data: reportRows, error: reportErr } = await supabase
+      .from('kount_avt_reports')
       .select('*')
       .in('audit_id', auditIds)
-      .order('created_at', { ascending: false })
-      .limit(RECOUNT_LIMIT);
-    if (recountErr) { console.error('[reports] recounts', recountErr); setRows([]); setRecountTrunc(false); setLoading(false); return; }
-    setRecountTrunc((recountRows?.length ?? 0) >= RECOUNT_LIMIT);
+      .eq('source', 'computed')
+      .order('computed_at', { ascending: false, nullsFirst: false });
+    if (reportErr) { console.error('[reports] avt reports', reportErr); setRows([]); setRowTrunc(false); setLoading(false); return; }
 
-    const auditById = new Map(visibleAudits.map(a => [a.id, a]));
-    const auditResultLabel = (r: KountRecount): string => {
-      if (r.audit_result === 'corrected') return 'Count Corrected';
-      if (r.audit_result === 'verified')  return 'Count Verified';
-      return ''; // not yet decided
-    };
+    const reports = (reportRows ?? []) as KountAvtReport[];
+    const latestByAudit = new Map<string, KountAvtReport>();
+    for (const rep of reports) {
+      if (!rep.audit_id) continue;
+      const existing = latestByAudit.get(rep.audit_id);
+      if (!existing) { latestByAudit.set(rep.audit_id, rep); continue; }
+      const a = new Date(rep.computed_at ?? rep.uploaded_at).getTime();
+      const b = new Date(existing.computed_at ?? existing.uploaded_at).getTime();
+      if (a > b) latestByAudit.set(rep.audit_id, rep);
+    }
 
-    const built: ReportRow[] = ((recountRows ?? []) as KountRecount[]).flatMap(r => {
-      const a = auditById.get(r.audit_id);
+    const latestReports = [...latestByAudit.values()];
+    if (latestReports.length === 0) { setRows([]); setRowTrunc(false); setLoading(false); return; }
+
+    // Pull all rows across the chosen reports, paginating past the 1000-row
+    // PostgREST cap. A soft cap (ROW_LIMIT) protects the UI from a runaway
+    // pull; selectAllPagedFiltered hard-stops at maxPages and throws, which we
+    // treat as truncation rather than letting the table render half a dataset.
+    const reportIds = latestReports.map(r => r.id);
+    let avtRows: KountAvtRow[];
+    let truncated = false;
+    try {
+      avtRows = await selectAllPagedFiltered<KountAvtRow>(
+        () => supabase.from('kount_avt_rows').select('*').in('report_id', reportIds),
+        { column: 'variance_value', ascending: true },
+        1000,
+        ROW_LIMIT / 1000,
+      );
+    } catch (err) {
+      console.error('[reports] avt rows', err);
+      avtRows = [];
+      // A truncation error still means we have *some* data conceptually, but
+      // selectAllPagedFiltered doesn't return the partial set on throw, so flag
+      // the cap and show the empty/partial state honestly.
+      truncated = /truncated/i.test(err instanceof Error ? err.message : '');
+    }
+    setRowTrunc(truncated || avtRows.length >= ROW_LIMIT);
+
+    // Map report_id → its audit so each row can be tagged with venue/code/date.
+    const auditByReportId = new Map<string, KountAudit>();
+    const auditById = new Map(scopedAudits.map(a => [a.id, a]));
+    for (const rep of latestReports) {
+      const a = rep.audit_id ? auditById.get(rep.audit_id) : undefined;
+      if (a) auditByReportId.set(rep.id, a);
+    }
+
+    const built: ReportRow[] = avtRows.flatMap(r => {
+      const a = auditByReportId.get(r.report_id);
       if (!a) return [];
-      // Optional venue filter
-      if (venue && a.venue_id !== venue) return [];
       return [{
-        item:             r.item_name,
-        category:         r.category ?? '',
-        issueType:        'Recount variance',
-        variance:         r.variance_qty != null ? Number(r.variance_qty) : null,
-        replacementValue: r.variance_value != null ? Number(r.variance_value) : null,
-        auditResult:      auditResultLabel(r),
-        counterInitials:  r.counter_initials ?? '',
-        context:          r.audit_reason ?? '',
-        _venueId:         a.venue_id,
-        _venueName:       a.venue_name,
-        _auditId:         a.id,
-        _startedAt:       a.started_at,
+        item_name:      r.item_name,
+        category:       r.category,
+        start_qty:      r.start_qty,
+        purchases:      r.purchases,
+        depletions:     r.depletions,
+        actual:         r.actual,
+        theo:           r.theo,
+        variance:       r.variance,
+        cu_price:       r.cu_price,
+        variance_value: r.variance_value,
+        variance_pct:   r.variance_pct,
+        venue_name:     r.venue_name ?? a.venue_name,
+        audit_code:     a.join_code,
+        audit_date:     a.started_at.slice(0, 10),
+        _venueId:       a.venue_id,
+        _auditId:       a.id,
+        _startedAt:     a.started_at,
       }];
     });
 
@@ -144,83 +180,38 @@ export function Reports({ user }: Props) {
 
   useEffect(() => { void load(); }, [load]);
 
-  const exportCSV = useCallback(() => {
-    const header = ['Item', 'Category', 'Issue Type', 'Variance', 'Replacement Value', 'Audit Results', 'Counter Initials', 'Context'];
-    const escape = (v: string | number | null): string => {
-      if (v === null || v === undefined) return '';
-      let s = String(v);
-      // CSV formula-injection guard: a field starting with =, +, -, or @
-      // is interpreted by Excel / Sheets / Numbers as a formula. A
-      // counter who names a custom item `=cmd|'/c calc'!A1` could
-      // execute commands when the report is opened. Prefix a single
-      // tab character (which spreadsheet apps treat as a no-op text
-      // hint) to neutralize without changing the visible cell.
-      // Number exception: a bare numeric value (incl. negatives like
-      // "-98.82") starts with "-" but is not an injection vector, and
-      // escaping it would turn it into TEXT and break SUM/sort. Leave
-      // real numbers unescaped.
-      const isNumeric = /^-?\d+(\.\d+)?$/.test(s);
-      if (!isNumeric && /^[=+\-@\t\r]/.test(s)) s = '\t' + s;
-      // RFC 4180: wrap in double-quotes, double the inner double-quotes.
-      if (/[",\n\r\t]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
-      return s;
-    };
-    // Replacement Value exports as a bare number (no leading "-$"), so the
-    // column SUMs and sorts in Excel. The "$" prefix would have made every
-    // cell text; keeping it a plain number is the only way the value column
-    // is actually usable in a spreadsheet, and it stays consistent with the
-    // Variance column.
-    const fmtCurrency = (n: number | null): string => n === null ? '' : n.toFixed(2);
-    const fmtVariance = (n: number | null): string => n === null ? '' : n.toFixed(2);
-
-    const lines: string[] = [];
-    // If either server-side cap fired, mark the export so BI consumers can't
-    // ingest it thinking it's a complete dataset. Single-column comment row
-    // at the very top — the banner in the UI says the same thing but the
-    // downloaded file needs its own signal.
-    if (auditTrunc || recountTrunc) {
-      const caps: string[] = [];
-      if (auditTrunc)   caps.push(`audit list: ${AUDIT_LIMIT} max`);
-      if (recountTrunc) caps.push(`recount rows: ${RECOUNT_LIMIT} max`);
-      lines.push(escape(
-        `# TRUNCATED: this export hit a server-side cap (${caps.join('; ')}). ` +
-        `Narrow the date window or audit selection to see all rows.`,
-      ));
+  const exportReport = useCallback(async () => {
+    if (rows.length === 0 || exporting) return;
+    setExporting(true);
+    try {
+      // Title reflects whether the export is scoped to a single venue.
+      const venueName = venue ? (VENUES.find(v => v.id === venue)?.name ?? '') : '';
+      const title = venueName ? 'Variance Report — ' + venueName : 'Variance Report — All Audits';
+      const ts = new Date().toISOString().slice(0, 10);
+      const windowLabel = window_ === '7d' ? 'last 7 days' : window_ === '30d' ? 'last 30 days' : 'all time';
+      const blob = await buildVarianceWorkbookBlob({
+        title,
+        subtitle: `${audits.length} audits in scope · ${windowLabel} · ${ts}`,
+        rows: rows as AvtLikeRow[],
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'variance_report_' + ts + '.xlsx';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error('[reports] export', e);
+      alert('Export failed: ' + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setExporting(false);
     }
-    lines.push(header.map(escape).join(','));
-    rows.forEach(r => {
-      lines.push([
-        r.item,
-        r.category,
-        r.issueType,
-        fmtVariance(r.variance),
-        fmtCurrency(r.replacementValue),
-        r.auditResult,
-        r.counterInitials,
-        r.context,
-      ].map(escape).join(','));
-    });
-
-    // Prepend BOM so Excel on Windows picks UTF-8 instead of treating the
-    // first character as Latin-1. We pass the raw EF BB BF byte sequence
-    // as a Uint8Array part of the Blob — relying on a JS string '﻿'
-    // to round-trip cleanly through Blob's encoder is browser-dependent
-    // and Safari has historically dropped it.
-    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
-    const csv = lines.join('\r\n');
-    const blob = new Blob([bom, csv], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    const ts = new Date().toISOString().slice(0, 10);
-    a.download = 'kount-report-' + ts + '.csv';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }, [rows, auditTrunc, recountTrunc]);
+  }, [rows, exporting, venue, window_, audits.length]);
 
   const totalCount = rows.length;
+  const multiVenue = useMemo(() => new Set(rows.map(r => r.venue_name ?? '')).size > 1, [rows]);
 
   return (
     <>
@@ -228,7 +219,7 @@ export function Reports({ user }: Props) {
         <div>
           <Eyebrow>Reports</Eyebrow>
           <h1 className="page-title">Audit reports</h1>
-          <div className="page-sub">Per-recount-item view across audits — Item · Category · Issue Type · Variance · Replacement Value · Audit Results · Counter Initials · Context.</div>
+          <div className="page-sub">Computed variance across audits — Item · Venue · Variance qty · Variance $ · Variance %. Export is the full formatted workbook (Summary · Largest Offenders · Possible Causes · Detail).</div>
         </div>
       </div>
 
@@ -237,11 +228,8 @@ export function Reports({ user }: Props) {
           style={pickerStyle}
           value={venue}
           onChange={e => {
-            // Changing venue invalidates any pinned audit — the audit may
-            // belong to a different venue, in which case our visibility
-            // filter would drop it and the table would silently show "No
-            // rows match" with no explanation. Reset auditId so the user
-            // sees the full audit list for the new venue.
+            // Changing venue invalidates any pinned audit — reset auditId so
+            // the picker shows the new venue's audits.
             setVenue(e.target.value);
             setAuditId('');
           }}
@@ -255,10 +243,7 @@ export function Reports({ user }: Props) {
             .filter(a => !venue || a.venue_id === venue)
             .map(a => (
               <option key={a.id} value={a.id}>
-                {/* ISO YYYY-MM-DD instead of toLocaleDateString so the same
-                    audit reads identically for a US user and an EU user
-                    sharing a screenshot. The wider report still uses
-                    locale formatting where free-form is fine. */}
+                {/* ISO YYYY-MM-DD so the same audit reads identically across locales. */}
                 {a.venue_name} · {a.join_code} · {a.started_at.slice(0, 10)}
               </option>
             ))}
@@ -267,8 +252,7 @@ export function Reports({ user }: Props) {
           style={pickerStyle}
           value={window_}
           onChange={e => {
-            // Same rationale as the venue reset: a window change can
-            // strand an auditId that's no longer in the visible set.
+            // A window change can strand an auditId that's no longer visible.
             setWindow_(e.target.value as WindowChoice);
             setAuditId('');
           }}
@@ -279,14 +263,16 @@ export function Reports({ user }: Props) {
         </select>
         <div style={{ flex: 1 }} />
         <Pill tone="neutral" size="sm">{loading ? 'loading…' : totalCount + ' row' + (totalCount === 1 ? '' : 's')}</Pill>
-        <Btn variant="primary" size="sm" onClick={exportCSV} disabled={rows.length === 0}>Export CSV</Btn>
+        <Btn variant="primary" size="sm" onClick={() => void exportReport()} disabled={rows.length === 0 || exporting} leading={Ic.download(14)}>
+          {exporting ? 'Building…' : 'Export Report'}
+        </Btn>
       </div>
 
-      {(auditTrunc || recountTrunc) && !loading && (
+      {(auditTrunc || rowTrunc) && !loading && (
         <div style={{ marginBottom: 12, padding: '10px 12px', borderRadius: 8, background: 'rgba(255,193,7,0.10)', border: '1px solid rgba(255,193,7,0.4)', fontSize: 12, color: 'var(--fg)' }}>
           ⚠ Result set is capped — narrow the date window or pick a single audit to see the rest.
-          {auditTrunc   && <> Audit list hit the {AUDIT_LIMIT}-row cap.</>}
-          {recountTrunc && <> Recount rows hit the {RECOUNT_LIMIT}-row cap.</>}
+          {auditTrunc && <> Audit list hit the {AUDIT_LIMIT}-row cap.</>}
+          {rowTrunc   && <> Variance rows hit the {ROW_LIMIT}-row cap.</>}
         </div>
       )}
 
@@ -294,39 +280,41 @@ export function Reports({ user }: Props) {
         {loading && <div style={{ padding: 24, textAlign: 'center', color: 'var(--fg-muted)' }}>Loading reports…</div>}
         {!loading && rows.length === 0 && (
           <div style={{ padding: 24, textAlign: 'center', color: 'var(--fg-muted)' }}>
-            No recount rows match the current filters. Try widening the date window or clearing the venue.
+            No computed variance matches the current filters. Variance is computed automatically when an audit's Count 2 closes on the phone — try widening the date window or clearing the venue.
           </div>
         )}
         {!loading && rows.length > 0 && (
           <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 900 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 760 }}>
               <thead>
                 <tr style={{ textAlign: 'left', color: 'var(--fg-muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1 }}>
                   <th style={th}>Item</th>
                   <th style={th}>Category</th>
-                  <th style={th}>Issue Type</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Variance</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Replacement Value</th>
-                  <th style={th}>Audit Results</th>
-                  <th style={th}>Counter Initials</th>
-                  <th style={th}>Context</th>
+                  {multiVenue && <th style={th}>Venue</th>}
+                  <th style={th}>Audit</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Variance (qty)</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Variance $</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Variance %</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((r, i) => (
-                  <tr key={r._auditId + ':' + r.item + ':' + i} style={{ borderBottom: '1px solid var(--border)' }}>
-                    <td style={{ ...td, fontWeight: 500 }}>{r.item}</td>
+                  <tr key={r._auditId + ':' + r.item_name + ':' + i} style={{ borderBottom: '1px solid var(--border)' }}>
+                    <td style={{ ...td, fontWeight: 500 }}>{r.item_name}</td>
                     <td style={{ ...td, color: 'var(--fg-muted)' }}>{r.category || '—'}</td>
-                    <td style={td}>{r.issueType}</td>
-                    <td style={{ ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{r.variance != null ? r.variance.toFixed(2) : '—'}</td>
-                    <td style={{ ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: (r.replacementValue ?? 0) < 0 ? 'var(--raspberry-300, #f06292)' : 'inherit' }}>
-                      {r.replacementValue != null
-                        ? (r.replacementValue < 0 ? '-$' : '$') + Math.abs(r.replacementValue).toFixed(2)
+                    {multiVenue && <td style={{ ...td, color: 'var(--fg-muted)' }}>{r.venue_name || '—'}</td>}
+                    <td style={{ ...td, fontFamily: 'monospace' }}>{r.audit_code || '—'}</td>
+                    <td style={{ ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: (r.variance ?? 0) < 0 ? 'var(--raspberry-300, #f06292)' : 'inherit' }}>
+                      {r.variance != null ? r.variance.toFixed(2) : '—'}
+                    </td>
+                    <td style={{ ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: (r.variance_value ?? 0) < 0 ? 'var(--raspberry-300, #f06292)' : 'inherit' }}>
+                      {r.variance_value != null
+                        ? (r.variance_value < 0 ? '-$' : '$') + Math.abs(r.variance_value).toFixed(2)
                         : '—'}
                     </td>
-                    <td style={td}>{r.auditResult || <span style={{ color: 'var(--fg-muted)' }}>—</span>}</td>
-                    <td style={{ ...td, fontFamily: 'monospace', textTransform: 'uppercase' }}>{r.counterInitials || '—'}</td>
-                    <td style={{ ...td, color: 'var(--fg-muted)', maxWidth: 320 }}>{r.context || '—'}</td>
+                    <td style={{ ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: (r.variance_pct ?? 0) < 0 ? 'var(--raspberry-300, #f06292)' : 'inherit' }}>
+                      {r.variance_pct != null ? r.variance_pct.toFixed(1) + '%' : '—'}
+                    </td>
                   </tr>
                 ))}
               </tbody>

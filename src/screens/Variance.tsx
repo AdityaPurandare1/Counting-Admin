@@ -5,7 +5,7 @@ import type { AccessEntry } from '@/lib/access';
 import type { KountAudit, KountEntry, KountMember, KountAvtReport, KountAvtRow } from '@/lib/types';
 import { Pill, Eyebrow, Card, Btn, Num, Money, Avatar } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
-import { csvCell } from '@/lib/csv';
+import { buildVarianceWorkbookBlob, type AvtLikeRow } from '@/lib/varianceReport';
 
 /* ───────────────────────────────────────────────────────────────────────
    Variance screen (v0.3)
@@ -316,56 +316,51 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
     // the active list will drop it and the historic list will pick it up.
   };
 
-  // Export the COMPUTED variance (kount_avt_rows) — this is the correct
-  // product. The Reports screen exports kount_recounts, which for a
-  // Count-2-skipped audit is the phone's all-items zero-variance fallback;
-  // here we export the real AVT numbers shown on screen, in the same order
-  // (variance_value asc, most-negative first).
-  const exportVarianceCSV = useCallback(() => {
-    if (!audit || avtRows.length === 0) return;
-    const header = [
-      'Item', 'Category', 'Start', 'Purchases', 'Depletions',
-      'Actual', 'Theoretical', 'Variance (qty)', 'CU Price',
-      'Variance $', 'Variance %',
-    ];
-    // Bare numbers (no $/% symbols) so Excel can SUM/sort. variance_pct is
-    // already stored ×100 by compute_avt ((actual-theo)/theo*100), so emit
-    // it as-is.
-    const num = (n: number | null | undefined): string => (n === null || n === undefined ? '' : String(Number(n)));
-    const lines: string[] = [];
-    lines.push(header.map(csvCell).join(','));
-    for (const r of avtRows) {
-      lines.push([
-        r.item_name,
-        r.category ?? '',
-        num(r.start_qty),
-        num(r.purchases),
-        num(r.depletions),
-        num(r.actual),
-        num(r.theo),
-        num(r.variance),
-        num(r.cu_price),
-        num(r.variance_value),
-        num(r.variance_pct),
-      ].map(csvCell).join(','));
+  // Export the COMPUTED variance (kount_avt_rows) as a formatted, multi-tab
+  // .xlsx — this is the correct product. The Reports screen now uses the SAME
+  // builder. Rows are mapped straight from the on-screen AVT data (variance_pct
+  // is already stored ×100 by compute_avt, and the builder does NOT multiply
+  // again).
+  const [exporting, setExporting] = useState(false);
+  const exportVarianceReport = useCallback(async () => {
+    if (!audit || avtRows.length === 0 || exporting) return;
+    setExporting(true);
+    try {
+      const reportRows: AvtLikeRow[] = avtRows.map(r => ({
+        item_name: r.item_name,
+        category: r.category,
+        start_qty: r.start_qty,
+        purchases: r.purchases,
+        depletions: r.depletions,
+        actual: r.actual,
+        theo: r.theo,
+        variance: r.variance,
+        cu_price: r.cu_price,
+        variance_value: r.variance_value,
+        variance_pct: r.variance_pct,
+      }));
+      const ts = new Date().toISOString().slice(0, 10);
+      const blob = await buildVarianceWorkbookBlob({
+        title: 'Variance Report — ' + audit.venue_name,
+        subtitle: `${audit.join_code} · ${ts}`,
+        rows: reportRows,
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const venueSlug = (audit.venue_name || 'venue').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'venue';
+      a.download = `variance_${audit.join_code}_${venueSlug}_${ts}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error('[variance] export report', e);
+      alert('Export failed: ' + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setExporting(false);
     }
-
-    // BOM as raw bytes so Excel on Windows reads UTF-8 (string '﻿'
-    // round-tripping through Blob is browser-dependent — Safari has dropped it).
-    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
-    const csv = lines.join('\r\n');
-    const blob = new Blob([bom, csv], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    const venueSlug = (audit.venue_name || 'venue').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'venue';
-    const ts = new Date().toISOString().slice(0, 10);
-    a.download = `variance_${audit.join_code}_${venueSlug}_${ts}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }, [audit, avtRows]);
+  }, [audit, avtRows, exporting]);
 
   if (!audit) return <Card padding={24}><div style={{ color: 'var(--fg-muted)' }}>Loading audit…</div></Card>;
 
@@ -466,12 +461,12 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
             <Btn
               variant="secondary"
               size="sm"
-              onClick={exportVarianceCSV}
-              disabled={avtRows.length === 0}
-              title={avtRows.length === 0 ? 'No computed variance yet — close Count 1 first' : 'Download the computed variance report'}
+              onClick={() => void exportVarianceReport()}
+              disabled={avtRows.length === 0 || exporting}
+              title={avtRows.length === 0 ? 'No computed variance yet — close Count 1 first' : 'Download the formatted variance workbook (.xlsx)'}
               leading={Ic.download(14)}
             >
-              Export CSV
+              {exporting ? 'Building…' : 'Export Report'}
             </Btn>
             {avtRows.length === 0 && (
               <span style={{ fontSize: 10, color: 'var(--fg-muted)' }}>No computed variance yet — close Count 1 first</span>
