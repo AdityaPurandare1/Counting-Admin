@@ -5,6 +5,7 @@ import type { AccessEntry } from '@/lib/access';
 import type { KountAudit, KountEntry, KountMember, KountAvtReport, KountAvtRow } from '@/lib/types';
 import { Pill, Eyebrow, Card, Btn, Num, Money, Avatar } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
+import { csvCell } from '@/lib/csv';
 
 /* ───────────────────────────────────────────────────────────────────────
    Variance screen (v0.3)
@@ -31,6 +32,9 @@ export function Variance({ user }: Props) {
   const [historicAudits, setHistoricAudits] = useState<KountAudit[]>([]);
   const [loadingAudits, setLoadingAudits] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(auditParam);
+  // Date filter for the audit picker. Empty = all dates. Compared on the
+  // local calendar date (active → started_at, historic → completed_at ?? started_at).
+  const [dateFilter, setDateFilter] = useState<string>('');
 
   const filterVisible = useCallback((rows: KountAudit[]) => rows.filter(a => {
     if (user.role === 'corporate' || user.venueIds === 'all') return true;
@@ -90,6 +94,23 @@ export function Variance({ user }: Props) {
     setSearchParams({ audit: id }, { replace: true });
   };
 
+  // Local calendar date (YYYY-MM-DD) for an audit — historic audits key off
+  // completed_at, falling back to started_at; active audits key off started_at.
+  const auditDate = useCallback((a: KountAudit): string => {
+    const iso = a.status !== 'active' ? (a.completed_at ?? a.started_at) : a.started_at;
+    return localDateKey(iso);
+  }, []);
+
+  // Distinct dates present across both lists, newest first, for the picker.
+  const availableDates = useMemo(() => {
+    const set = new Set<string>();
+    for (const a of [...activeAudits, ...historicAudits]) set.add(auditDate(a));
+    return [...set].sort((x, y) => (x < y ? 1 : x > y ? -1 : 0));
+  }, [activeAudits, historicAudits, auditDate]);
+
+  const filteredActive   = useMemo(() => dateFilter ? activeAudits.filter(a => auditDate(a) === dateFilter) : activeAudits,   [activeAudits, dateFilter, auditDate]);
+  const filteredHistoric = useMemo(() => dateFilter ? historicAudits.filter(a => auditDate(a) === dateFilter) : historicAudits, [historicAudits, dateFilter, auditDate]);
+
   return (
     <>
       <div className="topbar">
@@ -103,23 +124,45 @@ export function Variance({ user }: Props) {
       </div>
       <div className="content" style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 20 }}>
         <aside style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+          <div>
+            <Eyebrow style={{ marginBottom: 8 }}>Filter by date</Eyebrow>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <input
+                type="date"
+                value={dateFilter}
+                onChange={e => setDateFilter(e.target.value)}
+                list="variance-audit-dates"
+                style={{
+                  flex: 1, padding: '6px 10px', border: '1px solid var(--border-strong)',
+                  borderRadius: 6, fontFamily: 'inherit', fontSize: 13,
+                }}
+              />
+              {/* Surface the dates that actually have audits as quick-pick options. */}
+              <datalist id="variance-audit-dates">
+                {availableDates.map(d => <option key={d} value={d} />)}
+              </datalist>
+              {dateFilter && (
+                <Btn variant="ghost" size="sm" onClick={() => setDateFilter('')} title="Show all dates">Clear</Btn>
+              )}
+            </div>
+          </div>
           <AuditList
             title="Active"
-            count={activeAudits.length}
-            audits={activeAudits}
+            count={filteredActive.length}
+            audits={filteredActive}
             selectedId={selectedId}
             onOpen={openAudit}
             loading={loadingAudits}
-            emptyMessage="No active audits. Start one from the phone app."
+            emptyMessage={dateFilter ? 'No active audits on this date.' : 'No active audits. Start one from the phone app.'}
           />
           <AuditList
             title="Historic"
-            count={historicAudits.length}
-            audits={historicAudits}
+            count={filteredHistoric.length}
+            audits={filteredHistoric}
             selectedId={selectedId}
             onOpen={openAudit}
             loading={false}
-            emptyMessage="No completed or cancelled audits yet."
+            emptyMessage={dateFilter ? 'No historic audits on this date.' : 'No completed or cancelled audits yet.'}
           />
         </aside>
 
@@ -273,6 +316,57 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
     // the active list will drop it and the historic list will pick it up.
   };
 
+  // Export the COMPUTED variance (kount_avt_rows) — this is the correct
+  // product. The Reports screen exports kount_recounts, which for a
+  // Count-2-skipped audit is the phone's all-items zero-variance fallback;
+  // here we export the real AVT numbers shown on screen, in the same order
+  // (variance_value asc, most-negative first).
+  const exportVarianceCSV = useCallback(() => {
+    if (!audit || avtRows.length === 0) return;
+    const header = [
+      'Item', 'Category', 'Start', 'Purchases', 'Depletions',
+      'Actual', 'Theoretical', 'Variance (qty)', 'CU Price',
+      'Variance $', 'Variance %',
+    ];
+    // Bare numbers (no $/% symbols) so Excel can SUM/sort. variance_pct is
+    // already stored ×100 by compute_avt ((actual-theo)/theo*100), so emit
+    // it as-is.
+    const num = (n: number | null | undefined): string => (n === null || n === undefined ? '' : String(Number(n)));
+    const lines: string[] = [];
+    lines.push(header.map(csvCell).join(','));
+    for (const r of avtRows) {
+      lines.push([
+        r.item_name,
+        r.category ?? '',
+        num(r.start_qty),
+        num(r.purchases),
+        num(r.depletions),
+        num(r.actual),
+        num(r.theo),
+        num(r.variance),
+        num(r.cu_price),
+        num(r.variance_value),
+        num(r.variance_pct),
+      ].map(csvCell).join(','));
+    }
+
+    // BOM as raw bytes so Excel on Windows reads UTF-8 (string '﻿'
+    // round-tripping through Blob is browser-dependent — Safari has dropped it).
+    const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+    const csv = lines.join('\r\n');
+    const blob = new Blob([bom, csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const venueSlug = (audit.venue_name || 'venue').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'venue';
+    const ts = new Date().toISOString().slice(0, 10);
+    a.download = `variance_${audit.join_code}_${venueSlug}_${ts}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [audit, avtRows]);
+
   if (!audit) return <Card padding={24}><div style={{ color: 'var(--fg-muted)' }}>Loading audit…</div></Card>;
 
   return (
@@ -356,16 +450,33 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
 
       {/* AVT variance — pulled from latest kount_avt_reports row covering this venue */}
       <Card padding={16}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-          <Eyebrow>Craftable AVT variance</Eyebrow>
-          {avtReport
-            ? <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
-                uploaded {new Date(avtReport.uploaded_at).toLocaleString()} · by {avtReport.uploaded_by_name || avtReport.uploaded_by_email} · {avtReport.file_name}
-                <span style={{ marginLeft: 6, fontSize: 11, color: avtReport.source === 'computed' ? 'var(--success)' : 'var(--fg-muted)' }}>
-                  · {avtReport.source === 'computed' ? 'Computed' : 'Uploaded'}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <Eyebrow>Craftable AVT variance</Eyebrow>
+            {avtReport
+              ? <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+                  uploaded {new Date(avtReport.uploaded_at).toLocaleString()} · by {avtReport.uploaded_by_name || avtReport.uploaded_by_email} · {avtReport.file_name}
+                  <span style={{ marginLeft: 6, fontSize: 11, color: avtReport.source === 'computed' ? 'var(--success)' : 'var(--fg-muted)' }}>
+                    · {avtReport.source === 'computed' ? 'Computed' : 'Uploaded'}
+                  </span>
                 </span>
-              </span>
-            : <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>no AVT report for this venue yet — one is computed automatically when an audit's Count 2 closes on the phone</span>}
+              : <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>no AVT report for this venue yet — one is computed automatically when an audit's Count 2 closes on the phone</span>}
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
+            <Btn
+              variant="secondary"
+              size="sm"
+              onClick={exportVarianceCSV}
+              disabled={avtRows.length === 0}
+              title={avtRows.length === 0 ? 'No computed variance yet — close Count 1 first' : 'Download the computed variance report'}
+              leading={Ic.download(14)}
+            >
+              Export CSV
+            </Btn>
+            {avtRows.length === 0 && (
+              <span style={{ fontSize: 10, color: 'var(--fg-muted)' }}>No computed variance yet — close Count 1 first</span>
+            )}
+          </div>
         </div>
         {avtReport && avtRows.length > 0 && (
           <>
@@ -422,6 +533,17 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
       </Card>
     </div>
   );
+}
+
+/** Local calendar date key (YYYY-MM-DD) for an ISO timestamp. Uses local
+ *  time — not the ISO slice — so an audit started late at night reads as the
+ *  user's calendar day, matching <input type="date"> which is also local. */
+function localDateKey(iso: string): string {
+  const d = new Date(iso);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 
 function StatTile({ label, value }: { label: string; value: React.ReactNode }) {

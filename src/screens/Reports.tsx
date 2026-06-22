@@ -125,7 +125,7 @@ export function Reports({ user }: Props) {
       return [{
         item:             r.item_name,
         category:         r.category ?? '',
-        issueType:        'Craftable Variance',
+        issueType:        'Recount variance',
         variance:         r.variance_qty != null ? Number(r.variance_qty) : null,
         replacementValue: r.variance_value != null ? Number(r.variance_value) : null,
         auditResult:      auditResultLabel(r),
