@@ -32,6 +32,18 @@ const KNOWN_ISSUES = [
   'other',
 ] as const;
 
+// Display labels. The persisted token stays `not-in-craftable` (it's written to
+// kount_entries.issue and referenced across apps), but Craftable is deprecated —
+// surface it to users as "not in inventory". Other tokens just de-hyphenate.
+const ISSUE_LABELS: Record<string, string> = {
+  'not-in-craftable': 'not in inventory',
+  'no-upc': 'no UPC',
+};
+const issueLabel = (t: string | null | undefined): string => {
+  if (!t) return '';
+  return ISSUE_LABELS[t] ?? t.replace(/-/g, ' ');
+};
+
 type WindowChoice = 'all' | '7d' | '24h';
 type StatusChoice = 'open' | 'resolved' | 'all';
 
@@ -164,7 +176,7 @@ export function Issues({ user }: Props) {
           </select>
           <select value={issue} onChange={e => setIssue(e.target.value)} style={pickerStyle}>
             <option value="">All issue types</option>
-            {KNOWN_ISSUES.map(k => <option key={k} value={k}>{k}</option>)}
+            {KNOWN_ISSUES.map(k => <option key={k} value={k}>{issueLabel(k)}</option>)}
           </select>
           <Btn variant="secondary" size="sm" onClick={() => void load()}>Refresh</Btn>
         </div>
@@ -197,7 +209,7 @@ export function Issues({ user }: Props) {
                     color: t === issue ? 'var(--off-100)' : 'var(--fg-primary)',
                     fontSize: 12, fontFamily: 'inherit', cursor: 'pointer',
                   }}>
-                  {t} · {n}
+                  {issueLabel(t)} · {n}
                 </button>
               ))}
             </div>
@@ -235,7 +247,7 @@ export function Issues({ user }: Props) {
                       <td style={{ padding: '8px 4px', color: 'var(--fg-muted)' }}>{e.zone}</td>
                       <td style={{ padding: '8px 4px', fontWeight: 500 }}>{e.item_name}</td>
                       <td style={{ padding: '8px 4px' }}>
-                        {resolved ? <Pill tone="positive" size="sm">{e.issue} · resolved</Pill> : <Pill tone="caution" size="sm">{e.issue}</Pill>}
+                        {resolved ? <Pill tone="positive" size="sm">{issueLabel(e.issue)} · resolved</Pill> : <Pill tone="caution" size="sm">{issueLabel(e.issue)}</Pill>}
                       </td>
                       <td style={{ padding: '8px 4px', fontSize: 12, color: 'var(--fg-muted)', maxWidth: 260 }}>{e.issue_notes ?? ''}</td>
                       <td style={{ padding: '8px 4px', fontSize: 12, color: 'var(--fg-muted)' }}>{e.counted_by_name || e.counted_by_email}</td>
