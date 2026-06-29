@@ -22,7 +22,7 @@ export const IN_SCOPE_FILTER = 'category=in.(' +
   IN_SCOPE_CATEGORIES.map(c => '"' + c.replace(/"/g, '\\"') + '"').join(',') +
   ')';
 
-export type Role = 'corporate' | 'manager' | 'counter';
+export type Role = 'corporate' | 'manager' | 'counter' | 'venue_manager';
 export type AuditStatus = 'active' | 'submitted' | 'cancelled';
 export type CountPhase = 'count1' | 'review' | 'count2' | 'final';
 export type Severity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'WATCH' | 'LOW';

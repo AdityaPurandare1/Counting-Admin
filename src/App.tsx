@@ -37,7 +37,7 @@ function isAccessEntry(x: unknown): x is AccessEntry {
   if (!x || typeof x !== 'object') return false;
   const o = x as Record<string, unknown>;
   if (typeof o.email !== 'string' || typeof o.name !== 'string') return false;
-  if (o.role !== 'corporate' && o.role !== 'manager' && o.role !== 'counter') return false;
+  if (o.role !== 'corporate' && o.role !== 'manager' && o.role !== 'counter' && o.role !== 'venue_manager') return false;
   if (o.venueIds !== 'all' && !Array.isArray(o.venueIds)) return false;
   return true;
 }
@@ -125,8 +125,8 @@ async function runPasswordRecoveryFlow(
     await supabase.auth.signOut().catch(() => {});
     return;
   }
-  if (profile.role === 'counter') {
-    alert('Password set, but the desktop app is for managers and admins only. Use the phone app instead.');
+  if (!['corporate', 'manager', 'venue_manager'].includes(profile.role)) {
+    alert('Password set, but the desktop app is for admins, managers, and venue management only. Counters use the phone app instead.');
     await supabase.auth.signOut().catch(() => {});
     return;
   }
@@ -159,7 +159,7 @@ export default function App() {
       ]);
       if (!user) return;
       const live = resolveAccess(user.email);
-      if (!live || live.role === 'counter') {
+      if (!live || !['corporate', 'manager', 'venue_manager'].includes(live.role)) {
         setUser(null);
         nav('/');
       } else if (live.role !== user.role) {
@@ -232,13 +232,13 @@ export default function App() {
             <Route path="/counts"   element={(user.role === 'corporate' || user.role === 'manager') ? <Counts user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/recount"  element={<Recount user={user} />} />
             <Route path="/summary"  element={<Summary user={user} />} />
-            <Route path="/reports"  element={user.role === 'corporate' ? <Reports user={user} /> : <Navigate to="/variance" replace />} />
+            <Route path="/reports"  element={(user.role === 'corporate' || user.role === 'venue_manager') ? <Reports user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/issues"   element={<Issues user={user} />} />
             <Route path="/ai"       element={<AI />} />
             <Route path="/approvals" element={(user.role === 'corporate' || user.role === 'manager') ? <Approvals user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/catalog"   element={user.role === 'corporate' ? <Catalog user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/inventory" element={user.role === 'corporate' ? <Inventory user={user} /> : <Navigate to="/variance" replace />} />
-            <Route path="/stock"     element={(user.role === 'corporate' || user.role === 'manager') ? <StockOnHand user={user} /> : <Navigate to="/variance" replace />} />
+            <Route path="/stock"     element={(user.role === 'corporate' || user.role === 'manager' || user.role === 'venue_manager') ? <StockOnHand user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/security"  element={user.role === 'corporate' ? <Security user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/venue-settings" element={user.role === 'corporate' ? <VenueSettings user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="*"         element={<Navigate to="/variance" replace />} />

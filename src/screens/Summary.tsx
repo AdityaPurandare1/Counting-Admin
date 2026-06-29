@@ -111,6 +111,7 @@ export function Summary({ user }: Props) {
      The DELETE itself is a single round trip with .in('id', ids) and a
      status='cancelled' guard so a parallel Reactivate wins. */
   const sweepCancelled = async () => {
+    if (user.role !== 'corporate') return; // defense-in-depth: read-only roles can't sweep
     if (!canSweep) return;
     setSweepBusy(true);
     try {
@@ -384,6 +385,7 @@ function SummaryDetail({
      non-null, which is contradictory state the phone's flow doesn't
      handle cleanly. */
   const reactivate = async () => {
+    if (user.role !== 'corporate') return; // defense-in-depth: read-only roles can't reactivate
     if (!audit || !canReactivate) return;
     if (audit.status !== 'cancelled') return;
     if (!confirm(
@@ -430,6 +432,7 @@ function SummaryDetail({
      entries case (the StaleAuditsPrompt cleanup workflow) gets a softer
      message because there's nothing to lose. */
   const deleteAudit = async () => {
+    if (user.role !== 'corporate') return; // defense-in-depth: read-only roles can't delete
     if (!audit || !canDelete) return;
     if (audit.status !== 'cancelled') return;
     const entryCount = entries.length;

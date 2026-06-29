@@ -129,6 +129,10 @@ function RecountDetail({ auditId, auditLabel, user }: { auditId: string; auditLa
   }, [auditId, load]);
 
   const dismiss = async (row: KountRecount) => {
+    // Defense-in-depth: dismiss is UI-gated to corporate (the action column
+    // only renders for user.role === 'corporate'); guard the handler too so
+    // a read-only role (e.g. venue_manager) can never trigger the write.
+    if (user.role !== 'corporate') return;
     if (!confirm(`Dismiss ${row.item_name}?\n\nIt'll no longer block Count 2 close.`)) return;
     const { error } = await supabase
       .from('kount_recounts')

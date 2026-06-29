@@ -153,20 +153,20 @@ export function Login({ onSignedIn }: Props) {
       await safeSignOut();
       return fail('Signed in but no app profile found. Ask another admin to set your role.');
     }
-    if (resolved.role === 'counter') {
-      // Counters do not belong on the desktop — invalidate the Supabase
-      // session before refusing entry. If signOut fails we cannot just
-      // refuse and trust the UI gate; the counter would still hold a
-      // valid JWT good for direct RPC / Edge Function calls. Surface a
-      // hard error telling them to close the tab so the session expires
-      // naturally rather than letting them continue with a leaked
-      // identity.
+    if (!['corporate', 'manager', 'venue_manager'].includes(resolved.role)) {
+      // Counters (and any future non-desktop role) do not belong on the
+      // desktop — invalidate the Supabase session before refusing entry.
+      // If signOut fails we cannot just refuse and trust the UI gate; the
+      // user would still hold a valid JWT good for direct RPC / Edge
+      // Function calls. Surface a hard error telling them to close the tab
+      // so the session expires naturally rather than letting them continue
+      // with a leaked identity.
       const cleared = await safeSignOut();
       if (!cleared) {
         setErr('Sign-in could not be completed cleanly. Close this tab and try again.');
         return;
       }
-      return fail('The desktop app is for managers and admins. Use the phone app.');
+      return fail('This app is for admins, managers, and venue management. Counters use the phone app.');
     }
 
     // Use the canonical name from app_users — never the user's typed value.
