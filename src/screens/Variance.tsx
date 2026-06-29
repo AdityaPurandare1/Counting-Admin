@@ -280,6 +280,35 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
   const canCancel = user.role === 'corporate' && audit?.status === 'active';
   const [cancelling, setCancelling] = useState(false);
 
+  // Finalize from the desktop once Count 1 is closed (phase review/count2).
+  // Mirrors the phone's finalizeCount2 stamp: status submitted + phase final +
+  // completed_at, then recompute the AVT so the final variance reflects the
+  // latest counts. Available to corporate + managers (same gate as close).
+  const canComplete = (user.role === 'corporate' || user.role === 'manager')
+    && audit?.status === 'active'
+    && (audit?.count_phase === 'review' || audit?.count_phase === 'count2');
+  const [completing, setCompleting] = useState(false);
+  const completeAudit = async () => {
+    if (!audit || completing) return;
+    if (!confirm(
+      `Complete audit ${audit.join_code} (${audit.venue_name})?\n\n` +
+      'This finalizes the audit (no further counts) and recomputes the final variance. ' +
+      'It cannot be undone from here.'
+    )) return;
+    setCompleting(true);
+    const now = new Date().toISOString();
+    const { error } = await supabase
+      .from('kount_audits')
+      .update({ status: 'submitted', count_phase: 'final', completed_at: now })
+      .eq('id', audit.id);
+    if (error) { setCompleting(false); alert('Complete failed: ' + error.message); return; }
+    // Recompute the final variance (corporate-gated RPC; non-fatal for managers).
+    try { await supabase.rpc('compute_avt_for_audit', { p_audit_id: audit.id }); }
+    catch (e) { console.warn('[variance] compute_avt on complete failed', e); }
+    setCompleting(false);
+    onClosed();
+  };
+
   const closeCount1 = async () => {
     if (!audit || closing) return;
     // Closing from the desktop does NOT build kount_recounts — only the
@@ -391,6 +420,11 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
             {canClose && (
               <Btn variant="primary" size="md" onClick={closeCount1} disabled={closing} leading={Ic.flag(14)}>
                 {closing ? 'Closing…' : 'Close Count 1'}
+              </Btn>
+            )}
+            {canComplete && (
+              <Btn variant="primary" size="md" onClick={completeAudit} disabled={completing} leading={Ic.flag(14)}>
+                {completing ? 'Completing…' : 'Complete audit'}
               </Btn>
             )}
             {canCancel && (
