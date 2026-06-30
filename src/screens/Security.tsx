@@ -124,7 +124,7 @@ function UserRow({ row, onEdit }: { row: AppUserRow; onEdit: () => void }) {
       <td style={{ padding: '10px 6px', fontFamily: 'JetBrains Mono, monospace', fontSize: 12 }}>{row.email}</td>
       <td style={{ padding: '10px 6px', fontWeight: 500 }}>{row.name ?? '—'}</td>
       <td style={{ padding: '10px 6px' }}>
-        <Pill tone={row.role === 'corporate' ? 'ink' : row.role === 'manager' ? 'gold' : 'neutral'} size="sm">{row.role}</Pill>
+        <Pill tone={row.role === 'corporate' ? 'ink' : row.role === 'manager' ? 'gold' : row.role === 'venue_manager' ? 'inform' : 'neutral'} size="sm">{row.role === 'venue_manager' ? 'venue management' : row.role}</Pill>
       </td>
       <td style={{ padding: '10px 6px', maxWidth: 360, fontSize: 12 }}>{venueLabel}</td>
       <td style={{ padding: '10px 6px' }}>
@@ -483,6 +483,7 @@ function UserFormModal({
           <select value={role} onChange={e => setRole(e.target.value as Role)} style={fieldInput}>
             <option value="corporate">corporate (admin — all venues)</option>
             <option value="manager">manager</option>
+            <option value="venue_manager">venue management (view + download reports, flag issues — their venue)</option>
             <option value="counter">counter</option>
           </select>
         </Field>
