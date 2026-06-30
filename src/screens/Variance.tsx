@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { supabase, selectAllPagedFiltered } from '@/lib/supabase';
 import type { AccessEntry } from '@/lib/access';
@@ -205,18 +205,19 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
     setMembers((m as KountMember[]) ?? []);
   }, [auditId]);
 
-  // Pull the most-recent AVT report that covers this audit's venue + its rows
-  const loadAvt = useCallback(async (venueId: string) => {
-    // Uploaded AVT is DEPRECATED; the computed report is the product. Order by
-    // source ascending so 'computed' (< 'uploaded' alphabetically) deterministically
-    // outranks any uploaded Craftable export — even one uploaded AFTER Count 2 —
-    // then by uploaded_at desc within a source. Mirrors the phone's
-    // loadAvtFromSupabase ordering (source.asc,uploaded_at.desc). Uploaded only
-    // wins when no computed report exists for the venue.
+  // Pull THIS audit's OWN variance report + rows — scoped by audit_id, not by
+  // venue. Selecting a historic audit must show that audit's variance, not the
+  // venue's latest report (the old venue-scoped query showed the most recent
+  // computed report under every audit, so P-539 and P-075 displayed an
+  // identical number). Uploaded AVT is DEPRECATED; for the same audit, computed
+  // outranks uploaded via source-ascending order. No report → empty state
+  // (active audits before Count close; or a cancelled audit whose report the
+  // cancel-trigger cleared).
+  const loadAvt = useCallback(async () => {
     const { data: reports } = await supabase
       .from('kount_avt_reports')
       .select('*')
-      .contains('venue_ids', [venueId])
+      .eq('audit_id', auditId)
       .order('source', { ascending: true })
       .order('uploaded_at', { ascending: false })
       .limit(1);
@@ -227,21 +228,12 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
       .from('kount_avt_rows')
       .select('*')
       .eq('report_id', rep.id)
-      .eq('venue_id', venueId)
       .order('variance_value', { ascending: true });
     setAvtRows((rows as KountAvtRow[]) ?? []);
-  }, []);
+  }, [auditId]);
 
   useEffect(() => { void load(); }, [load]);
-  useEffect(() => { if (audit?.venue_id) void loadAvt(audit.venue_id); }, [audit?.venue_id, loadAvt]);
-
-  // Hold the latest venue_id in a ref so the realtime callback always
-  // reads the current value, not the value at subscription time. Without
-  // this the AVT-INSERT handler closes over the venue_id that was set
-  // when the subscription first fired (often null on first render),
-  // dropping events that arrive in the window before the audit loads.
-  const venueIdRef = useRef<string | null>(audit?.venue_id ?? null);
-  useEffect(() => { venueIdRef.current = audit?.venue_id ?? null; }, [audit?.venue_id]);
+  useEffect(() => { void loadAvt(); }, [loadAvt]);
 
   useEffect(() => {
     const ch = supabase
@@ -249,12 +241,9 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
       .on('postgres_changes', { event: '*', schema: 'public', table: 'kount_entries', filter: `audit_id=eq.${auditId}` }, () => { void load(); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'kount_members', filter: `audit_id=eq.${auditId}` }, () => { void load(); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'kount_audits',  filter: `id=eq.${auditId}` },       () => { void load(); })
-      // New AVT reports touching this venue → refresh variance table
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'kount_avt_reports' }, (evt) => {
-        const row = evt.new as KountAvtReport;
-        const currentVenueId = venueIdRef.current;
-        if (currentVenueId && row?.venue_ids?.includes(currentVenueId)) void loadAvt(currentVenueId);
-      })
+      // A (re)computed AVT report for THIS audit → refresh the variance table.
+      // Scoped by audit_id so an unrelated venue's new report doesn't reload us.
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'kount_avt_reports', filter: `audit_id=eq.${auditId}` }, () => { void loadAvt(); })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [auditId, load, loadAvt]);
@@ -477,7 +466,7 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
         ))}
       </Card>
 
-      {/* AVT variance — pulled from latest kount_avt_reports row covering this venue */}
+      {/* AVT variance — this audit's OWN computed report (scoped by audit_id) */}
       <Card padding={16}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -489,7 +478,7 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
                     · {avtReport.source === 'computed' ? 'Computed' : 'Uploaded'}
                   </span>
                 </span>
-              : <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>no AVT report for this venue yet — one is computed automatically when an audit's Count 2 closes on the phone</span>}
+              : <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>no variance computed for this audit yet — it's computed automatically when the audit's Count 2 closes on the phone</span>}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
             <Btn
