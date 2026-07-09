@@ -31,6 +31,22 @@ const PAGE_SIZE = 50;
 
 type FilterChoice = 'all' | 'carried' | 'uncarried';
 
+// Shape returned by the merge_master_items RPC (0047), both dry-run + real.
+interface MergeSummary {
+  dry_run: boolean;
+  winner: string;
+  losers: string[];
+  entries_repointed: number;
+  recounts_repointed: number;
+  carried_repointed: number;
+  carried_deleted_dup: number;
+  pending_repointed: number;
+  upcs_moved: number;
+  upcs_deleted_dup: number;
+  mappings_repointed: number;
+  affected_audits: string[];
+}
+
 // Helper: pull every in-scope master_item from Supabase.
 // selectAllPaged orders by name so the pagination is deterministic.
 // When includeArchived is true, archived rows (is_active=false) are pulled
@@ -81,6 +97,14 @@ export function Catalog({ user }: Props) {
   const [importing, setImporting] = useState<null | 'parsing' | 'matching' | 'inserting' | 'done'>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  // --- Merge (dedupe) state ---
+  const [mergeSel, setMergeSel] = useState<Set<string>>(new Set());
+  const [mergeWinner, setMergeWinner] = useState<string | null>(null);
+  const [mergePreview, setMergePreview] = useState<MergeSummary | null>(null);
+  const [mergeResult, setMergeResult] = useState<MergeSummary | null>(null);
+  const [merging, setMerging] = useState<null | 'preview' | 'running' | 'recompute' | 'done'>(null);
+  const [mergeError, setMergeError] = useState<string | null>(null);
+  const [recomputeMsg, setRecomputeMsg] = useState<string | null>(null);
 
   // --- Initial load: full catalog + current carried set ---
   // Both must paginate — the kount_carried_items query previously used a plain
@@ -363,6 +387,87 @@ export function Catalog({ user }: Props) {
     }
   };
 
+  // --- Merge duplicates ---
+  // Keep a valid winner selected: prefer an active + carried row, then any
+  // active row, else the first selected. Recompute whenever the selection or
+  // the current winner falls out of the set.
+  useEffect(() => {
+    if (mergeWinner && mergeSel.has(mergeWinner)) return;
+    const sel = items.filter(i => mergeSel.has(i.id));
+    const pick = sel.find(i => i.is_active !== false && carried.has(i.id))
+              ?? sel.find(i => i.is_active !== false)
+              ?? null;
+    setMergeWinner(pick ? pick.id : null);
+  }, [mergeSel, items, carried, mergeWinner]);
+
+  const toggleMergeSel = (id: string) => {
+    setMergePreview(null); setMergeResult(null); setMergeError(null); setRecomputeMsg(null);
+    setMergeSel(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const clearMerge = () => {
+    setMergeSel(new Set()); setMergeWinner(null);
+    setMergePreview(null); setMergeResult(null); setMergeError(null);
+    setMerging(null); setRecomputeMsg(null);
+  };
+
+  const runMerge = async (dryRun: boolean) => {
+    if (!mergeWinner) return;
+    const losers = [...mergeSel].filter(id => id !== mergeWinner);
+    if (losers.length === 0) { setMergeError('Select at least one loser (a row other than the winner).'); return; }
+    const w = items.find(i => i.id === mergeWinner);
+    if (!w || w.is_active === false) {
+      setMergeError('Pick an ACTIVE row as the winner — archived rows cannot be merge targets.');
+      return;
+    }
+    if (!dryRun) {
+      const winnerName = items.find(i => i.id === mergeWinner)?.name ?? mergeWinner;
+      const ok = window.confirm(
+        `Merge ${losers.length} variant(s) INTO "${winnerName}"?\n\n` +
+        `Counts, UPCs, carried flags, and pending items move to the winner; the losers are archived. ` +
+        `This rewrites historical count rows — recompute affected audits afterward. This is not auto-reversible.`,
+      );
+      if (!ok) return;
+    }
+    setMerging(dryRun ? 'preview' : 'running');
+    setMergeError(null); setRecomputeMsg(null);
+    try {
+      const { data, error } = await supabase.rpc('merge_master_items', {
+        p_winner: mergeWinner, p_losers: losers, p_dry_run: dryRun,
+      });
+      if (error) throw new Error(error.message);
+      const summary = data as MergeSummary;
+      if (dryRun) {
+        setMergePreview(summary); setMerging(null);
+      } else {
+        setMergeResult(summary); setMergePreview(null); setMerging('done');
+        await loadAll();
+      }
+    } catch (e) {
+      setMergeError((e as Error).message);
+      setMerging(null);
+    }
+  };
+
+  const recomputeAffected = async () => {
+    const audits = mergeResult?.affected_audits ?? [];
+    if (audits.length === 0) return;
+    setMerging('recompute'); setRecomputeMsg(null);
+    let ok = 0, skipped = 0;
+    for (const aid of audits) {
+      const { error } = await supabase.rpc('compute_avt_for_audit', { p_audit_id: aid });
+      if (error) skipped++; else ok++;
+    }
+    setRecomputeMsg(`Recomputed ${ok} audit${ok === 1 ? '' : 's'}` + (skipped ? `, ${skipped} skipped (open / not closed or error)` : ''));
+    setMerging(null);
+  };
+
+  const mergeSummaryToShow = mergeResult ?? mergePreview;
+
   return (
     <>
       <div className="topbar">
@@ -429,6 +534,77 @@ export function Catalog({ user }: Props) {
           </div>
         </Card>
 
+        {mergeSel.size > 0 && (
+          <Card padding={16} style={{ borderColor: 'var(--gold-300)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+              <Eyebrow>Merge duplicates · {mergeSel.size} selected</Eyebrow>
+              <Btn variant="ghost" size="sm" onClick={clearMerge}>Clear selection</Btn>
+            </div>
+            <div style={{ marginTop: 6, fontSize: 12, color: 'var(--fg-muted)' }}>
+              Pick the <strong>winner</strong> — the canonical row everything folds into. The other selected rows are archived; their counts, UPCs, carried flags, and pending items move to the winner. Select 2+ rows to merge.
+            </div>
+            <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {items.filter(i => mergeSel.has(i.id)).map(i => {
+                const arch = i.is_active === false;
+                return (
+                  <label key={i.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: arch ? 'not-allowed' : 'pointer', opacity: arch ? 0.55 : 1 }}>
+                    <input
+                      type="radio" name="mergeWinner"
+                      checked={mergeWinner === i.id} disabled={arch}
+                      onChange={() => { setMergeWinner(i.id); setMergePreview(null); setMergeResult(null); }}
+                    />
+                    <span style={{ fontWeight: mergeWinner === i.id ? 700 : 500 }}>{i.name}</span>
+                    {i.base_size != null && i.base_unit && (
+                      <span style={{ color: 'var(--fg-muted)' }}>· {i.base_size}{String(i.base_unit).toLowerCase()}</span>
+                    )}
+                    {carried.has(i.id) && <Pill tone="gold" size="sm">carried</Pill>}
+                    {arch && <Pill tone="ghost" size="sm">archived (can't be winner)</Pill>}
+                    {mergeWinner === i.id && <Pill tone="positive" size="sm">winner</Pill>}
+                  </label>
+                );
+              })}
+            </div>
+            <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <Btn variant="secondary" size="md" onClick={() => void runMerge(true)}
+                disabled={merging !== null || !mergeWinner || mergeSel.size < 2}>
+                {merging === 'preview' ? 'Previewing…' : 'Preview impact'}
+              </Btn>
+              <Btn variant="primary" size="md" onClick={() => void runMerge(false)}
+                disabled={merging !== null || !mergeWinner || mergeSel.size < 2}>
+                {merging === 'running' ? 'Merging…' : `Merge ${Math.max(0, mergeSel.size - 1)} into winner`}
+              </Btn>
+            </div>
+            {mergeError && (
+              <div style={{ marginTop: 10, color: 'var(--raspberry-400)', fontFamily: 'JetBrains Mono, monospace', fontSize: 12 }}>{mergeError}</div>
+            )}
+            {mergeSummaryToShow && (
+              <>
+                <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+                  <PreviewTile label={mergeResult ? 'Entries moved' : 'Entries to move'} value={mergeSummaryToShow.entries_repointed} tone="positive" />
+                  <PreviewTile label={mergeResult ? 'Recounts moved' : 'Recounts to move'} value={mergeSummaryToShow.recounts_repointed} tone="positive" />
+                  <PreviewTile label={mergeResult ? 'UPCs moved' : 'UPCs to move'} value={mergeSummaryToShow.upcs_moved} tone="gold" />
+                  <PreviewTile label={mergeResult ? 'Carried moved' : 'Carried to move'} value={mergeSummaryToShow.carried_repointed} tone="ghost" />
+                </div>
+                <div style={{ marginTop: 8, fontSize: 12, color: 'var(--fg-muted)' }}>
+                  Also: {mergeSummaryToShow.upcs_deleted_dup} duplicate UPC(s) dropped · {mergeSummaryToShow.carried_deleted_dup} duplicate carried row(s) dropped · {mergeSummaryToShow.mappings_repointed} UPC-queue mapping(s) moved · {mergeSummaryToShow.pending_repointed} pending item(s) moved · <strong>{mergeSummaryToShow.affected_audits.length}</strong> audit(s) affected.
+                </div>
+              </>
+            )}
+            {mergeResult && (
+              <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <Pill tone="positive" size="md">Merged ✓</Pill>
+                {mergeResult.affected_audits.length > 0 && (
+                  <Btn variant="secondary" size="md" onClick={() => void recomputeAffected()} disabled={merging === 'recompute'}>
+                    {merging === 'recompute' ? 'Recomputing…' : `Recompute ${mergeResult.affected_audits.length} affected audit(s)`}
+                  </Btn>
+                )}
+                <Btn variant="ghost" size="md" onClick={clearMerge}>Done</Btn>
+                {recomputeMsg && <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>{recomputeMsg}</span>}
+              </div>
+            )}
+          </Card>
+        )}
+
         <Card padding={0}>
           {loading && <div style={{ color: 'var(--fg-muted)', padding: 24 }}>Loading catalog…</div>}
           {!loading && pageItems.length === 0 && (
@@ -438,6 +614,7 @@ export function Catalog({ user }: Props) {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr style={{ textAlign: 'left', color: 'var(--fg-muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1, borderBottom: '1px solid var(--border)' }}>
+                  <th style={{ padding: '10px 14px', width: 54 }}>Merge</th>
                   <th style={{ padding: '10px 14px', width: 80 }}>Carried</th>
                   <th style={{ padding: '10px 14px' }}>Name</th>
                   <th style={{ padding: '10px 14px' }}>Size</th>
@@ -457,7 +634,17 @@ export function Catalog({ user }: Props) {
                     ? 'var(--off-200)'
                     : (on ? 'var(--teal-100)' : undefined);
                   return (
-                    <tr key={item.id} style={{ borderBottom: '1px solid var(--border)', background: rowBg, opacity: isArchived ? 0.6 : 1 }}>
+                    <tr key={item.id} style={{ borderBottom: '1px solid var(--border)', background: mergeSel.has(item.id) ? 'var(--gold-100)' : rowBg, opacity: isArchived ? 0.6 : 1 }}>
+                      <td style={{ padding: '8px 14px' }}>
+                        <input
+                          type="checkbox"
+                          checked={mergeSel.has(item.id)}
+                          onChange={() => toggleMergeSel(item.id)}
+                          disabled={merging === 'running' || merging === 'preview'}
+                          style={{ cursor: 'pointer' }}
+                          title="Select for merge"
+                        />
+                      </td>
                       <td style={{ padding: '8px 14px' }}>
                         <button
                           onClick={() => void toggle(item)}
