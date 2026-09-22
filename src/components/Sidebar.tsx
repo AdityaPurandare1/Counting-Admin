@@ -19,7 +19,7 @@ const NAV_TEAM = [
 const NAV_ADMIN = [
   { to: '/approvals',      label: 'Approvals',      manager: true,  viewer: false },
   { to: '/stock',          label: 'Stock on hand',  manager: true,  viewer: true  },
-  { to: '/reports',        label: 'Reports',        manager: false, viewer: true  },
+  { to: '/reports',        label: 'Reports',        manager: true,  viewer: true  },
   { to: '/inventory',      label: 'Inventory',      manager: false, viewer: false },
   { to: '/catalog',        label: 'Catalog',        manager: false, viewer: false },
   { to: '/venue-settings', label: 'Venue settings', manager: false, viewer: false },

@@ -232,7 +232,7 @@ export default function App() {
             <Route path="/counts"   element={(user.role === 'corporate' || user.role === 'manager') ? <Counts user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/recount"  element={<Recount user={user} />} />
             <Route path="/summary"  element={<Summary user={user} />} />
-            <Route path="/reports"  element={(user.role === 'corporate' || user.role === 'venue_manager') ? <Reports user={user} /> : <Navigate to="/variance" replace />} />
+            <Route path="/reports"  element={(user.role === 'corporate' || user.role === 'venue_manager' || user.role === 'manager') ? <Reports user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/issues"   element={<Issues user={user} />} />
             <Route path="/ai"       element={<AI />} />
             <Route path="/approvals" element={(user.role === 'corporate' || user.role === 'manager') ? <Approvals user={user} /> : <Navigate to="/variance" replace />} />
