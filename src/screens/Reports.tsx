@@ -201,7 +201,11 @@ export function Reports({ user }: Props) {
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      // Deferred revoke, matching Catalog/Counts/Summary: revoking the object
+      // URL in the same tick as click() can abort the download before the
+      // browser has finished reading the blob. Worst for the XLSX workbooks,
+      // which are by far the largest payloads we emit.
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (e) {
       console.error('[reports] export', e);
       alert('Export failed: ' + (e instanceof Error ? e.message : String(e)));
