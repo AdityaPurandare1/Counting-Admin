@@ -49,7 +49,7 @@
   --raspberry-100: #FBEBE9;  --raspberry-200: #E0A69E;
   --raspberry-300: #B4453A;  --raspberry-400: #8E3229;
   --copper-100:    #FBF0E5;  --copper-200:    #E5BF96;
-  --copper-300:    #B87333;  --copper-400:    #8A5625;
+  --copper-300:    #A1652C;  --copper-400:    #8A5625;
   --teal-100:      #E6F5F2;  --teal-200:      #94D4CA;
   --teal-300:      #2D7D6F;  --teal-400:      #1B4F46;
   --amethyst-100:  #F0EDF8;  --amethyst-200:  #BAB0DE;
@@ -60,8 +60,14 @@
   --surface-alt:   #F5F2F0;
   --canvas:        #FFF9F5;
   --fg-primary:    #231F20;
-  --fg-secondary:  #7B7775;
-  --fg-muted:      #918C8B;
+  /* v0.55: secondary/muted/caution darkened off the source values. Woody's
+     #7B7775 / #918C8B / #B87333 measured 4.43 / 3.32 / 3.79 :1 on this
+     canvas — under AA's 4.5 for body text. Lifted to 7.03 / 4.76 / 4.76.
+     Secondary went further than the minimum on purpose: the naive floor
+     put it at #767270 against muted's #767271, which would have collapsed
+     three text weights into two. Kept in step with the phone. */
+  --fg-secondary:  #5C5856;
+  --fg-muted:      #767271;
   --fg-faint:      #A7A1A0;   /* kept: admin-only, not in the source file */
   --border:        #E9E3DF;
   --border-strong: #BDB8B6;
@@ -69,7 +75,7 @@
   --brand-ink:     #FFF9F5;
 
   --critical:    #B4453A;  --critical-bg: #FBEBE9;
-  --caution:     #B87333;  --caution-bg:  #FBF0E5;
+  --caution:     #A1652C;  --caution-bg:  #FBF0E5;
   --positive:    #2D7D6F;  --positive-bg: #E6F5F2;
   --inform:      #6654A3;  --inform-bg:   #F0EDF8;
 
