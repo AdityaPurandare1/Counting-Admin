@@ -7,7 +7,7 @@ import type { CSSProperties, ReactNode } from 'react';
 type PillTone = 'neutral' | 'gold' | 'critical' | 'caution' | 'positive' | 'inform' | 'ink' | 'ghost';
 
 const PILL_TONES: Record<PillTone, { bg: string; fg: string; border?: string }> = {
-  neutral:  { bg: '#EDE9E6',                fg: '#4F4B4B' },
+  neutral:  { bg: 'var(--off-300)',         fg: 'var(--dark-700)' },
   gold:     { bg: 'var(--gold-100)',        fg: 'var(--gold-400)' },
   critical: { bg: 'var(--raspberry-100)',   fg: 'var(--raspberry-300)' },
   caution:  { bg: 'var(--copper-100)',      fg: 'var(--copper-400)' },
@@ -26,7 +26,7 @@ export function Pill({
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: 6,
-      height: h, padding: '0 10px', borderRadius: 9999,
+      height: h, padding: '0 10px', borderRadius: 'var(--radius-full)',
       background: t.bg, color: t.fg,
       fontSize: fs, fontWeight: 600, letterSpacing: '.06em',
       textTransform: 'uppercase', whiteSpace: 'nowrap', fontFamily: 'inherit',
@@ -106,8 +106,8 @@ export function Card({
 }: { children: ReactNode; style?: CSSProperties; padding?: number; flush?: boolean }) {
   return (
     <div style={{
-      background: '#FFFFFF', border: '1px solid var(--border)',
-      borderRadius: 8, boxShadow: flush ? 'none' : 'var(--shadow-sm)',
+      background: 'var(--surface)', border: '1px solid var(--border)',
+      borderRadius: 'var(--radius-xl)', boxShadow: flush ? 'none' : 'var(--shadow-sm)',
       padding, ...style,
     }}>{children}</div>
   );
@@ -119,10 +119,10 @@ type BtnVariant = 'primary' | 'secondary' | 'gold' | 'critical' | 'positive' | '
 
 const BTN_VARIANTS: Record<BtnVariant, CSSProperties> = {
   primary:   { background: 'var(--dark-900)',        color: 'var(--off-100)',  border: '1px solid var(--dark-900)' },
-  secondary: { background: '#FFF',                   color: 'var(--fg-primary)', border: '1px solid var(--border-strong)' },
-  gold:      { background: 'var(--gold-300)',        color: 'var(--dark-900)', border: '1px solid var(--gold-300)' },
-  critical:  { background: 'var(--raspberry-300)',   color: '#FFF',            border: '1px solid var(--raspberry-300)' },
-  positive:  { background: 'var(--teal-300)',        color: '#FFF',            border: '1px solid var(--teal-300)' },
+  secondary: { background: 'var(--surface)',         color: 'var(--fg-primary)', border: '1px solid var(--border-strong)' },
+  gold:      { background: 'var(--brand)',           color: 'var(--brand-ink)', border: '1px solid var(--brand)' },
+  critical:  { background: 'var(--critical)',        color: 'var(--off-100)',  border: '1px solid var(--critical)' },
+  positive:  { background: 'var(--positive)',        color: 'var(--off-100)',  border: '1px solid var(--positive)' },
   ghost:     { background: 'transparent',            color: 'var(--fg-primary)', border: '1px solid transparent' },
   accent:    { background: 'var(--accent-bg)',       color: 'var(--accent-fg)', border: '1px solid var(--accent-bg)' },
 };
@@ -156,7 +156,7 @@ export function Btn({
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8,
         height: h, padding: pad, fontSize: fs, fontWeight: 600,
         fontFamily: 'inherit', letterSpacing: '.005em',
-        borderRadius: 6, cursor: disabled ? 'not-allowed' : 'pointer',
+        borderRadius: 'var(--radius-lg)', cursor: disabled ? 'not-allowed' : 'pointer',
         opacity: disabled ? 0.5 : 1,
         width: fullWidth ? '100%' : undefined,
         ...v, ...(style || {}),
@@ -179,7 +179,7 @@ export function Progress({
     accent:   'var(--accent-bg)',
   };
   return (
-    <div style={{ height, width: '100%', background: '#E9E3DF', borderRadius: 2, overflow: 'hidden' }}>
+    <div style={{ height, width: '100%', background: 'var(--border)', borderRadius: 'var(--radius-full)', overflow: 'hidden' }}>
       <div style={{ height: '100%', width: `${pct}%`, background: fill[tone] ?? fill.ink, transition: 'width .3s' }} />
     </div>
   );
@@ -193,8 +193,8 @@ export function Segment<T extends string>({
   return (
     <div style={{
       display: 'flex', gap: 2, padding: 2,
-      background: '#FFF', border: '1px solid var(--border)',
-      borderRadius: 8,
+      background: 'var(--surface)', border: '1px solid var(--border)',
+      borderRadius: 'var(--radius-lg)',
     }}>
       {options.map(opt => {
         const active = opt.value === value;
@@ -204,7 +204,7 @@ export function Segment<T extends string>({
             background: active ? 'var(--dark-900)' : 'transparent',
             color: active ? 'var(--off-100)' : 'var(--fg-secondary)',
             fontFamily: 'inherit', fontSize: 12, fontWeight: 600,
-            borderRadius: 6, cursor: 'pointer', letterSpacing: '.01em',
+            borderRadius: 'var(--radius-md)', cursor: 'pointer', letterSpacing: '.01em',
           }}>{opt.label}</button>
         );
       })}
@@ -238,14 +238,14 @@ const SEV_DOT_COLORS: Record<string, string> = {
   watch:    'var(--amethyst-300)',
   low:      'var(--teal-300)',
   ok:       'var(--teal-300)',
-  pending:  '#BDB8B6',
+  pending:  'var(--dark-200)',
 };
 
 export function SevDot({ sev, size = 8 }: { sev: keyof typeof SEV_DOT_COLORS | string; size?: number }) {
   return (
     <span style={{
       width: size, height: size, borderRadius: '50%',
-      background: SEV_DOT_COLORS[sev] ?? '#BDB8B6',
+      background: SEV_DOT_COLORS[sev] ?? 'var(--dark-200)',
       display: 'inline-block', flex: 'none',
     }} />
   );

@@ -182,3 +182,40 @@ input, textarea, select {
 .login-card button { width: 100%; padding: 11px 14px; background: var(--dark-900); color: var(--off-100); border: none; border-radius: 8px; font-weight: 600; }
 .login-card button:hover { background: var(--dark-800); }
 .login-err { color: var(--raspberry-300); font-size: 12px; margin-bottom: 10px; }
+
+/* ── v0.52: interaction states ──────────────────────────────────────
+   The palette ships a --shadow-focus ring and nothing used it: keyboard
+   focus fell back to the browser default outline, which on the dark
+   sidebar was effectively invisible. These are the only rules that can
+   express :focus-visible / :hover — the atoms style inline, and inline
+   styles cannot carry pseudo-classes.
+
+   :focus-visible (not :focus) so a mouse click doesn't leave a ring
+   behind on every button. */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+  border-radius: var(--radius-md);
+}
+
+/* Hover feedback. Deliberately a filter rather than a colour override so
+   it works across every Btn variant (ink, gold, critical, ghost...)
+   without this file needing to know any of them. */
+button:not(:disabled):hover { filter: brightness(0.94); }
+button:not(:disabled):active { filter: brightness(0.88); }
+
+/* Inputs pick up the palette rather than the UA default. */
+input, select, textarea {
+  background: var(--surface);
+  color: var(--fg-primary);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+}
+
+/* Tabular numerals wherever money or counts are compared down a column. */
+.money, .num, td.num { font-variant-numeric: tabular-nums lining-nums; }
