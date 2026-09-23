@@ -8,6 +8,8 @@ import { IN_SCOPE_CATEGORIES } from '@/lib/types';
 import { Btn, Card, Eyebrow, Pill, Progress, Segment } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
 import { getDefaultZones } from '@/lib/venueMap';
+import { buildAuditReportModel, buildAuditWorkbookBlob, localIsoDate } from '@/lib/auditReport';
+import { loadAuditReportData } from '@/lib/auditReportData';
 
 /* ───────────────────────────────────────────────────────────────────────
    Counts — admin counting workspace (v0.17)
@@ -764,23 +766,115 @@ function AuditHeader({
           </div>
         </div>
 
-        {canControl && (
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-            {next && (
-              <Btn variant="secondary" size="sm" onClick={onAdvance}>
-                Advance to {next}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          {/* Available on any audit, not just active ones — the month-end
+              report is normally pulled off an already-submitted count. */}
+          <AuditReportButton audit={audit} />
+          {canControl && (
+            <>
+              {next && (
+                <Btn variant="secondary" size="sm" onClick={onAdvance}>
+                  Advance to {next}
+                </Btn>
+              )}
+              <Btn variant="primary" size="sm" leading={Ic.checkCircle(14)} onClick={onSubmit}>
+                Submit final
               </Btn>
-            )}
-            <Btn variant="primary" size="sm" leading={Ic.checkCircle(14)} onClick={onSubmit}>
-              Submit final
-            </Btn>
-            <Btn variant="critical" size="sm" leading={Ic.close(14)} onClick={onCancel}>
-              Cancel audit
-            </Btn>
-          </div>
-        )}
+              <Btn variant="critical" size="sm" leading={Ic.close(14)} onClick={onCancel}>
+                Cancel audit
+              </Btn>
+            </>
+          )}
+        </div>
       </div>
     </Card>
+  );
+}
+
+/* ────────── Bevager-format audit report export ────────── */
+
+/** Downloads the month-end valuation workbook for one audit — the same shape
+ *  as the Bevager "<Venue> - Audit <date>.xlsx" it replaces. Self-contained
+ *  (loads its own data on click) so opening a count never pays for a report
+ *  nobody asked for.
+ *
+ *  Deliberately outside the `canControl` block that wraps the phase buttons.
+ *  The role gate for this whole screen lives on the route (App.tsx:232 —
+ *  /counts is corporate|manager, and a counter cannot hold a desktop session
+ *  at all), so leaving `canControl` only lifted the read-only restriction,
+ *  which is the point: reading a finished count's valuation is not the same
+ *  privilege as advancing or cancelling it. Nothing else in this file
+ *  self-gates, and a second check here would imply the route gate is
+ *  optional. */
+function AuditReportButton({ audit }: { audit: KountAudit }) {
+  const [busy, setBusy] = useState(false);
+
+  const run = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const { lines, unmatchedEntries, recountCount } = await loadAuditReportData(audit.id);
+      if (lines.length === 0) {
+        alert('Nothing to report — this audit has no count entries linked to catalog items.');
+        return;
+      }
+      const model = buildAuditReportModel(lines);
+      if (model.items.length === 0) {
+        alert('Nothing to report — none of this audit\'s counted items fall under the four beverage GL accounts.');
+        return;
+      }
+      // Local date, not the ISO slice: a count started at 6pm PDT is already
+      // tomorrow in UTC, and this date goes on every sheet header and the
+      // filename — it has to read as the day the card above says it started.
+      // An unparseable started_at would spread 'NaN-NaN-NaN' just as widely,
+      // so it falls back to today rather than to nonsense.
+      const startedAt = new Date(audit.started_at);
+      const auditDate = localIsoDate(Number.isNaN(startedAt.getTime()) ? new Date() : startedAt);
+      const blob = await buildAuditWorkbookBlob({
+        venueName: audit.venue_name,
+        auditDate,
+        model,
+        recountCount,
+        unmatchedEntries,
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      // Venue names are free text and not necessarily admin-typed — the
+      // kount_venues policies let anon write them — so the name is treated as
+      // untrusted here: control characters and the bidi overrides that can
+      // make '…nnn.xlsx' render as '…slx.exe' are dropped outright, the
+      // characters Windows forbids in a filename become spaces, and the whole
+      // thing is capped. Spaces survive, so the file keeps the human-readable
+      // "<Venue> - Audit <date>.xlsx" shape people file it under.
+      const venue = (audit.venue_name || 'Venue')
+        // Written as escapes: every character in this class is invisible.
+        // eslint-disable-next-line no-control-regex
+        .replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '')
+        .replace(/[\\/:*?"<>|]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 80)
+        .trim() || 'Venue';
+      a.download = `${venue} - Audit ${auditDate}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      // Deferred revoke, as in Catalog/Summary: an immediate one has been seen
+      // to abort the download before the browser has read the blob.
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {
+      console.error('[counts] audit report', e);
+      alert('Audit report failed: ' + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Btn variant="secondary" size="sm" leading={Ic.download(14)} disabled={busy} onClick={() => void run()}>
+      {busy ? 'Building…' : 'Audit report'}
+    </Btn>
   );
 }
 
