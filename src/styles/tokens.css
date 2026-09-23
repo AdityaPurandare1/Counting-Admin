@@ -38,8 +38,16 @@
   --off-500: #DED6D1;
 
   /* ---------- STATUS ramps ---------- */
-  --raspberry-100: #FAE8F0;  --raspberry-200: #CF6F9F;
-  --raspberry-300: #9B2C5E;  --raspberry-400: #7E234C;
+  /* Critical ramp. The source palette used a raspberry (#9B2C5E) that read
+     as magenta rather than as an error colour; swapped for a dusty brick
+     red that still sits in the warm family alongside gold and copper.
+     Token NAMES kept as `raspberry-*` on purpose — they are referenced in
+     a dozen components, and renaming them would be churn with no benefit.
+     Contrast checked, not eyeballed: #B4453A is 5.22:1 against the canvas
+     and 5.22:1 under off-white text, so it passes AA both as body text and
+     as a filled button. A paler option (#C55A4C) was rejected at 4.07:1. */
+  --raspberry-100: #FBEBE9;  --raspberry-200: #E0A69E;
+  --raspberry-300: #B4453A;  --raspberry-400: #8E3229;
   --copper-100:    #FBF0E5;  --copper-200:    #E5BF96;
   --copper-300:    #B87333;  --copper-400:    #8A5625;
   --teal-100:      #E6F5F2;  --teal-200:      #94D4CA;
@@ -60,7 +68,7 @@
   --brand:         #C49A6C;
   --brand-ink:     #FFF9F5;
 
-  --critical:    #9B2C5E;  --critical-bg: #FAE8F0;
+  --critical:    #B4453A;  --critical-bg: #FBEBE9;
   --caution:     #B87333;  --caution-bg:  #FBF0E5;
   --positive:    #2D7D6F;  --positive-bg: #E6F5F2;
   --inform:      #6654A3;  --inform-bg:   #F0EDF8;
@@ -139,6 +147,12 @@
   --border:        #2A2A2A;
   --border-strong: #444444;
   --brand:         #D0AD87;
+  /* The light-mode critical is only 3.19:1 on the dark surface, so dark
+     mode lifts it to a lighter step (5.64:1). Without this, error text
+     would be the least readable thing on the screen. */
+  --raspberry-300: #D9776C;
+  --critical:      #D9776C;
+  --critical-bg:   #3A211E;
   --brand-ink:     #111111;
 }
 
