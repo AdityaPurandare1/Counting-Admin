@@ -1,65 +1,145 @@
-/* Design tokens — inferred from docs/designs/raw/app/*.jsx references.
-   The prototype files use var(--...) throughout without shipping their
-   own token definitions, so values here are reasonable defaults to be
-   refined against the real design once the source palette is shared. */
+/* ============================================================
+   Design tokens — the real Woody palette (H.Wood Group).
+   Source: Kount design package, woody/colors_and_type.css, 2026-09-23.
+
+   These values REPLACE the placeholders this file shipped with. The old
+   header said it plainly: "values here are reasonable defaults to be
+   refined against the real design once the source palette is shared."
+   This is that refinement — 28 of the 30 shared tokens had guessed values.
+
+   Deliberately NOT copied from the source file: its semantic element
+   styles (h1/h2/h3/p/small/a/hr rules). Those set their own margins and
+   sizes and would re-space every screen in the admin, which already
+   styles these in global.css. Tokens only — components opt in via var().
+   ============================================================ */
 
 :root {
-  /* Canvas / surfaces */
-  --canvas:       #FAF6F1;   /* cream page background */
-  --surface:      #FFFFFF;   /* card surface */
-  --surface-alt:  #F4EFE8;
-  --border:       #E6E0D6;
-  --border-strong:#D7CFBF;
-  --shadow-sm:    0 1px 2px rgba(13, 10, 8, 0.06);
-  --shadow-md:    0 4px 12px rgba(13, 10, 8, 0.08);
+  /* ---------- BRAND: gold / copper ---------- */
+  --gold-100: #F0E3D3;
+  --gold-200: #DCC0A3;
+  --gold-300: #C49A6C;   /* primary brand */
+  --gold-400: #A4815C;
 
-  /* Foreground */
-  --fg-primary:   #0D0A08;
-  --fg-secondary: #3B3632;
-  --fg-muted:     #7A736A;
-  --fg-faint:     #A9A197;
+  /* ---------- NEUTRAL: dark ---------- */
+  --dark-100: #D3CDCA;
+  --dark-200: #BDB8B6;
+  --dark-300: #A7A1A0;
+  --dark-400: #918C8B;
+  --dark-500: #7B7775;
+  --dark-600: #656160;
+  --dark-700: #4F4B4B;
+  --dark-800: #393536;
+  --dark-900: #231F20;   /* sidebar ground, text ink */
 
-  /* Ink (dark scale) */
-  --dark-900: #0D0A08;
-  --dark-800: #221D18;
-  --dark-700: #3A322A;
-
-  /* Off-white (cream scale) */
+  /* ---------- OFF-WHITE: backgrounds ---------- */
   --off-100: #FFF9F5;
-  --off-200: #F4EFE8;
+  --off-200: #F5F2F0;
+  --off-300: #EDE9E6;
+  --off-500: #DED6D1;
 
-  /* Gold — primary accent */
-  --gold-100: #F5EBD4;
-  --gold-200: #E8D69C;
-  --gold-300: #C9A24C;
-  --gold-400: #9F7F38;
+  /* ---------- STATUS ramps ---------- */
+  --raspberry-100: #FAE8F0;  --raspberry-200: #CF6F9F;
+  --raspberry-300: #9B2C5E;  --raspberry-400: #7E234C;
+  --copper-100:    #FBF0E5;  --copper-200:    #E5BF96;
+  --copper-300:    #B87333;  --copper-400:    #8A5625;
+  --teal-100:      #E6F5F2;  --teal-200:      #94D4CA;
+  --teal-300:      #2D7D6F;  --teal-400:      #1B4F46;
+  --amethyst-100:  #F0EDF8;  --amethyst-200:  #BAB0DE;
+  --amethyst-300:  #6654A3;  --amethyst-400:  #403568;
 
-  /* Raspberry — critical / variance */
-  --raspberry-100: #F7D9E0;
-  --raspberry-300: #C13A57;
-  --raspberry-400: #8F2842;
+  /* ---------- SEMANTIC (light) ---------- */
+  --surface:       #FFFFFF;
+  --surface-alt:   #F5F2F0;
+  --canvas:        #FFF9F5;
+  --fg-primary:    #231F20;
+  --fg-secondary:  #7B7775;
+  --fg-muted:      #918C8B;
+  --fg-faint:      #A7A1A0;   /* kept: admin-only, not in the source file */
+  --border:        #E9E3DF;
+  --border-strong: #BDB8B6;
+  --brand:         #C49A6C;
+  --brand-ink:     #FFF9F5;
 
-  /* Copper — caution */
-  --copper-100: #F5E2CC;
-  --copper-300: #B8743A;
-  --copper-400: #8A542A;
+  --critical:    #9B2C5E;  --critical-bg: #FAE8F0;
+  --caution:     #B87333;  --caution-bg:  #FBF0E5;
+  --positive:    #2D7D6F;  --positive-bg: #E6F5F2;
+  --inform:      #6654A3;  --inform-bg:   #F0EDF8;
 
-  /* Teal — positive */
-  --teal-100: #D7EAE6;
-  --teal-300: #3F7D73;
+  /* ---------- RADIUS / SPACE / SHADOW ---------- */
+  --radius-sm: 4px;  --radius-md: 6px;  --radius-lg: 8px;
+  --radius-xl: 12px; --radius-full: 9999px;
 
-  /* Amethyst — informational */
-  --amethyst-100: #E3DCEE;
-  --amethyst-300: #6D5BA3;
+  --space-1: 4px;  --space-2: 8px;   --space-3: 12px; --space-4: 16px;
+  --space-5: 20px; --space-6: 24px;  --space-8: 32px; --space-10: 40px;
+  --space-12: 48px;
 
-  /* Accent host (App.jsx toggles this via [data-accent]) */
+  --shadow-sm:    0 1px 2px 0 rgba(0,0,0,.06);
+  --shadow-md:    0 4px 12px 0 rgba(0,0,0,.08);
+  --shadow-lg:    0 4px 24px 0 rgba(0,0,0,.08);
+  --shadow-focus: 0 0 0 2px #C49A6C, 0 0 0 6px rgba(196,154,108,.25);
+
+  /* ---------- TYPE ---------- */
+  /* UI face moves to Inter (the design system's). Mono deliberately stays
+     JetBrains Mono rather than the source's Azeret: mono is only used for
+     version strings and small caps labels here, so swapping it is visible
+     churn for no legibility gain. index.html loads both Inter and
+     JetBrains Mono. */
+  --font-ui:   'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+  --font-app:  Arial, Helvetica, 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  --text-display-lg:  700 48px/1 var(--font-ui);
+  --text-display-md:  700 36px/1 var(--font-ui);
+  --text-headline-lg: 700 28px/1 var(--font-ui);
+  --text-headline-md: 700 22px/1.1 var(--font-ui);
+  --text-headline-sm: 700 18px/1.2 var(--font-ui);
+  --text-title-lg:    600 16px/1.25 var(--font-ui);
+  --text-title-md:    600 14px/1.3 var(--font-ui);
+  --text-body-lg:     400 15px/1.5 var(--font-ui);
+  --text-body-md:     400 13px/1.55 var(--font-ui);
+  --text-body-sm:     400 12px/1.5 var(--font-ui);
+  --text-label:       600 11px/1 var(--font-ui);
+  --tracking-label:   0.1em;
+  --num-feat:         "tnum" 1, "lnum" 1;
+
+  /* Existing names global.css and two screens already consume — kept so
+     this change stays token-only and no component has to be edited. */
+  --text-body: var(--text-body-md);
+  --text-mono: 500 12px/1.4 var(--font-mono);
+
+  /* ---------- Compatibility aliases ----------
+     These five are referenced by components but were NEVER defined —
+     not here and not in the previous version of this file. An undefined
+     custom property makes the declaration invalid, so those elements
+     currently render with NO colour at all (inherited/!default), which
+     is why e.g. Inventory's import-complete tick and its error text look
+     unstyled. Aliased to their obvious counterparts rather than left
+     broken; the call sites can be migrated later without urgency. */
+  --accent:       var(--brand);        /* Inventory.tsx:395 */
+  --fg:           var(--fg-primary);   /* Inventory.tsx:287,333 */
+  --success:      var(--positive);     /* Inventory.tsx:374,394 */
+  --surface2:     var(--surface-alt);  /* Inventory.tsx:309 */
+  --positive-300: var(--teal-300);     /* Security.tsx:709 */
+
+  /* ---------- Accent host (body[data-accent] below) ---------- */
   --accent-bg: var(--dark-900);
   --accent-fg: var(--off-100);
+}
 
-  /* Type scale */
-  --text-headline-md: 600 22px/1.2 'DM Sans', system-ui, sans-serif;
-  --text-body:        400 14px/1.55 'DM Sans', system-ui, sans-serif;
-  --text-mono:        500 12px/1.4 'JetBrains Mono', ui-monospace, monospace;
+/* Dark mode ships with the palette. Inert until something sets
+   data-theme="dark" — the admin has no toggle yet, so this changes
+   nothing today and is ready when one is added. */
+[data-theme="dark"] {
+  --surface:       #1A1A1A;
+  --surface-alt:   #222222;
+  --canvas:        #111111;
+  --fg-primary:    #F5F2F0;
+  --fg-secondary:  #A7A1A0;
+  --fg-muted:      #7B7775;
+  --border:        #2A2A2A;
+  --border-strong: #444444;
+  --brand:         #D0AD87;
+  --brand-ink:     #111111;
 }
 
 body[data-accent='gold']      { --accent-bg: var(--gold-300);      --accent-fg: var(--dark-900); }
