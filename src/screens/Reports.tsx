@@ -215,14 +215,20 @@ export function Reports({ user }: Props) {
 
   return (
     <>
-      <div className="page-head">
+      {/* v0.50: was a bare .page-head with no .content wrapper — the only
+          screens besides Inventory not using the topbar/content pattern the
+          other twelve use. .page-head/.page-title/.page-sub have no CSS at
+          all, and with no .content there was no scroll container, so this
+          page could not be height-constrained without clipping. */}
+      <div className="topbar">
         <div>
           <Eyebrow>Reports</Eyebrow>
-          <h1 className="page-title">Audit reports</h1>
-          <div className="page-sub">Computed variance across audits — Item · Venue · Variance qty · Variance $ · Variance %. Export is the full formatted workbook (Summary · Largest Offenders · Possible Causes · Detail).</div>
+          <h1>Audit reports</h1>
+          <div className="page-sub" style={{ marginTop: 4 }}>Computed variance across audits — Item · Venue · Variance qty · Variance $ · Variance %. Export is the full formatted workbook (Summary · Largest Offenders · Possible Causes · Detail).</div>
         </div>
       </div>
 
+      <div className="content">
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
         <select
           style={pickerStyle}
@@ -322,6 +328,7 @@ export function Reports({ user }: Props) {
           </div>
         )}
       </Card>
+      </div>
     </>
   );
 }

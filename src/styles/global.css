@@ -28,10 +28,17 @@ input, textarea, select {
 
 /* App shell */
 .app-shell {
-  min-height: 100%;
+  /* v0.50: exactly the viewport, never taller. The window itself no longer
+     scrolls — .main is `overflow: hidden` and each screen's .content is the
+     single scroll container, which is what the rest of this file was always
+     written for. Safe as of v0.50 because Reports and Inventory were
+     converted to the topbar/content pattern; before that they rendered no
+     .content at all and capping the height here would have clipped them. */
+  height: 100vh;
   display: grid;
   grid-template-columns: 220px 1fr;
   background: var(--canvas);
+  overflow: hidden;
 }
 
 .sidebar {
@@ -40,25 +47,11 @@ input, textarea, select {
   display: flex;
   flex-direction: column;
   padding: 20px 0;
-  /* v0.49: keep the nav on screen while the page scrolls. The shell is
-     `min-height: 100%`, so long pages grow it past the viewport and the
-     whole window scrolls — taking the sidebar with it, which meant
-     scrolling back up just to change screens.
-
-     Pinned with sticky rather than by constraining .app-shell to 100vh:
-     that would make .main's `overflow: hidden` the outer bound and leave
-     .content the only scroller — but Inventory and Reports don't render a
-     .content wrapper, so their pages would be clipped with no way to
-     scroll. This touches nothing outside the sidebar.
-
-     align-self: start is required — a grid item stretches to the row
-     height by default, which leaves sticky no room to move in. */
-  position: sticky;
-  top: 0;
-  align-self: start;
-  height: 100vh;
-  /* If the window is short enough that the nav itself overflows, scroll
-     inside the sidebar instead of clipping the footer/version. */
+  /* v0.50: the v0.49 sticky workaround is gone — with .app-shell fixed to
+     100vh the sidebar is simply a full-height grid column and cannot scroll
+     away. Kept: overflow-y so a short window scrolls the nav internally
+     rather than clipping the footer + version label. */
+  min-height: 0;
   overflow-y: auto;
 }
 
@@ -138,6 +131,11 @@ input, textarea, select {
 .content {
   padding: 20px 32px;
   overflow-y: auto;
+  /* v0.50: a flex child will not shrink below its content without this, so
+     without min-height:0 the .content box grows past .main and its own
+     overflow-y never engages. */
+  flex: 1;
+  min-height: 0;
 }
 
 .card {

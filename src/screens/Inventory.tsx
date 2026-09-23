@@ -101,13 +101,15 @@ export function Inventory({ user }: Props) {
   if (user.role !== 'corporate') {
     return (
       <>
-        <div className="page-head">
+        <div className="topbar">
           <div>
             <Eyebrow>Inventory</Eyebrow>
-            <h1 className="page-title">Inventory upload</h1>
+            <h1>Inventory upload</h1>
           </div>
         </div>
+        <div className="content">
         <Card><div style={{ padding: 24, color: 'var(--fg-muted)', textAlign: 'center' }}>Corporate admins only.</div></Card>
+        </div>
       </>
     );
   }
@@ -250,10 +252,12 @@ export function Inventory({ user }: Props) {
 
   return (
     <>
-      <div className="page-head">
+      {/* v0.50: converted from the bare .page-head shape to the standard
+          topbar + content pattern (see Reports.tsx). */}
+      <div className="topbar">
         <div>
           <Eyebrow>Inventory (procurement)</Eyebrow>
-          <h1 className="page-title">Upload inventory CSV</h1>
+          <h1>Upload inventory CSV</h1>
           <div className="page-sub">
             Bulk-writes the procurement catalog (purchase_items). Use this when you have a vendor / R365 / Craftable export to bring in.
             <br />
@@ -262,6 +266,7 @@ export function Inventory({ user }: Props) {
         </div>
       </div>
 
+      <div className="content">
       {!parsed && phase !== 'committing' && phase !== 'done' && (
         <Card>
           <div style={{ padding: 24, textAlign: 'center' }}>
@@ -379,6 +384,7 @@ export function Inventory({ user }: Props) {
           </div>
         </Card>
       )}
+      </div>
     </>
   );
 }
