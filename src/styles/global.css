@@ -40,6 +40,26 @@ input, textarea, select {
   display: flex;
   flex-direction: column;
   padding: 20px 0;
+  /* v0.49: keep the nav on screen while the page scrolls. The shell is
+     `min-height: 100%`, so long pages grow it past the viewport and the
+     whole window scrolls — taking the sidebar with it, which meant
+     scrolling back up just to change screens.
+
+     Pinned with sticky rather than by constraining .app-shell to 100vh:
+     that would make .main's `overflow: hidden` the outer bound and leave
+     .content the only scroller — but Inventory and Reports don't render a
+     .content wrapper, so their pages would be clipped with no way to
+     scroll. This touches nothing outside the sidebar.
+
+     align-self: start is required — a grid item stretches to the row
+     height by default, which leaves sticky no room to move in. */
+  position: sticky;
+  top: 0;
+  align-self: start;
+  height: 100vh;
+  /* If the window is short enough that the nav itself overflows, scroll
+     inside the sidebar instead of clipping the footer/version. */
+  overflow-y: auto;
 }
 
 .sidebar-head {
