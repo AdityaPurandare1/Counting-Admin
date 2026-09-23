@@ -170,6 +170,30 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // v0.56: re-run the lookups once there IS a signed-in user.
+  //
+  // The effect above has [] deps, so it fires once at mount — BEFORE
+  // sign-in. Its refreshVenues() therefore goes out unauthenticated, and
+  // kount_venues is {authenticated}-only, so it comes back with 0 rows and
+  // no error. refreshVenues only overwrites when mapped.length > 0, so it
+  // correctly keeps what it had — which is the hardcoded VENUES_BASELINE,
+  // v1..v10. Nothing re-ran it afterwards, so the venue list stayed frozen
+  // at that baseline for the whole session: venues retired since then still
+  // listed, and every venue added since missing.
+  //
+  // That is invisible to a corporate user, who sees ten plausible venues.
+  // It is fatal to a manager scoped to a newer one: Dean (venue_ids
+  // = {v12}) filtered the stale list down to an EMPTY set, so the Start
+  // audit modal had nothing to offer and he could not open a count at all.
+  //
+  // Same root cause as the phone's v2.00-v2.02 fixes: a boot-time read
+  // racing the session, and an empty result being indistinguishable from
+  // 'nothing there'.
+  useEffect(() => {
+    if (!user?.email) return;
+    void Promise.all([refreshVenues(), refreshVenueLookups(), refreshAccessList()]);
+  }, [user?.email]);
+
   // Phase 3 (Supabase Auth) auth-state subscription. Three events to handle:
   //   - SIGNED_OUT: session disappeared server-side (admin disabled the
   //     user, or refresh window past 30 days). Yank to login.
