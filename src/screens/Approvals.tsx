@@ -5,6 +5,7 @@ import type { UpcMapping, KountPendingItem } from '@/lib/types';
 import { Btn, Card, Eyebrow, Pill, Segment } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
 
+import { hasCorporateAccess, canRunAudits } from '@/lib/access';
 /* ───────────────────────────────────────────────────────────────────────
    Approvals queue (desktop v0.17)
 
@@ -90,7 +91,7 @@ export function Approvals({ user }: Props) {
 /* ────────── UPC queue (was the entire old screen) ────────── */
 
 function UpcQueue({ user, onCount }: { user: AccessEntry; onCount: (n: number) => void }) {
-  const canAct = user.role === 'corporate' || user.role === 'manager';
+  const canAct = canRunAudits(user.role);
 
   const [rows, setRows] = useState<UpcMapping[]>([]);
   const [loading, setLoading] = useState(true);
@@ -157,7 +158,7 @@ function UpcQueue({ user, onCount }: { user: AccessEntry; onCount: (n: number) =
      either by the phone at submit time or by an admin in the regular
      approve path). */
   const forceApprove = async (row: UpcMapping) => {
-    if (user.role !== 'corporate') return;
+    if (!hasCorporateAccess(user.role)) return;
     if (!row.master_item_id) {
       alert(
         `Force-approve requires a master_item_id on the mapping row.\n\n` +
@@ -296,7 +297,7 @@ function UpcQueue({ user, onCount }: { user: AccessEntry; onCount: (n: number) =
                       <div style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                         <Btn variant="positive" size="sm" leading={Ic.check(12)} onClick={() => void act(r, true)}  disabled={busyId === r.id}>Approve</Btn>
                         <Btn variant="critical" size="sm" leading={Ic.close(12)} onClick={() => void act(r, false)} disabled={busyId === r.id}>Reject</Btn>
-                        {user.role === 'corporate' && (
+                        {hasCorporateAccess(user.role) && (
                           <Btn variant="ghost" size="sm" onClick={() => void forceApprove(r)} disabled={busyId === r.id} title="Skip the RPC and commit the mapping directly. Use if Approve errors out.">Force</Btn>
                         )}
                       </div>
@@ -317,7 +318,7 @@ function UpcQueue({ user, onCount }: { user: AccessEntry; onCount: (n: number) =
 /* ────────── Pending-item queue (new) ────────── */
 
 function ItemQueue({ user, onCount }: { user: AccessEntry; onCount: (n: number) => void }) {
-  const canAct = user.role === 'corporate' || user.role === 'manager';
+  const canAct = canRunAudits(user.role);
 
   const [rows, setRows] = useState<KountPendingItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -392,7 +393,7 @@ function ItemQueue({ user, onCount }: { user: AccessEntry; onCount: (n: number) 
      only now). Name is composed from brand + name + size to match the
      existing master_items convention. */
   const forceApprove = async (row: KountPendingItem) => {
-    if (user.role !== 'corporate') return;
+    if (!hasCorporateAccess(user.role)) return;
     if (!confirm(`Force-approve "${row.name}"?\n\nBypasses approve_pending_item RPC. Inserts a master_items row and marks the pending row approved directly.`)) return;
     setBusyId(row.id);
     setLastError(null);
@@ -543,7 +544,7 @@ function ItemQueue({ user, onCount }: { user: AccessEntry; onCount: (n: number) 
                       <div style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                         <Btn variant="positive" size="sm" leading={Ic.check(12)} onClick={() => void approve(r)} disabled={busyId === r.id}>Approve</Btn>
                         <Btn variant="critical" size="sm" leading={Ic.close(12)} onClick={() => void reject(r)}  disabled={busyId === r.id}>Reject</Btn>
-                        {user.role === 'corporate' && (
+                        {hasCorporateAccess(user.role) && (
                           <Btn variant="ghost" size="sm" onClick={() => void forceApprove(r)} disabled={busyId === r.id} title="Skip the RPC and insert into master_items directly. Use if Approve errors out.">Force</Btn>
                         )}
                       </div>

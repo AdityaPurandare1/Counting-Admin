@@ -17,17 +17,18 @@ const NAV_TEAM = [
 // `viewer` rows are the only Admin-group links a venue_manager (read-only
 // "Venue Management" role) may see. All other rows stay admin/manager-gated.
 const NAV_ADMIN = [
-  { to: '/approvals',      label: 'Approvals',      manager: true,  viewer: false },
+  { to: '/approvals',      label: 'Approvals',      manager: true,  viewer: true  },
   { to: '/stock',          label: 'Stock on hand',  manager: true,  viewer: true  },
   { to: '/reports',        label: 'Reports',        manager: true,  viewer: true  },
   { to: '/inventory',      label: 'Inventory',      manager: false, viewer: false },
   { to: '/catalog',        label: 'Catalog',        manager: false, viewer: false },
   { to: '/venue-settings', label: 'Venue settings', manager: false, viewer: false },
-  { to: '/security',       label: 'Security',       manager: false, viewer: false },
+  { to: '/security',       label: 'Security',       manager: false, viewer: false, adminOnly: true },
 ];
 
 const ROLE_LABELS: Record<string, string> = {
   corporate:     'Corporate',
+  admin:         'Admin',
   manager:       'Manager',
   counter:       'Counter',
   venue_manager: 'Venue Management',
@@ -40,12 +41,12 @@ interface Props {
 }
 
 export function Sidebar({ userName, userRole, onSignOut }: Props) {
-  const isAdmin    = userRole === 'corporate';
+  const isPlatformAdmin = userRole === 'admin';
+  const isAdmin    = userRole === 'admin' || userRole === 'corporate';
   const isManager  = userRole === 'manager';
   const isVenueMgr = userRole === 'venue_manager';
-  // venue_manager can't reach /counts (route redirects to /variance), so
-  // hide the dead link. All other audit links stay visible (read-only views).
-  const auditLinks = NAV_AUDIT.filter(n => !(isVenueMgr && n.to === '/counts'));
+  // The GM tier runs counts now, so /counts is a live link for it.
+  const auditLinks = NAV_AUDIT;
   return (
     <aside className="sidebar">
       <div className="sidebar-head">
@@ -81,7 +82,7 @@ export function Sidebar({ userName, userRole, onSignOut }: Props) {
       {(isAdmin || isManager || isVenueMgr) && (
         <>
           <div className="sidebar-group-label">Admin</div>
-          {NAV_ADMIN.filter(n => isAdmin || (isManager && n.manager) || (isVenueMgr && n.viewer)).map(n => (
+          {NAV_ADMIN.filter(n => (n.adminOnly ? isPlatformAdmin : isAdmin) || (isManager && n.manager) || (isVenueMgr && n.viewer)).map(n => (
             <NavLink
               key={n.to}
               to={n.to}

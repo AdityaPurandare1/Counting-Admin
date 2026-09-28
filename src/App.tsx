@@ -16,7 +16,7 @@ import { Reports } from '@/screens/Reports';
 import { Inventory } from '@/screens/Inventory';
 import { StockOnHand } from '@/screens/StockOnHand';
 import { AI } from '@/screens/_placeholders';
-import { refreshAccessList, refreshVenues, resolveAccess } from '@/lib/access';
+import { refreshAccessList, refreshVenues, resolveAccess, canRunAudits, canManageUsers, hasCorporateAccess } from '@/lib/access';
 import { refreshVenueLookups } from '@/lib/venueMap';
 import type { AccessEntry } from '@/lib/access';
 import { NotificationProvider } from '@/lib/notifications';
@@ -33,11 +33,14 @@ interface StoredSession {
   expiresAt: number;
 }
 
+/** Roles the desktop app admits at all. Counters use the phone. */
+const DESKTOP_ROLES: string[] = ['admin', 'corporate', 'manager', 'venue_manager'];
+
 function isAccessEntry(x: unknown): x is AccessEntry {
   if (!x || typeof x !== 'object') return false;
   const o = x as Record<string, unknown>;
   if (typeof o.email !== 'string' || typeof o.name !== 'string') return false;
-  if (o.role !== 'corporate' && o.role !== 'manager' && o.role !== 'counter' && o.role !== 'venue_manager') return false;
+  if (o.role !== 'admin' && o.role !== 'corporate' && o.role !== 'manager' && o.role !== 'counter' && o.role !== 'venue_manager') return false;
   if (o.venueIds !== 'all' && !Array.isArray(o.venueIds)) return false;
   return true;
 }
@@ -125,8 +128,8 @@ async function runPasswordRecoveryFlow(
     await supabase.auth.signOut().catch(() => {});
     return;
   }
-  if (!['corporate', 'manager', 'venue_manager'].includes(profile.role)) {
-    alert('Password set, but the desktop app is for admins, managers, and venue management only. Counters use the phone app instead.');
+  if (!DESKTOP_ROLES.includes(profile.role)) {
+    alert('Password set, but the desktop app is for admins, corporate, managers and venue management only. Counters use the phone app instead.');
     await supabase.auth.signOut().catch(() => {});
     return;
   }
@@ -159,7 +162,7 @@ export default function App() {
       ]);
       if (!user) return;
       const live = resolveAccess(user.email);
-      if (!live || !['corporate', 'manager', 'venue_manager'].includes(live.role)) {
+      if (!live || !DESKTOP_ROLES.includes(live.role)) {
         setUser(null);
         nav('/');
       } else if (live.role !== user.role) {
@@ -253,18 +256,18 @@ export default function App() {
             <Route path="/"         element={<Navigate to="/variance" replace />} />
             <Route path="/venues"   element={<Venues user={user} />} />
             <Route path="/variance" element={<Variance user={user} />} />
-            <Route path="/counts"   element={(user.role === 'corporate' || user.role === 'manager') ? <Counts user={user} /> : <Navigate to="/variance" replace />} />
+            <Route path="/counts"   element={canRunAudits(user.role) ? <Counts user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/recount"  element={<Recount user={user} />} />
             <Route path="/summary"  element={<Summary user={user} />} />
-            <Route path="/reports"  element={(user.role === 'corporate' || user.role === 'venue_manager' || user.role === 'manager') ? <Reports user={user} /> : <Navigate to="/variance" replace />} />
+            <Route path="/reports"  element={canRunAudits(user.role) ? <Reports user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/issues"   element={<Issues user={user} />} />
             <Route path="/ai"       element={<AI />} />
-            <Route path="/approvals" element={(user.role === 'corporate' || user.role === 'manager') ? <Approvals user={user} /> : <Navigate to="/variance" replace />} />
-            <Route path="/catalog"   element={user.role === 'corporate' ? <Catalog user={user} /> : <Navigate to="/variance" replace />} />
-            <Route path="/inventory" element={user.role === 'corporate' ? <Inventory user={user} /> : <Navigate to="/variance" replace />} />
-            <Route path="/stock"     element={(user.role === 'corporate' || user.role === 'manager' || user.role === 'venue_manager') ? <StockOnHand user={user} /> : <Navigate to="/variance" replace />} />
-            <Route path="/security"  element={user.role === 'corporate' ? <Security user={user} /> : <Navigate to="/variance" replace />} />
-            <Route path="/venue-settings" element={user.role === 'corporate' ? <VenueSettings user={user} /> : <Navigate to="/variance" replace />} />
+            <Route path="/approvals" element={canRunAudits(user.role) ? <Approvals user={user} /> : <Navigate to="/variance" replace />} />
+            <Route path="/catalog"   element={hasCorporateAccess(user.role) ? <Catalog user={user} /> : <Navigate to="/variance" replace />} />
+            <Route path="/inventory" element={hasCorporateAccess(user.role) ? <Inventory user={user} /> : <Navigate to="/variance" replace />} />
+            <Route path="/stock"     element={canRunAudits(user.role) ? <StockOnHand user={user} /> : <Navigate to="/variance" replace />} />
+            <Route path="/security"  element={canManageUsers(user.role) ? <Security user={user} /> : <Navigate to="/variance" replace />} />
+            <Route path="/venue-settings" element={hasCorporateAccess(user.role) ? <VenueSettings user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="*"         element={<Navigate to="/variance" replace />} />
           </Routes>
         </main>

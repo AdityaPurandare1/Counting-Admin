@@ -9,6 +9,7 @@ import { parseBevagerWorkbook, matchBevagerRows } from '@/lib/bevagerImport';
 import type { MatchResult } from '@/lib/bevagerImport';
 import { csvCell } from '@/lib/csv';
 
+import { hasCorporateAccess } from '@/lib/access';
 /* ───────────────────────────────────────────────────────────────────────
    Catalog screen (desktop, post Path B)
 
@@ -177,7 +178,7 @@ export function Catalog({ user }: Props) {
   useEffect(() => { if (page >= totalPages) setPage(0); }, [page, totalPages]);
 
   // Gate at the UI level; the router also redirects non-corporate away
-  if (user.role !== 'corporate') {
+  if (!hasCorporateAccess(user.role)) {
     return (
       <>
         <div className="topbar"><div><div className="eyebrow">Catalog</div><h1>Carried items</h1></div></div>

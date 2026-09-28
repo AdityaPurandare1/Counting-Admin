@@ -91,12 +91,47 @@ interface AppUserRow {
   is_active: boolean;
 }
 
+/* Role predicates — the single place the hierarchy is written down, so a new
+ * tier never has to be chased through twenty screens again.
+ *
+ *   admin          everything, and the only role that can grant access
+ *   corporate      org-wide operations, but cannot manage users
+ *   venue_manager  the venue's GM: manager's powers, plus correcting counts
+ *   manager        runs counts; third-party crews sit here
+ *   counter        phone app only
+ */
+
+/** Sees every venue rather than a listed subset. */
+export function isOrgWide(role: Role): boolean {
+  return role === 'admin' || role === 'corporate';
+}
+
+/** Can create, disable, delete users and change roles. Admin alone. */
+export function canManageUsers(role: Role): boolean {
+  return role === 'admin';
+}
+
+/** Org-wide operational screens: catalog, inventory, venue settings. */
+export function hasCorporateAccess(role: Role): boolean {
+  return isOrgWide(role);
+}
+
+/** Runs an audit: start, close, approve. */
+export function canRunAudits(role: Role): boolean {
+  return isOrgWide(role) || role === 'venue_manager' || role === 'manager';
+}
+
+/** Corrects a recorded count. Not `manager` — see the Role comment. */
+export function canEditCounts(role: Role): boolean {
+  return isOrgWide(role) || role === 'venue_manager';
+}
+
 function rowToEntry(r: AppUserRow): AccessEntry {
   return {
     email: r.email,
     name: r.name ?? r.email,
     role: r.role,
-    venueIds: r.role === 'corporate' ? 'all' : (r.venue_ids ?? []),
+    venueIds: isOrgWide(r.role) ? 'all' : (r.venue_ids ?? []),
   };
 }
 

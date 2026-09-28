@@ -7,6 +7,7 @@ import { Pill, Eyebrow, Card, Btn, Num, Money, Avatar } from '@/components/atoms
 import { Ic } from '@/components/Icons';
 import { buildVarianceWorkbookBlob, type AvtLikeRow } from '@/lib/varianceReport';
 
+import { isOrgWide, hasCorporateAccess, canRunAudits, canEditCounts } from '@/lib/access';
 /* ───────────────────────────────────────────────────────────────────────
    Variance screen (v0.3)
 
@@ -37,7 +38,7 @@ export function Variance({ user }: Props) {
   const [dateFilter, setDateFilter] = useState<string>('');
 
   const filterVisible = useCallback((rows: KountAudit[]) => rows.filter(a => {
-    if (user.role === 'corporate' || user.venueIds === 'all') return true;
+    if (isOrgWide(user.role) || user.venueIds === 'all') return true;
     return Array.isArray(user.venueIds) && user.venueIds.includes(a.venue_id);
   }), [user]);
 
@@ -86,7 +87,7 @@ export function Variance({ user }: Props) {
   const openAudit = (id: string) => {
     const a = [...activeAudits, ...historicAudits].find(x => x.id === id);
     if (!a) return;
-    if (user.role !== 'corporate') {
+    if (!isOrgWide(user.role)) {
       const ok = user.venueIds === 'all' || (Array.isArray(user.venueIds) && user.venueIds.includes(a.venue_id));
       if (!ok) return;
     }
@@ -262,37 +263,37 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
     return { totalEntries, totalQty, issueCount, byZone, byCounter };
   }, [entries]);
 
-  const canClose = (user.role === 'corporate' || user.role === 'manager')
+  const canClose = canRunAudits(user.role)
     && audit?.status === 'active'
     && audit?.count_phase === 'count1';
 
-  const canCancel = user.role === 'corporate' && audit?.status === 'active';
+  const canCancel = hasCorporateAccess(user.role) && audit?.status === 'active';
 
   // Correcting a miscount is the venue's own job. A submitted audit turns the
-  // Counts screen read-only for everyone, so this row was the only way to fix a
-  // qty — and it was corporate-only, which left the manager who did the count
-  // unable to correct it and waiting on someone with org-wide access.
-  // Scoped the same way the audit list itself is: corporate sees all, a manager
-  // gets the venues in their venue_ids and nothing else.
+  // Counts screen read-only for everyone, so this row is the only way to fix a
+  // qty — and it was corporate-only, which left the GM who ran the count unable
+  // to correct it and waiting on someone with org-wide access.
+  //
+  // The GM tier, not `manager`: manager is also handed to third-party counting
+  // crews, and the crew that produced a number should not be the one who can
+  // quietly change it afterwards. Scoped the same way the audit list scopes
+  // itself — org-wide roles see all, a GM gets their own venues and nothing else.
   const canEditEntries =
-    user.role === 'corporate' ||
-    user.venueIds === 'all' ||
-    (user.role === 'manager' &&
-      !!audit &&
-      Array.isArray(user.venueIds) &&
-      user.venueIds.includes(audit.venue_id));
+    canEditCounts(user.role) &&
+    (user.venueIds === 'all' ||
+      (!!audit && Array.isArray(user.venueIds) && user.venueIds.includes(audit.venue_id)));
 
-  // Deleting a count line stays corporate. Editing a number is a correction;
-  // removing the line is a different thing, and the entry-delete guard exists
-  // because losing one has caused double counts before.
-  const canDeleteEntries = user.role === 'corporate';
+  // Deleting a count line stays with the org-wide roles. Editing a number is a
+  // correction; removing the line is a different thing, and the entry-delete
+  // guard exists because losing one has caused double counts before.
+  const canDeleteEntries = hasCorporateAccess(user.role);
   const [cancelling, setCancelling] = useState(false);
 
   // Finalize from the desktop once Count 1 is closed (phase review/count2).
   // Mirrors the phone's finalizeCount2 stamp: status submitted + phase final +
   // completed_at, then recompute the AVT so the final variance reflects the
   // latest counts. Available to corporate + managers (same gate as close).
-  const canComplete = (user.role === 'corporate' || user.role === 'manager')
+  const canComplete = canRunAudits(user.role)
     && audit?.status === 'active'
     && (audit?.count_phase === 'review' || audit?.count_phase === 'count2');
   const [completing, setCompleting] = useState(false);

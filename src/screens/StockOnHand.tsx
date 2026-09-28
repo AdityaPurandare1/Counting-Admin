@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { VENUES } from '@/lib/access';
+import { VENUES, isOrgWide } from '@/lib/access';
 import type { AccessEntry } from '@/lib/access';
 import type { KountAvtReport, KountAvtRow } from '@/lib/types';
 import { Card, Eyebrow, Btn, Num, Money } from '@/components/atoms';
@@ -29,7 +29,7 @@ interface Props { user: AccessEntry }
 
 export function StockOnHand({ user }: Props) {
   const visibleVenues = useMemo(() => {
-    if (user.role === 'corporate' || user.venueIds === 'all') return VENUES;
+    if (isOrgWide(user.role) || user.venueIds === 'all') return VENUES;
     const set = new Set(Array.isArray(user.venueIds) ? user.venueIds : []);
     return VENUES.filter(v => set.has(v.id));
   }, [user]);

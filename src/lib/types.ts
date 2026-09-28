@@ -22,7 +22,16 @@ export const IN_SCOPE_FILTER = 'category=in.(' +
   IN_SCOPE_CATEGORIES.map(c => '"' + c.replace(/"/g, '\\"') + '"').join(',') +
   ')';
 
-export type Role = 'corporate' | 'manager' | 'counter' | 'venue_manager';
+// Ordered high to low. `admin` sits above corporate: everything corporate can
+// reach, plus user management — which corporate no longer has, because manager
+// and corporate are both handed out widely and granting access should not ride
+// along with them.
+//
+// `venue_manager` is the venue's GM: everything `manager` can do, plus
+// correcting counts on their own venues. `manager` is deliberately below it —
+// it is given to third-party counting crews, so it must not carry the power to
+// change a number after the fact.
+export type Role = 'admin' | 'corporate' | 'manager' | 'counter' | 'venue_manager';
 export type AuditStatus = 'active' | 'submitted' | 'cancelled';
 export type CountPhase = 'count1' | 'review' | 'count2' | 'final';
 export type Severity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'WATCH' | 'LOW';

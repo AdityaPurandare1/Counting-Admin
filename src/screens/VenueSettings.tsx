@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { refreshVenues } from '@/lib/access';
+import { refreshVenues, hasCorporateAccess } from '@/lib/access';
 import { refreshVenueLookups } from '@/lib/venueMap';
 import type { AccessEntry } from '@/lib/access';
 import type { VenueRow } from '@/lib/types';
@@ -71,7 +71,7 @@ export function VenueSettings({ user }: Props) {
   // Router gate redundancy — App.tsx route already enforces this, but
   // keep the in-screen check as defense in depth in case someone deep-
   // links a tab that survived a role demotion.
-  if (user.role !== 'corporate') {
+  if (!hasCorporateAccess(user.role)) {
     return (
       <>
         <div className="topbar"><div><div className="eyebrow">Venue settings</div><h1>Manage venues</h1></div></div>

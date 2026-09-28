@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase, selectAllPagedFiltered } from '@/lib/supabase';
 import type { AccessEntry } from '@/lib/access';
-import { VENUES } from '@/lib/access';
+import { VENUES, isOrgWide } from '@/lib/access';
 import type { KountAudit, KountAvtReport, KountAvtRow } from '@/lib/types';
 import { Card, Eyebrow, Btn, Pill } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
@@ -48,7 +48,7 @@ export function Reports({ user }: Props) {
   const [rowTrunc, setRowTrunc] = useState(false);
 
   const visibleVenues = useMemo(() => {
-    if (user.role === 'corporate' || user.venueIds === 'all') return VENUES;
+    if (isOrgWide(user.role) || user.venueIds === 'all') return VENUES;
     const set = new Set(Array.isArray(user.venueIds) ? user.venueIds : []);
     return VENUES.filter(v => set.has(v.id));
   }, [user]);
@@ -75,7 +75,7 @@ export function Reports({ user }: Props) {
 
     const allAudits = (auditRows ?? []) as KountAudit[];
     const visibleAudits = allAudits.filter(a => {
-      if (user.role === 'corporate' || user.venueIds === 'all') return true;
+      if (isOrgWide(user.role) || user.venueIds === 'all') return true;
       return Array.isArray(user.venueIds) && user.venueIds.includes(a.venue_id);
     });
     setAudits(visibleAudits);

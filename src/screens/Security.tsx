@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { VENUES, refreshAccessList } from '@/lib/access';
+import { VENUES, refreshAccessList, isOrgWide, canManageUsers } from '@/lib/access';
 import type { AccessEntry } from '@/lib/access';
 import type { Role } from '@/lib/types';
 import { Card, Btn, Pill, Eyebrow } from '@/components/atoms';
@@ -54,7 +54,7 @@ export function Security({ user }: Props) {
   }, [load]);
 
   // Gate in case someone router-nav'd here with the wrong role
-  if (user.role !== 'corporate') {
+  if (!canManageUsers(user.role)) {
     return (
       <>
         <div className="topbar"><div><div className="eyebrow">Security</div><h1>Access control</h1></div></div>
@@ -114,7 +114,7 @@ export function Security({ user }: Props) {
 
 function UserRow({ row, onEdit }: { row: AppUserRow; onEdit: () => void }) {
   const venueLabel = useMemo(() => {
-    if (row.role === 'corporate') return 'all';
+    if (isOrgWide(row.role)) return 'all';
     if (!row.venue_ids || row.venue_ids.length === 0) return '—';
     return row.venue_ids.map(id => VENUES.find(v => v.id === id)?.name ?? id).join(', ');
   }, [row.role, row.venue_ids]);
@@ -124,7 +124,7 @@ function UserRow({ row, onEdit }: { row: AppUserRow; onEdit: () => void }) {
       <td style={{ padding: '10px 6px', fontFamily: 'JetBrains Mono, monospace', fontSize: 12 }}>{row.email}</td>
       <td style={{ padding: '10px 6px', fontWeight: 500 }}>{row.name ?? '—'}</td>
       <td style={{ padding: '10px 6px' }}>
-        <Pill tone={row.role === 'corporate' ? 'ink' : row.role === 'manager' ? 'gold' : row.role === 'venue_manager' ? 'inform' : 'neutral'} size="sm">{row.role === 'venue_manager' ? 'venue management' : row.role}</Pill>
+        <Pill tone={row.role === 'admin' ? 'critical' : row.role === 'corporate' ? 'ink' : row.role === 'manager' ? 'gold' : row.role === 'venue_manager' ? 'inform' : 'neutral'} size="sm">{row.role === 'venue_manager' ? 'venue management' : row.role}</Pill>
       </td>
       <td style={{ padding: '10px 6px', maxWidth: 360, fontSize: 12 }}>{venueLabel}</td>
       <td style={{ padding: '10px 6px' }}>
@@ -217,15 +217,15 @@ function UserFormModal({
    *  email. Used by the last-corporate-user guards to refuse a destructive
    *  action that would drop the active corporate count to zero. Returns
    *  -1 if the query itself fails (caller treats as fail-closed). */
-  const countOtherActiveCorporates = async (excludeEmail: string): Promise<number> => {
+  const countOtherActiveAdmins = async (excludeEmail: string): Promise<number> => {
     const { count, error } = await supabase
       .from('app_users')
       .select('email', { count: 'exact', head: true })
-      .eq('role', 'corporate')
+      .eq('role', 'admin')
       .eq('is_active', true)
       .neq('email', excludeEmail);
     if (error) {
-      console.warn('[security] countOtherActiveCorporates failed:', error);
+      console.warn('[security] countOtherActiveAdmins failed:', error);
       return -1;
     }
     return count ?? 0;
@@ -251,7 +251,7 @@ function UserFormModal({
           email: emailTrim,
           name: name.trim() || undefined,
           role,
-          venue_ids: role === 'corporate' ? [] : venueIds,
+          venue_ids: isOrgWide(role) ? [] : venueIds,
         });
         setBusy(false);
         if (result.linked_existing_user) {
@@ -269,18 +269,18 @@ function UserFormModal({
         return;
       }
 
-      // Last-corporate guard: demoting or disabling the last active
-      // corporate admin would leave nobody with /security, /catalog,
-      // /inventory, /reports, /venue-settings access. The system gets
-      // stuck until DB intervention. Block unless another active corp
+      // Last-admin guard: admin is the only role that can reach this screen,
+      // so demoting or disabling the last active one leaves nobody able to
+      // grant access to anyone — including themselves. That is unrecoverable
+      // without going into the database. Block unless another active admin
       // would remain after this save.
-      if (editingRow!.role === 'corporate' && editingRow!.is_active) {
-        const stayingCorpActive = role === 'corporate' && isActive;
-        if (!stayingCorpActive) {
-          const otherCorps = await countOtherActiveCorporates(editingRow!.email);
+      if (editingRow!.role === 'admin' && editingRow!.is_active) {
+        const stayingAdminActive = role === 'admin' && isActive;
+        if (!stayingAdminActive) {
+          const otherCorps = await countOtherActiveAdmins(editingRow!.email);
           if (otherCorps < 0) {
             setBusy(false);
-            setErr('Could not verify other corporate admins. Try again.');
+            setErr('Could not verify other admins. Try again.');
             return;
           }
           if (otherCorps === 0) {
@@ -316,7 +316,7 @@ function UserFormModal({
         profileUpdate.role = role;
         hasUpdate = true;
       }
-      const newVenueIds = role === 'corporate' ? [] : venueIds;
+      const newVenueIds = isOrgWide(role) ? [] : venueIds;
       const oldVenueIds = editingRow!.venue_ids ?? [];
       if (JSON.stringify(newVenueIds.slice().sort()) !== JSON.stringify(oldVenueIds.slice().sort())) {
         profileUpdate.venue_ids = newVenueIds;
@@ -361,12 +361,12 @@ function UserFormModal({
       return;
     }
 
-    // Last-corporate guard: refuse to delete the last active corporate
-    // admin (same rationale as the demote/disable guard in save()).
-    if (editingRow.role === 'corporate' && editingRow.is_active) {
-      const otherCorps = await countOtherActiveCorporates(editingRow.email);
+    // Last-admin guard: refuse to delete the last active admin (same
+    // rationale as the demote/disable guard in save()).
+    if (editingRow.role === 'admin' && editingRow.is_active) {
+      const otherCorps = await countOtherActiveAdmins(editingRow.email);
       if (otherCorps < 0) {
-        setErr('Could not verify other corporate admins. Try again.');
+        setErr('Could not verify other admins. Try again.');
         return;
       }
       if (otherCorps === 0) {
@@ -481,14 +481,15 @@ function UserFormModal({
         </Field>
         <Field label="Role">
           <select value={role} onChange={e => setRole(e.target.value as Role)} style={fieldInput}>
-            <option value="corporate">corporate (admin — all venues)</option>
-            <option value="manager">manager</option>
-            <option value="venue_manager">venue management (view + download reports, flag issues — their venue)</option>
+            <option value="admin">admin (everything, and the only role that can manage users)</option>
+            <option value="corporate">corporate (all venues, cannot manage users)</option>
+            <option value="manager">manager (runs counts — third-party crews sit here)</option>
+            <option value="venue_manager">venue management / GM (runs counts and corrects them — their venues)</option>
             <option value="counter">counter</option>
           </select>
         </Field>
 
-        {role !== 'corporate' && (
+        {!isOrgWide(role) && (
           <Field label="Venues">
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
               {VENUES.map(v => {

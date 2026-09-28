@@ -4,6 +4,7 @@ import { supabase } from './supabase';
 import type { KountAudit, CountPhase, AuditStatus } from './types';
 import type { AccessEntry } from './access';
 
+import { isOrgWide } from '@/lib/access';
 export interface NotificationItem {
   id: string;
   title: string;
@@ -57,7 +58,7 @@ function saveFilter(s: Set<string>) {
 
 function venueVisibleToUser(user: AccessEntry | null, venueId: string): boolean {
   if (!user) return false;
-  if (user.role === 'corporate' || user.venueIds === 'all') return true;
+  if (isOrgWide(user.role) || user.venueIds === 'all') return true;
   return Array.isArray(user.venueIds) && user.venueIds.includes(venueId);
 }
 
