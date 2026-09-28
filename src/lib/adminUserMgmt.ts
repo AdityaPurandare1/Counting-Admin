@@ -11,6 +11,7 @@
 // somehow learned the function URL, they can't bypass.
 
 import { supabase, SUPABASE_URL } from './supabase';
+import { APP_URL } from './access';
 import type { Role } from './types';
 
 const FUNCTION_URL = SUPABASE_URL + '/functions/v1/admin-user-mgmt';
@@ -115,7 +116,11 @@ async function callAdminFunction(payload: Record<string, unknown>): Promise<OkRe
 
 export const adminUserMgmt = {
   invite(args: InviteArgs) {
-    const redirect = args.redirect_to || window.location.origin;
+    // Falls back to the deployed admin app, NOT window.location.origin: an
+    // invite sent from a dev server otherwise carries a localhost link that the
+    // recipient's browser cannot open. Callers should pass the role's real
+    // target via signInUrlForRole().
+    const redirect = args.redirect_to || APP_URL.admin;
     return callAdminFunction({ action: 'invite', ...args, redirect_to: redirect });
   },
 
@@ -132,7 +137,9 @@ export const adminUserMgmt = {
   },
 
   resetPassword(email: string, redirectTo?: string) {
-    const redirect = redirectTo || window.location.origin;
+    // Same reasoning as invite(): an absolute deployed URL, never the origin
+    // the admin happens to be browsing.
+    const redirect = redirectTo || APP_URL.admin;
     return callAdminFunction({ action: 'reset_password', email, redirect_to: redirect });
   },
 

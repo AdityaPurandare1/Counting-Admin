@@ -101,6 +101,27 @@ interface AppUserRow {
  *   counter        phone app only
  */
 
+/* Where each role actually signs in.
+ *
+ * Invites used to redirect to `window.location.origin`, i.e. wherever the admin
+ * happened to have the app open. Sent from a dev server that is "localhost:5173",
+ * so the invitee gets a link their browser refuses to connect to — which is
+ * exactly what happened to the first counter invited this way.
+ *
+ * A counter also cannot use the desktop app at all; sending them there produces
+ * "Counters should use the phone app instead" even when the origin is right.
+ * So the target follows the role, and is absolute in both cases.
+ */
+export const APP_URL = {
+  admin: 'https://adityapurandare1.github.io/Counting-Admin/',
+  phone: 'https://adityapurandare1.github.io/Counting-App/',
+} as const;
+
+/** The app this role signs into — where an invite or reset link must land. */
+export function signInUrlForRole(role: Role): string {
+  return role === 'counter' ? APP_URL.phone : APP_URL.admin;
+}
+
 /** Sees every venue rather than a listed subset. */
 export function isOrgWide(role: Role): boolean {
   return role === 'admin' || role === 'corporate';

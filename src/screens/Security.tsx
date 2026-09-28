@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { VENUES, refreshAccessList, isOrgWide, canManageUsers } from '@/lib/access';
+import { VENUES, refreshAccessList, isOrgWide, canManageUsers, signInUrlForRole } from '@/lib/access';
 import type { AccessEntry } from '@/lib/access';
 import type { Role } from '@/lib/types';
 import { Card, Btn, Pill, Eyebrow } from '@/components/atoms';
@@ -252,6 +252,8 @@ function UserFormModal({
           name: name.trim() || undefined,
           role,
           venue_ids: isOrgWide(role) ? [] : venueIds,
+          // A counter lands on the phone app; everyone else on the desktop.
+          redirect_to: signInUrlForRole(role),
         });
         setBusy(false);
         if (result.linked_existing_user) {
@@ -401,7 +403,10 @@ function UserFormModal({
     if (!confirm(`Send a password-reset email to ${editingRow.email}?`)) return;
     setBusy(true);
     try {
-      const result = await adminUserMgmt.resetPassword(editingRow.email);
+      const result = await adminUserMgmt.resetPassword(
+        editingRow.email,
+        signInUrlForRole(editingRow.role),
+      );
       setBusy(false);
       setErr(null);
       // Surface the action_link so admin can copy + send manually if
