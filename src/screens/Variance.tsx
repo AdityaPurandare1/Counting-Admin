@@ -267,6 +267,25 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
     && audit?.count_phase === 'count1';
 
   const canCancel = user.role === 'corporate' && audit?.status === 'active';
+
+  // Correcting a miscount is the venue's own job. A submitted audit turns the
+  // Counts screen read-only for everyone, so this row was the only way to fix a
+  // qty — and it was corporate-only, which left the manager who did the count
+  // unable to correct it and waiting on someone with org-wide access.
+  // Scoped the same way the audit list itself is: corporate sees all, a manager
+  // gets the venues in their venue_ids and nothing else.
+  const canEditEntries =
+    user.role === 'corporate' ||
+    user.venueIds === 'all' ||
+    (user.role === 'manager' &&
+      !!audit &&
+      Array.isArray(user.venueIds) &&
+      user.venueIds.includes(audit.venue_id));
+
+  // Deleting a count line stays corporate. Editing a number is a correction;
+  // removing the line is a different thing, and the entry-delete guard exists
+  // because losing one has caused double counts before.
+  const canDeleteEntries = user.role === 'corporate';
   const [cancelling, setCancelling] = useState(false);
 
   // Finalize from the desktop once Count 1 is closed (phase review/count2).
@@ -542,13 +561,13 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
       <Card padding={16}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
           <Eyebrow>Recent entries</Eyebrow>
-          <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>showing latest 30 · admin can edit / delete</span>
+          <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>showing latest 30 · edit qty to correct a miscount</span>
         </div>
         {entries.length === 0 && <div style={{ color: 'var(--fg-muted)', fontSize: 12 }}>No entries yet.</div>}
         <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
           <tbody>
             {entries.slice(0, 30).map(e => (
-              <EntryRow key={e.id} entry={e} canEdit={user.role === 'corporate'} />
+              <EntryRow key={e.id} entry={e} canEdit={canEditEntries} canDelete={canDeleteEntries} />
             ))}
           </tbody>
         </table>
@@ -577,7 +596,7 @@ function StatTile({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-function EntryRow({ entry, canEdit }: { entry: KountEntry; canEdit: boolean }) {
+function EntryRow({ entry, canEdit, canDelete }: { entry: KountEntry; canEdit: boolean; canDelete: boolean }) {
   const [editing, setEditing] = useState(false);
   const [qty, setQty] = useState(String(entry.qty));
   const [busy, setBusy] = useState(false);
@@ -617,7 +636,7 @@ function EntryRow({ entry, canEdit }: { entry: KountEntry; canEdit: boolean }) {
       <td style={{ padding: '6px 4px', color: 'var(--fg-muted)', fontSize: 10 }}>
         {new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
       </td>
-      {canEdit && (
+      {(canEdit || canDelete) && (
         <td style={{ padding: '6px 4px', textAlign: 'right', whiteSpace: 'nowrap' }}>
           {editing ? (
             <>
@@ -626,8 +645,8 @@ function EntryRow({ entry, canEdit }: { entry: KountEntry; canEdit: boolean }) {
             </>
           ) : (
             <>
-              <Btn variant="ghost" size="sm" onClick={() => setEditing(true)} title="Edit qty">Edit</Btn>{' '}
-              <Btn variant="ghost" size="sm" onClick={remove} disabled={busy} style={{ color: 'var(--raspberry-300)' }}>Delete</Btn>
+              {canEdit && <Btn variant="ghost" size="sm" onClick={() => setEditing(true)} title="Edit qty">Edit</Btn>}{' '}
+              {canDelete && <Btn variant="ghost" size="sm" onClick={remove} disabled={busy} style={{ color: 'var(--raspberry-300)' }}>Delete</Btn>}
             </>
           )}
         </td>
