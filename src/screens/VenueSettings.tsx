@@ -159,6 +159,7 @@ export function VenueSettings({ user }: Props) {
       {creating && (
         <VenueFormModal
           mode="create"
+          user={user}
           existingIds={new Set(rows.map(r => r.id))}
           onClose={() => setCreating(false)}
           onSaved={() => { setCreating(false); void load(); }}
@@ -167,6 +168,7 @@ export function VenueSettings({ user }: Props) {
       {editing && (
         <VenueFormModal
           mode="edit"
+          user={user}
           initial={editing}
           existingIds={new Set(rows.map(r => r.id))}
           onClose={() => setEditing(null)}
@@ -180,11 +182,12 @@ export function VenueSettings({ user }: Props) {
 /* ────────── Add / edit modal ────────── */
 
 function VenueFormModal({
-  mode, initial, existingIds, onClose, onSaved,
+  mode, initial, existingIds, user, onClose, onSaved,
 }: {
   mode: 'create' | 'edit';
   initial?: VenueRow;
   existingIds: Set<string>;
+  user: AccessEntry;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -251,6 +254,65 @@ function VenueFormModal({
 
   const parseList = (s: string) =>
     s.split('\n').map(line => line.trim()).filter(Boolean);
+
+  // v0.57: rename/merge a zone (0049_rename_venue_zone). Distinct from
+  // removeCustomZone above — remove means "this zone is gone," rename
+  // means "same place, different label," and only the latter needs to
+  // carry historical kount_entries/kount_recounts rows forward instead of
+  // orphaning them under the old name. Works on default zones (the
+  // textarea above) and custom zones (the list above) alike, since the
+  // RPC checks both.
+  const [renameFrom, setRenameFrom] = useState('');
+  const [renameTo,   setRenameTo]   = useState('');
+  const [renaming,   setRenaming]   = useState(false);
+  const [renameErr,  setRenameErr]  = useState<string | null>(null);
+
+  const allZoneNames = Array.from(new Set([
+    ...parseList(defaultZones),
+    ...customZones.map(z => z.zone_name),
+  ])).sort((a, b) => a.localeCompare(b));
+
+  const renameZone = async () => {
+    setRenameErr(null);
+    if (!initial) return;
+    const from = renameFrom.trim();
+    const to = renameTo.trim();
+    if (!from) { setRenameErr('Pick a zone to rename'); return; }
+    if (!to) { setRenameErr('New name required'); return; }
+    if (from.toLowerCase() === to.toLowerCase()) { setRenameErr('New name must be different from the old one'); return; }
+    const merging = allZoneNames.some(z => z.toLowerCase() === to.toLowerCase());
+    if (!confirm(
+      merging
+        ? `Merge "${from}" into existing zone "${to}"? Every historical count entry under "${from}" moves to "${to}".`
+        : `Rename "${from}" to "${to}"? Every historical count entry moves with it.`
+    )) return;
+
+    setRenaming(true);
+    const { data, error } = await supabase.rpc('rename_venue_zone', {
+      p_venue_id: initial.id,
+      p_old_zone_name: from,
+      p_new_zone_name: to,
+      p_actor_email: user.email,
+    });
+    setRenaming(false);
+    const result = data as { ok: boolean; error?: string } | null;
+    if (error || !result || result.ok === false) {
+      setRenameErr(result?.error || error?.message || 'Rename failed');
+      return;
+    }
+
+    setRenameFrom('');
+    setRenameTo('');
+    // default_zones may have changed server-side (rename/merge of a
+    // default zone) — re-fetch rather than guess at the new array locally.
+    const { data: refreshed } = await supabase
+      .from('kount_venues')
+      .select('default_zones')
+      .eq('id', initial.id)
+      .maybeSingle();
+    if (refreshed) setDefaultZones(((refreshed.default_zones ?? []) as string[]).join('\n'));
+    void loadCustomZones();
+  };
 
   const save = async () => {
     setErr(null);
@@ -413,6 +475,35 @@ function VenueFormModal({
             )}
             <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 6 }}>
               Removing a custom zone deletes the row from kount_venue_zones — count entries that still reference it stay on the server but disappear from the phone's zone tabs until someone re-adds the zone with the exact same name.
+            </div>
+          </Field>
+        )}
+
+        {mode === 'edit' && (
+          <Field label="Rename or merge a zone">
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <select
+                value={renameFrom}
+                onChange={e => setRenameFrom(e.target.value)}
+                style={{ ...fieldInput, flex: '1 1 160px' }}
+              >
+                <option value="">Select zone…</option>
+                {allZoneNames.map(z => <option key={z} value={z}>{z}</option>)}
+              </select>
+              <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>→</span>
+              <input
+                value={renameTo}
+                onChange={e => setRenameTo(e.target.value)}
+                placeholder="New name (or an existing zone to merge into)"
+                style={{ ...fieldInput, flex: '2 1 220px' }}
+              />
+              <Btn variant="secondary" size="sm" disabled={renaming} onClick={() => void renameZone()}>
+                {renaming ? 'Working…' : 'Rename / Merge'}
+              </Btn>
+            </div>
+            {renameErr && <div style={{ fontSize: 12, color: 'var(--raspberry-300)', marginTop: 6 }}>{renameErr}</div>}
+            <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 6 }}>
+              Works on default or custom zones. Type an existing zone's name on the right to merge into it instead of creating a new one — every historical count entry and recount that referenced the old name moves with it.
             </div>
           </Field>
         )}
