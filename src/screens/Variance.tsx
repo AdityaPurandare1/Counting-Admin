@@ -311,10 +311,29 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
       .update({ status: 'submitted', count_phase: 'final', completed_at: now })
       .eq('id', audit.id);
     if (error) { setCompleting(false); alert('Complete failed: ' + error.message); return; }
-    // Recompute the final variance (corporate-gated RPC; non-fatal for managers).
-    try { await supabase.rpc('compute_avt_for_audit', { p_audit_id: audit.id }); }
-    catch (e) { console.warn('[variance] compute_avt on complete failed', e); }
+    // Recompute the final variance.
+    //
+    // This was `try { await supabase.rpc(...) } catch`, which caught nothing:
+    // supabase.rpc RESOLVES with { data, error } rather than throwing, so the
+    // error was never read and a failed compute looked exactly like a
+    // successful one. Alphabet's two audits were completed that way and sat
+    // with no variance at all until someone went looking — months, in the case
+    // of Delilah LA. The audit itself is already saved by this point, so the
+    // failure is recoverable; what it must not be is silent.
+    const { error: avtError } = await supabase.rpc('compute_avt_for_audit', { p_audit_id: audit.id });
     setCompleting(false);
+    if (avtError) {
+      console.warn('[variance] compute_avt on complete failed', avtError);
+      alert(
+        `Audit ${audit.join_code} was completed, but the variance did not compute.
+
+` +
+        `${avtError.message || avtError}
+
+` +
+        'The counts are safe. Recompute from Catalog → Recompute variance once the cause is resolved.'
+      );
+    }
     onClosed();
   };
 
