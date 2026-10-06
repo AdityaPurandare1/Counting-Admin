@@ -1,7 +1,10 @@
 import { NavLink } from 'react-router-dom';
 import { APP_VERSION } from '@/lib/version';
 
-const NAV_AUDIT = [
+// `runAudits` rows are hidden from counters: their routes are gated on
+// canRunAudits and would just redirect.
+const NAV_AUDIT: Array<{ to: string; label: string; runAudits?: boolean }> = [
+  { to: '/overview', label: 'Overview', runAudits: true },
   { to: '/venues',   label: 'Venues' },
   { to: '/variance', label: 'Variance' },
   { to: '/counts',   label: 'Counts' },
@@ -46,7 +49,7 @@ export function Sidebar({ userName, userRole, onSignOut }: Props) {
   const isManager  = userRole === 'manager';
   const isVenueMgr = userRole === 'venue_manager';
   // The GM tier runs counts now, so /counts is a live link for it.
-  const auditLinks = NAV_AUDIT;
+  const auditLinks = NAV_AUDIT.filter(n => !(n.runAudits && userRole === 'counter'));
   return (
     <aside className="sidebar">
       <div className="sidebar-head">
