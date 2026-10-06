@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { supabase, selectAllPagedFiltered } from '@/lib/supabase';
 import type { AccessEntry } from '@/lib/access';
 import { VENUES } from '@/lib/access';
@@ -58,6 +59,7 @@ const AUDIT_LIMIT = 400; // covers current + previous window in one pull
 const ROW_LIMIT = 20000;
 
 export function Overview({ user }: Props) {
+  const nav = useNavigate();
   const [window_, setWindow_] = useState<WindowChoice>('30d');
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<TaggedRow[]>([]);
@@ -360,8 +362,13 @@ export function Overview({ user }: Props) {
                       <tr><td style={td} colSpan={3}><span style={{ color: 'var(--fg-muted)' }}>No negative variance items in this window.</span></td></tr>
                     )}
                     {topItems.map((r, i) => (
-                      <tr key={r.venue_id + ':' + r.item_name + ':' + i} style={{ borderBottom: '1px solid var(--border)' }}>
-                        <td style={{ ...td, fontWeight: 500 }}>{r.item_name}</td>
+                      <tr
+                        key={r.venue_id + ':' + r.item_name + ':' + i}
+                        style={{ borderBottom: '1px solid var(--border)', cursor: 'pointer' }}
+                        title="View this item's history at this venue"
+                        onClick={() => nav('/item-history?venue=' + encodeURIComponent(r.venue_id) + '&item=' + encodeURIComponent(r.item_name))}
+                      >
+                        <td style={{ ...td, fontWeight: 500, textDecoration: 'underline', textDecorationStyle: 'dotted', textUnderlineOffset: 2 }}>{r.item_name}</td>
                         <td style={{ ...td, color: 'var(--fg-muted)' }}>{r.venue_name}</td>
                         <td style={{ ...td, textAlign: 'right' }}><Money value={r.variance_value} showSign size={13} /></td>
                       </tr>

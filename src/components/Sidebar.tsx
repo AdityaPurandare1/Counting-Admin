@@ -2,12 +2,13 @@ import { NavLink } from 'react-router-dom';
 import { APP_VERSION } from '@/lib/version';
 
 const NAV_AUDIT = [
-  { to: '/overview', label: 'Overview' },
-  { to: '/venues',   label: 'Venues' },
-  { to: '/variance', label: 'Variance' },
-  { to: '/counts',   label: 'Counts' },
-  { to: '/recount',  label: 'Recount' },
-  { to: '/summary',  label: 'Summary' },
+  { to: '/overview',      label: 'Overview' },
+  { to: '/venues',        label: 'Venues' },
+  { to: '/variance',      label: 'Variance' },
+  { to: '/item-history',  label: 'Item history' },
+  { to: '/counts',        label: 'Counts' },
+  { to: '/recount',       label: 'Recount' },
+  { to: '/summary',       label: 'Summary' },
 ];
 
 const NAV_TEAM = [
