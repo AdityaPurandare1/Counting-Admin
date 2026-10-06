@@ -7,6 +7,7 @@ const NAV_AUDIT: Array<{ to: string; label: string; runAudits?: boolean }> = [
   { to: '/overview', label: 'Overview', runAudits: true },
   { to: '/venues',   label: 'Venues' },
   { to: '/variance', label: 'Variance' },
+  { to: '/item-history', label: 'Item history', runAudits: true },
   { to: '/counts',   label: 'Counts' },
   { to: '/recount',  label: 'Recount' },
   { to: '/summary',  label: 'Summary' },
