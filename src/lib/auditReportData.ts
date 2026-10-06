@@ -29,7 +29,7 @@
 import { supabase, selectAllPagedFiltered } from '@/lib/supabase';
 import type { MasterItem } from '@/lib/types';
 import {
-  chunk, pickNewestPrices, toCountLines,
+  applyVenueCosts, chunk, pickNewestPrices, toCountLines,
   type AuditCountLine, type AuditEntryRow, type PriceRow,
 } from '@/lib/auditReport';
 
@@ -49,9 +49,18 @@ export interface AuditReportData {
    *  original entries, so a non-zero count is worth a note. `null` means the
    *  lookup failed and the workbook must say THAT instead. */
   recountCount: number | null;
+  /** Counted masters priced from kount_venue_cost_overrides for this audit's
+   *  venue instead of the catalog. 0 when the caller gave no venue. */
+  venueCostOverrides: number;
+  /** master id → source text for each venue cost that was applied, for the
+   *  workbook's Cost Basis sheet. Empty when there were none. */
+  venueCostSources: Map<string, string>;
 }
 
-export async function loadAuditReportData(auditId: string): Promise<AuditReportData> {
+/** `venueId` is the audit's kount_venues id ('v12'). Without it the report is
+ *  valued at catalog cost only — which is what every audit was before 0059,
+ *  and still right for a venue with no overrides on file. */
+export async function loadAuditReportData(auditId: string, venueId?: string | null): Promise<AuditReportData> {
   // 1) The count itself. is_recount rows are the recount trail, not the count
   //    — the same exclusion compute_avt_for_audit makes.
   const entries = await selectAllPagedFiltered<AuditEntryRow>(
@@ -65,14 +74,16 @@ export async function loadAuditReportData(auditId: string): Promise<AuditReportD
 
   const masterIds = [...new Set(entries.map(e => e.master_item_id).filter((id): id is string => !!id))];
   if (masterIds.length === 0) {
-    return { lines: [], unmatchedEntries: entries.length, recountCount: await countRecounts(auditId) };
+    return { lines: [], unmatchedEntries: entries.length, recountCount: await countRecounts(auditId), venueCostOverrides: 0, venueCostSources: new Map() };
   }
 
-  // 2) Item metadata, 3) unit costs — both chunked by master id — and the
-  //    recount disclosure, which is independent of all of it.
-  const [masters, prices, recountCount] = await Promise.all([
+  // 2) Item metadata, 3) catalog unit costs, 4) this venue's own costs — all
+  //    chunked by master id — and the recount disclosure, which is
+  //    independent of all of it.
+  const [masters, catalogPrices, venueRows, recountCount] = await Promise.all([
     loadMasters(masterIds),
     loadPrices(masterIds),
+    loadVenueCosts(venueId, masterIds),
     countRecounts(auditId),
   ]);
 
@@ -84,7 +95,7 @@ export async function loadAuditReportData(auditId: string): Promise<AuditReportD
   // TOTAL is 0.00. Accounting cannot tell that apart from "the bar is empty",
   // so refuse to build it. (compute_avt_for_audit never had this failure mode:
   // it is SECURITY DEFINER.)
-  if (prices.size === 0) {
+  if (catalogPrices.size === 0) {
     throw new Error(
       'Cost lookup returned nothing for any of the ' + masterIds.length + ' counted items, ' +
       'so every value in this report would be blank. Either no purchase costs exist for ' +
@@ -93,9 +104,47 @@ export async function loadAuditReportData(auditId: string): Promise<AuditReportD
     );
   }
 
+  // The venue's own costs sit on top of the catalog's. The guard above is
+  // deliberately on the catalog read alone: a venue with every item
+  // overridden is possible, but "purchase_items returned nothing" is still a
+  // failed read, and keeping that check unchanged keeps the pre-0059
+  // behaviour for every venue without overrides.
+  const venueCosts = new Map<string, number>();
+  const venueCostSources = new Map<string, string>();
+  for (const [id, row] of venueRows) {
+    venueCosts.set(id, row.cost);
+    venueCostSources.set(id, row.source || 'kount_venue_cost_overrides (no source recorded)');
+  }
+  const { prices, overridden } = applyVenueCosts(catalogPrices, venueCosts);
   const { lines, unresolved } = toCountLines(entries, masters, prices);
 
-  return { lines, unmatchedEntries: unresolved, recountCount };
+  return { lines, unmatchedEntries: unresolved, recountCount, venueCostOverrides: overridden, venueCostSources };
+}
+
+/** This venue's own unit costs for the counted masters (0059). The table is
+ *  venue-scoped by RLS, so a manager reads their venues and nothing else;
+ *  corporate reads all. Unlike countRecounts, an error here is FATAL: quietly
+ *  valuing a venue at catalog cost because its override read failed is the
+ *  exact number this table exists to prevent, and the message would be a
+ *  silent lie on a financial document. */
+async function loadVenueCosts(
+  venueId: string | null | undefined,
+  ids: string[],
+): Promise<Map<string, { cost: number; source: string | null }>> {
+  const out = new Map<string, { cost: number; source: string | null }>();
+  if (!venueId) return out;
+  for (const part of chunk(ids, ID_CHUNK)) {
+    const { data, error } = await supabase
+      .from('kount_venue_cost_overrides')
+      .select('master_item_id,cost_per_unit,source')
+      .eq('venue_id', venueId)
+      .in('master_item_id', part);
+    if (error) throw error;
+    for (const r of (data ?? []) as Array<{ master_item_id: string; cost_per_unit: number | string; source: string | null }>) {
+      out.set(r.master_item_id, { cost: Number(r.cost_per_unit), source: r.source });
+    }
+  }
+  return out;
 }
 
 async function loadMasters(ids: string[]): Promise<Map<string, MasterItem>> {

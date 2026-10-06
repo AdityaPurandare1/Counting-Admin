@@ -156,6 +156,18 @@ export interface BuildAuditWorkbookOpts {
   /** Entries that never resolved to a master_items row and so carry no
    *  category or cost. Noted on the Summary sheet when non-zero. */
   unmatchedEntries?: number;
+  /** Counted items valued at a venue-specific unit cost
+   *  (kount_venue_cost_overrides) instead of the catalog cost. Noted on the
+   *  Summary sheet when non-zero, so accounting can see that this venue's
+   *  figures are not simply the catalog's. */
+  venueCostOverrides?: number;
+  /** Where each venue-specific cost came from (master id → source text, as
+   *  recorded on kount_venue_cost_overrides). When present, a trailing
+   *  "Cost Basis" sheet is added that lists every item's qty, unit cost,
+   *  amount and basis — venue source, catalog, or none — for review. Pass an
+   *  empty map to get the sheet with every line at catalog cost; omit it to
+   *  get the plain Bevager layout. */
+  costSources?: ReadonlyMap<string, string>;
 }
 
 /* ───────────── Pure helpers (exported for unit testing) ───────────── */
@@ -360,6 +372,32 @@ export function pickNewestPrices(rows: PriceRow[]): Map<string, number> {
     if (Number.isFinite(v.cost)) out.set(masterId, v.cost);
   }
   return out;
+}
+
+/** Overlay a venue's own unit costs (kount_venue_cost_overrides) on the
+ *  catalog prices. A venue row wins outright — it exists precisely because
+ *  the catalog cost is wrong for that venue — but a non-finite or negative
+ *  override is ignored rather than trusted, for the same reason
+ *  pickNewestPrices drops NaN: it would reach a cell. Pure, so the precedence
+ *  is testable without a client.
+ *
+ *  `overridden` counts the rows actually applied. The loader only fetches
+ *  overrides for the masters this audit counted, so that number is also "how
+ *  many lines on this report are not at catalog cost" — the figure the
+ *  Summary sheet discloses. An override for an item nobody counted changes
+ *  nothing and must not be announced as if it had. */
+export function applyVenueCosts(
+  catalog: Map<string, number>,
+  venue: Map<string, number>,
+): { prices: Map<string, number>; overridden: number } {
+  const prices = new Map(catalog);
+  let overridden = 0;
+  for (const [masterId, cost] of venue) {
+    if (!Number.isFinite(cost) || cost < 0) continue;
+    prices.set(masterId, cost);
+    overridden++;
+  }
+  return { prices, overridden };
 }
 
 /** kount_entries.zone is typed as a string, but legacy rows reach us null or
@@ -576,7 +614,10 @@ export function buildAuditReportModel(lines: AuditCountLine[]): AuditReportModel
 
 /* ───────────── Workbook builder (lazy exceljs) ───────────── */
 
-const FMT_MONEY = '#,##0.00';
+/** Money cells show a dollar sign. Bevager's own export used a bare
+ *  `#,##0.00`; accounting asked for `$` (2026-10-05), and the stored value is
+ *  unchanged either way — this is display only. */
+const FMT_MONEY = '"$"#,##0.00';
 
 /** Slate header band, matching the Bevager export byte for byte. */
 const HEADER_FILL: ExcelJSNS.FillPattern = {
@@ -677,6 +718,7 @@ export async function buildAuditWorkbookBlob(opts: BuildAuditWorkbookOpts): Prom
   for (const location of model.locations) {
     buildLocationSheet(add, head, model, location);
   }
+  if (opts.costSources) buildCostBasisSheet(add, head, model, opts.costSources);
 
   const buf = await wb.xlsx.writeBuffer();
   return new Blob([buf], {
@@ -730,6 +772,18 @@ function buildSummarySheet(add: AddSheetFn, head: HeadFn, opts: BuildAuditWorkbo
     notes.push('Recount overrides could not be determined for this audit — the lookup failed. This report values the original count entries, so treat these figures as pre-correction.');
   } else if (opts.recountCount) {
     notes.push(`${opts.recountCount} recount override${opts.recountCount === 1 ? ' was' : 's were'} recorded for this audit. This report values the original count entries, so those corrections are not reflected here.`);
+  }
+  // Last on purpose: the notes above have fixed row positions that older
+  // workbooks (and the tests) rely on, and this one is the newest.
+  // With a Cost Basis sheet present, the disclosed count is the number of
+  // REPORTED items at a venue cost, so the note and the sheet agree. The
+  // loader's count also includes overrides on excluded categories (bar
+  // consumables), which would read as 179 here against 162 lines there.
+  const venueCosted = opts.costSources
+    ? model.items.filter(i => opts.costSources!.has(i.masterItemId)).length
+    : opts.venueCostOverrides;
+  if (venueCosted) {
+    notes.push(`${venueCosted} item${venueCosted === 1 ? ' is' : 's are'} valued at a unit cost on file for this venue rather than the catalog cost.`);
   }
   for (const note of notes) {
     const cell = ws.getCell(r, 1);
@@ -852,8 +906,55 @@ function buildLocationSheet(
     ws.getCell(r, 5).value = item.subcategory;
     // BIN (column 6) is blank — kount has no bin-level location.
     ws.getCell(r, 7).value = qty;
+    // CU PRICE keeps every decimal it was given (the amount is computed from
+    // the full-precision value); the money format only changes how it reads.
     ws.getCell(r, 8).value = item.cuPrice == null ? null : item.cuPrice;
+    if (item.cuPrice != null) ws.getCell(r, 8).numFmt = FMT_MONEY;
     amountCell(ws, r, 9, item.cuPrice == null ? null : qty * item.cuPrice);
     r++;
   }
+}
+
+/* ── Cost Basis (review sheet, ours — not part of the Bevager layout) ── */
+
+/** One line per reported item: the quantity, the unit cost the report used,
+ *  the resulting amount, and WHERE that cost came from. This is the sheet a
+ *  reviewer reads to challenge a number: a venue cost names its invoice or
+ *  tracker row, a catalog cost says so, and an unpriced item says so loudly.
+ *  Appended after the location sheets so the Bevager pages keep their
+ *  positions. */
+function buildCostBasisSheet(
+  add: AddSheetFn,
+  head: HeadFn,
+  model: AuditReportModel,
+  sources: ReadonlyMap<string, string>,
+): void {
+  const ws = add('Cost Basis');
+  head(ws);
+  writeColumnHeaders(
+    ws,
+    ['ITEM', 'ACCOUNT', 'COUNT UNIT', 'TOTAL QTY', 'UNIT COST', 'AMOUNT', 'COST BASIS'],
+    [40, 24, 12, 12, 13, 15, 110],
+  );
+  let r = FIRST_DATA_ROW;
+  for (const item of model.items) {
+    ws.getCell(r, 1).value = item.itemName;
+    ws.getCell(r, 2).value = item.account;
+    ws.getCell(r, 3).value = item.countUnit;
+    ws.getCell(r, 4).value = round4(item.totalQty);
+    ws.getCell(r, 5).value = item.cuPrice;
+    if (item.cuPrice != null) ws.getCell(r, 5).numFmt = FMT_MONEY;
+    amountCell(ws, r, 6, item.totalAmount);
+    const src = sources.get(item.masterItemId);
+    ws.getCell(r, 7).value = src
+      ? `Venue cost — ${src}`
+      : item.cuPrice == null
+        ? 'NO COST ON FILE — contributes 0'
+        : 'Catalog cost (newest purchase cost on file)';
+    r++;
+  }
+  r++;
+  ws.getCell(r, 1).value = 'TOTAL';
+  ws.getCell(r, 1).font = { bold: true };
+  amountCell(ws, r, 6, model.totals.amount);
 }

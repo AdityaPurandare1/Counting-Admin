@@ -813,7 +813,7 @@ function AuditReportButton({ audit }: { audit: KountAudit }) {
     if (busy) return;
     setBusy(true);
     try {
-      const { lines, unmatchedEntries, recountCount } = await loadAuditReportData(audit.id);
+      const { lines, unmatchedEntries, recountCount, venueCostOverrides, venueCostSources } = await loadAuditReportData(audit.id, audit.venue_id);
       if (lines.length === 0) {
         alert('Nothing to report — this audit has no count entries linked to catalog items.');
         return;
@@ -836,6 +836,8 @@ function AuditReportButton({ audit }: { audit: KountAudit }) {
         model,
         recountCount,
         unmatchedEntries,
+        venueCostOverrides,
+        costSources: venueCostSources,
       });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');

@@ -36,6 +36,7 @@ import {
   makeSheetNamer,
   locationHeaders,
   pickNewestPrices,
+  applyVenueCosts,
   toCountLines,
   NO_ZONE,
   chunk,
@@ -1163,8 +1164,8 @@ console.log('\nbuildAuditWorkbookBlob — 1. Summary');
   deepEq('beer row (unpriced → amount 0)', rowOf(s, 11, 3), ['5330 - Beer Cost', 6, 0]);
   deepEq('blank row before the total', rowOf(s, 12, 3), [null, null, null]);
   deepEq('grand TOTAL row', rowOf(s, 13, 3), ['TOTAL', 28, 330]);
-  eq('AMOUNT cells carry the money format', s.getCell(8, 3).numFmt, '#,##0.00');
-  eq('TOTAL amount carries the money format', s.getCell(13, 3).numFmt, '#,##0.00');
+  eq('AMOUNT cells carry the money format', s.getCell(8, 3).numFmt, '"$"#,##0.00');
+  eq('TOTAL amount carries the money format', s.getCell(13, 3).numFmt, '"$"#,##0.00');
   // The notes below TOTAL are ours, not Bevager's; they keep what the report
   // leaves out visible instead of silently missing.
   const n1 = String(s.getCell(15, 1).value ?? '');
@@ -1438,9 +1439,9 @@ console.log('\nbuildAuditWorkbookBlob — CU PRICE is written raw, on purpose');
   const rwb = await readBack(await buildAuditWorkbookBlob({ venueName: 'V', auditDate: '2026-01-05', model: precise }));
   const s = sheet(rwb, 'Bar - Loc');
   cell('CU PRICE keeps every decimal it was given', s, 8, 8, 35.746);
-  eq('CU PRICE carries no number format', s.getCell(8, 8).numFmt, undefined);
+  eq('CU PRICE carries the money format (display only — the value above is intact)', s.getCell(8, 8).numFmt, '"$"#,##0.00');
   cell('AMOUNT is rounded to cents', s, 8, 9, 107.24);
-  eq('AMOUNT does carry the money format', s.getCell(8, 9).numFmt, '#,##0.00');
+  eq('AMOUNT does carry the money format', s.getCell(8, 9).numFmt, '"$"#,##0.00');
   eq('QTY carries no number format either', s.getCell(8, 7).numFmt, undefined);
 }
 
@@ -1629,6 +1630,88 @@ console.log('\nbuildAuditWorkbookBlob — accounts tied on amount still build');
     (twb?.worksheets ?? []).map(w => w.name),
     ['1. Summary', '2. Summary By Account', '3. Summary By Location', '4. Summary By Item',
       '5330 - Beer Cost', '5320 - Wine Cost', 'Bar - Loc']);
+}
+
+console.log('\napplyVenueCosts — venue cost wins, junk is ignored, the count is honest');
+{
+  const catalog = new Map([['a', 10], ['b', 20], ['c', 30]]);
+  const venue = new Map([['a', 12.5], ['b', NaN], ['c', -1], ['d', 7]]);
+  const { prices, overridden } = applyVenueCosts(catalog, venue);
+  eq('finite venue cost replaces the catalog cost', prices.get('a'), 12.5);
+  eq('NaN override is ignored and the catalog cost survives', prices.get('b'), 20);
+  eq('negative override is ignored too', prices.get('c'), 30);
+  eq('an override for an item with NO catalog cost still prices it', prices.get('d'), 7);
+  eq('only the overrides actually applied are counted', overridden, 2);
+  eq('the catalog map passed in is not mutated', catalog.get('a'), 10);
+  eq('empty venue map → catalog unchanged, nothing overridden',
+    applyVenueCosts(catalog, new Map()).overridden, 0);
+}
+
+console.log('\nbuildAuditWorkbookBlob — venueCostOverrides note');
+{
+  const one = buildAuditReportModel([
+    line({ masterItemId: 'vc1', itemName: 'Venue Gin 750ml', location: 'Bar', qty: 2, cuPrice: 5 }),
+  ]);
+  const noteAt = async (venueCostOverrides: number | undefined) => {
+    const rwb = await readBack(await buildAuditWorkbookBlob({
+      venueName: 'V', auditDate: '2026-01-05', model: one, venueCostOverrides,
+    }));
+    const s = sheet(rwb, '1. Summary');
+    return [12, 13].map(r => String(s.getCell(r, 1).value ?? '')).join(' ').trim();
+  };
+  eq('undefined → no note', await noteAt(undefined), '');
+  eq('0 → no note (nothing to disclose)', await noteAt(0), '');
+  const single = await noteAt(1);
+  check('1 → singular, names the venue-specific cost', single.startsWith('1 item is valued at a unit cost on file for this venue'), single);
+  const many = await noteAt(4);
+  check('4 → plural', many.startsWith('4 items are valued at a unit cost on file for this venue'), many);
+  // Ordering: the venue-cost note is appended AFTER the recount note so the
+  // row positions every older note (and the tests above) rely on do not move.
+  const both = sheet(await readBack(await buildAuditWorkbookBlob({
+    venueName: 'V', auditDate: '2026-01-05', model: one, recountCount: 1, venueCostOverrides: 2,
+  })), '1. Summary');
+  check('recount note keeps row 12', String(both.getCell(12, 1).value).startsWith('1 recount override was recorded'), both.getCell(12, 1).value);
+  check('venue-cost note follows it on row 13', String(both.getCell(13, 1).value).startsWith('2 items are valued'), both.getCell(13, 1).value);
+}
+
+console.log('\nbuildAuditWorkbookBlob — Cost Basis sheet (opt-in, last, names where every cost came from)');
+{
+  const cb = buildAuditReportModel([
+    line({ masterItemId: 'cb-venue', itemName: 'Venue Gin 750ml', location: 'Bar', qty: 2, cuPrice: 12.5 }),
+    line({ masterItemId: 'cb-cat', itemName: 'Catalog Rum 750ml', location: 'Bar', qty: 1, cuPrice: 30 }),
+    line({ masterItemId: 'cb-none', itemName: 'Mystery Vodka 750ml', location: 'Bar', qty: 4, cuPrice: null }),
+  ]);
+  const plain = await readBack(await buildAuditWorkbookBlob({ venueName: 'V', auditDate: '2026-01-05', model: cb }));
+  check('omitted costSources → no Cost Basis sheet (plain Bevager layout)', !plain.getWorksheet('Cost Basis'), plain.worksheets.map(w => w.name));
+  const wb2 = await readBack(await buildAuditWorkbookBlob({
+    venueName: 'V', auditDate: '2026-01-05', model: cb,
+    costSources: new Map([['cb-venue', 'Alphabet Batch Costed sheet [L99] SGWS 2026-08-07']]),
+  }));
+  const names = wb2.worksheets.map(w => w.name);
+  eq('Cost Basis is the LAST sheet', names[names.length - 1], 'Cost Basis');
+  const s = sheet(wb2, 'Cost Basis');
+  deepEq('column headers', rowOf(s, 7, 7), ['ITEM', 'ACCOUNT', 'COUNT UNIT', 'TOTAL QTY', 'UNIT COST', 'AMOUNT', 'COST BASIS']);
+  // Items are alphabetical (model order): Catalog Rum, Mystery Vodka, Venue Gin.
+  deepEq('catalog-cost line', rowOf(s, 8, 6), ['Catalog Rum 750ml', '5310 - Liquor Cost', '750ml', 1, 30, 30]);
+  eq('…says it is the catalog cost', s.getCell(8, 7).value, 'Catalog cost (newest purchase cost on file)');
+  deepEq('unpriced line leaves cost and amount blank', rowOf(s, 9, 6), ['Mystery Vodka 750ml', '5310 - Liquor Cost', '750ml', 4, null, null]);
+  check('…and says so loudly', String(s.getCell(9, 7).value).startsWith('NO COST ON FILE'), s.getCell(9, 7).value);
+  deepEq('venue-cost line', rowOf(s, 10, 6), ['Venue Gin 750ml', '5310 - Liquor Cost', '750ml', 2, 12.5, 25]);
+  eq('…names its source', s.getCell(10, 7).value, 'Venue cost — Alphabet Batch Costed sheet [L99] SGWS 2026-08-07');
+  eq('UNIT COST carries the money format', s.getCell(10, 5).numFmt, '"$"#,##0.00');
+  eq('AMOUNT carries the money format', s.getCell(10, 6).numFmt, '"$"#,##0.00');
+  deepEq('TOTAL row after a blank line', rowOf(s, 12, 6), ['TOTAL', null, null, null, null, 55]);
+  // The Summary note must agree with the sheet: the loader may report more
+  // overrides than the sheet shows (overrides on excluded categories), so
+  // with costSources present the note counts reported items only.
+  const wb3 = await readBack(await buildAuditWorkbookBlob({
+    venueName: 'V', auditDate: '2026-01-05', model: cb, venueCostOverrides: 9,
+    costSources: new Map([['cb-venue', 'src'], ['not-on-report', 'src']]),
+  }));
+  const sum = sheet(wb3, '1. Summary');
+  const noteRows = [11, 12, 13, 14, 15, 16].map(r => String(sum.getCell(r, 1).value ?? ''));
+  check('Summary note counts the 1 reported venue-cost item, not the 9 the loader saw',
+    noteRows.some(n => n.startsWith('1 item is valued at a unit cost on file for this venue')), noteRows);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
