@@ -23,6 +23,7 @@ const NAV_ADMIN = [
   { to: '/inventory',      label: 'Inventory',      manager: false, viewer: false },
   { to: '/catalog',        label: 'Catalog',        manager: false, viewer: false },
   { to: '/venue-settings', label: 'Venue settings', manager: false, viewer: false },
+  { to: '/errors',         label: 'Errors',         manager: false, viewer: false },
   { to: '/security',       label: 'Security',       manager: false, viewer: false, adminOnly: true },
 ];
 
