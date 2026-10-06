@@ -2,6 +2,7 @@ import { NavLink } from 'react-router-dom';
 import { APP_VERSION } from '@/lib/version';
 
 const NAV_AUDIT = [
+  { to: '/overview', label: 'Overview' },
   { to: '/venues',   label: 'Venues' },
   { to: '/variance', label: 'Variance' },
   { to: '/counts',   label: 'Counts' },
@@ -43,9 +44,14 @@ export function Sidebar({ userName, userRole, onSignOut }: Props) {
   const isAdmin    = userRole === 'corporate';
   const isManager  = userRole === 'manager';
   const isVenueMgr = userRole === 'venue_manager';
+  const isCounter  = userRole === 'counter';
   // venue_manager can't reach /counts (route redirects to /variance), so
-  // hide the dead link. All other audit links stay visible (read-only views).
-  const auditLinks = NAV_AUDIT.filter(n => !(isVenueMgr && n.to === '/counts'));
+  // hide the dead link. counter can't reach /overview (redirects to
+  // /variance) for the same reason. All other audit links stay visible
+  // (read-only views).
+  const auditLinks = NAV_AUDIT.filter(n =>
+    !(isVenueMgr && n.to === '/counts') &&
+    !(isCounter && n.to === '/overview'));
   return (
     <aside className="sidebar">
       <div className="sidebar-head">

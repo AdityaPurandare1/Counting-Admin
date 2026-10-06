@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { Sidebar } from '@/components/Sidebar';
 import { Login } from '@/screens/Login';
+import { Overview } from '@/screens/Overview';
 import { Variance } from '@/screens/Variance';
 import { Recount } from '@/screens/Recount';
 import { Summary } from '@/screens/Summary';
@@ -250,7 +251,8 @@ export default function App() {
         />
         <main className="main">
           <Routes>
-            <Route path="/"         element={<Navigate to="/variance" replace />} />
+            <Route path="/"         element={<Navigate to="/overview" replace />} />
+            <Route path="/overview" element={(user.role === 'corporate' || user.role === 'venue_manager' || user.role === 'manager') ? <Overview user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/venues"   element={<Venues user={user} />} />
             <Route path="/variance" element={<Variance user={user} />} />
             <Route path="/counts"   element={(user.role === 'corporate' || user.role === 'manager') ? <Counts user={user} /> : <Navigate to="/variance" replace />} />
