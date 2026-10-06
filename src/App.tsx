@@ -15,6 +15,7 @@ import { VenueSettings } from '@/screens/VenueSettings';
 import { Reports } from '@/screens/Reports';
 import { Inventory } from '@/screens/Inventory';
 import { StockOnHand } from '@/screens/StockOnHand';
+import { Errors } from '@/screens/Errors';
 import { AI } from '@/screens/_placeholders';
 import { refreshAccessList, refreshVenues, resolveAccess, canRunAudits, canManageUsers, hasCorporateAccess } from '@/lib/access';
 import { refreshVenueLookups } from '@/lib/venueMap';
@@ -266,6 +267,7 @@ export default function App() {
             <Route path="/catalog"   element={hasCorporateAccess(user.role) ? <Catalog user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/inventory" element={hasCorporateAccess(user.role) ? <Inventory user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/stock"     element={canRunAudits(user.role) ? <StockOnHand user={user} /> : <Navigate to="/variance" replace />} />
+            <Route path="/errors"    element={hasCorporateAccess(user.role) ? <Errors user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/security"  element={canManageUsers(user.role) ? <Security user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/venue-settings" element={hasCorporateAccess(user.role) ? <VenueSettings user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="*"         element={<Navigate to="/variance" replace />} />
