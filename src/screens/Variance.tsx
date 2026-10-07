@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase, selectAllPagedFiltered } from '@/lib/supabase';
 import type { AccessEntry } from '@/lib/access';
 import type { KountAudit, KountEntry, KountMember, KountAvtReport, KountAvtRow } from '@/lib/types';
@@ -182,6 +182,7 @@ export function Variance({ user }: Props) {
 /* ────────────── Per-audit detail pane ────────────── */
 
 function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: AccessEntry; onClosed: () => void }) {
+  const nav = useNavigate();
   const [audit, setAudit] = useState<KountAudit | null>(null);
   const [entries, setEntries] = useState<KountEntry[]>([]);
   const [members, setMembers] = useState<KountMember[]>([]);
@@ -555,7 +556,13 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
               <tbody>
                 {avtRows.slice(0, 40).map(r => (
                   <tr key={r.id} style={{ borderBottom: '1px solid var(--border)' }}>
-                    <td style={{ padding: '6px 4px' }}>{r.item_name}</td>
+                    <td style={{ padding: '6px 4px' }}>
+                      <span
+                        style={{ cursor: 'pointer', textDecoration: 'underline', textDecorationStyle: 'dotted', textUnderlineOffset: 2 }}
+                        title="View this item's history at this venue"
+                        onClick={() => audit && nav('/item-history?venue=' + encodeURIComponent(audit.venue_id) + '&item=' + encodeURIComponent(r.item_name))}
+                      >{r.item_name}</span>
+                    </td>
                     <td style={{ padding: '6px 4px', fontFamily: 'JetBrains Mono, monospace' }}>{r.actual ?? '—'}</td>
                     <td style={{ padding: '6px 4px', fontFamily: 'JetBrains Mono, monospace' }}>{r.theo ?? '—'}</td>
                     <td style={{ padding: '6px 4px' }}>

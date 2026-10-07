@@ -207,6 +207,9 @@ function VenueFormModal({
   const [address,       setAddress]       = useState(initial?.address ?? '');
   const [ordinal,       setOrdinal]       = useState<string>(String(initial?.ordinal ?? 100));
   const [defaultZones,  setDefaultZones]  = useState((initial?.default_zones ?? []).join('\n'));
+  // What the server holds, so a rename can refuse to run over unsaved edits
+  // (it re-reads default_zones afterwards, which would discard them).
+  const [savedDefaultZones, setSavedDefaultZones] = useState((initial?.default_zones ?? []).join('\n'));
   const [storeAliases,  setStoreAliases]  = useState((initial?.store_aliases ?? []).join('\n'));
   const [isActive,      setIsActive]      = useState<boolean>(initial?.is_active ?? true);
   const [busy,          setBusy]          = useState(false);
@@ -251,6 +254,79 @@ function VenueFormModal({
 
   const parseList = (s: string) =>
     s.split('\n').map(line => line.trim()).filter(Boolean);
+
+  // v0.63 (from hursh-dev v0.57): rename/merge a zone via rename_venue_zone
+  // (migration 0062). Distinct from removeCustomZone above — remove means
+  // "this zone is gone", rename means "same place, different label", and only
+  // the latter carries historical kount_entries/kount_recounts rows forward
+  // instead of stranding them under the old name. The old name may be a
+  // default zone, a custom zone, or one that only survives in past counts.
+  // The RPC refuses during an active audit at the venue, and refuses a merge
+  // that would combine two zones counted separately in the same audit.
+  const [renameFrom, setRenameFrom] = useState('');
+  const [renameTo,   setRenameTo]   = useState('');
+  const [renaming,   setRenaming]   = useState(false);
+  const [renameErr,  setRenameErr]  = useState<string | null>(null);
+  const [renameMsg,  setRenameMsg]  = useState<string | null>(null);
+
+  const allZoneNames = Array.from(new Set([
+    ...parseList(defaultZones),
+    ...customZones.map(z => z.zone_name),
+  ])).sort((a, b) => a.localeCompare(b));
+
+  const renameZone = async () => {
+    setRenameErr(null);
+    setRenameMsg(null);
+    if (!initial) return;
+    const from = renameFrom.trim();
+    const to = renameTo.trim();
+    if (parseList(defaultZones).join('\n') !== parseList(savedDefaultZones).join('\n')) {
+      setRenameErr('Save or undo your default-zone edits first — a rename reloads that list.');
+      return;
+    }
+    if (!from) { setRenameErr('Pick or type a zone to rename'); return; }
+    if (!to) { setRenameErr('New name required'); return; }
+    if (from.toLowerCase() === to.toLowerCase()) { setRenameErr('New name must be different from the old one'); return; }
+    const merging = allZoneNames.some(z => z.toLowerCase() === to.toLowerCase());
+    if (!confirm(
+      merging
+        ? `Merge "${from}" into existing zone "${to}"? Every historical count entry under "${from}" moves to "${to}".`
+        : `Rename "${from}" to "${to}"? Every historical count entry moves with it.`
+    )) return;
+
+    setRenaming(true);
+    const { data, error } = await supabase.rpc('rename_venue_zone', {
+      p_venue_id: initial.id,
+      p_old_zone_name: from,
+      p_new_zone_name: to,
+    });
+    setRenaming(false);
+    const result = data as { ok: boolean; error?: string; merged?: boolean; entries_updated?: number; recounts_updated?: number } | null;
+    if (error || !result || result.ok === false) {
+      setRenameErr(result?.error || error?.message || 'Rename failed');
+      return;
+    }
+    setRenameMsg(
+      (result.merged ? `Merged "${from}" into "${to}"` : `Renamed "${from}" to "${to}"`) +
+      ` — ${result.entries_updated ?? 0} count line(s) and ${result.recounts_updated ?? 0} recount(s) moved.`
+    );
+
+    setRenameFrom('');
+    setRenameTo('');
+    // default_zones may have changed server-side (rename/merge of a
+    // default zone) — re-fetch rather than guess at the new array locally.
+    const { data: refreshed } = await supabase
+      .from('kount_venues')
+      .select('default_zones')
+      .eq('id', initial.id)
+      .maybeSingle();
+    if (refreshed) {
+      const z = ((refreshed.default_zones ?? []) as string[]).join('\n');
+      setDefaultZones(z);
+      setSavedDefaultZones(z);
+    }
+    void loadCustomZones();
+  };
 
   const save = async () => {
     setErr(null);
@@ -413,6 +489,38 @@ function VenueFormModal({
             )}
             <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 6 }}>
               Removing a custom zone deletes the row from kount_venue_zones — count entries that still reference it stay on the server but disappear from the phone's zone tabs until someone re-adds the zone with the exact same name.
+            </div>
+          </Field>
+        )}
+
+        {mode === 'edit' && (
+          <Field label="Rename or merge a zone">
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <input
+                list="rename-zone-from"
+                value={renameFrom}
+                onChange={e => setRenameFrom(e.target.value)}
+                placeholder="Zone to rename"
+                style={{ ...fieldInput, flex: '1 1 160px' }}
+              />
+              <datalist id="rename-zone-from">
+                {allZoneNames.map(z => <option key={z} value={z} />)}
+              </datalist>
+              <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>→</span>
+              <input
+                value={renameTo}
+                onChange={e => setRenameTo(e.target.value)}
+                placeholder="New name (or an existing zone to merge into)"
+                style={{ ...fieldInput, flex: '2 1 220px' }}
+              />
+              <Btn variant="secondary" size="sm" disabled={renaming} onClick={() => void renameZone()}>
+                {renaming ? 'Working…' : 'Rename / Merge'}
+              </Btn>
+            </div>
+            {renameErr && <div style={{ fontSize: 12, color: 'var(--raspberry-300)', marginTop: 6 }}>{renameErr}</div>}
+            {renameMsg && <div style={{ fontSize: 12, color: 'var(--positive, #2e7d32)', marginTop: 6 }}>{renameMsg}</div>}
+            <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 6 }}>
+              Works on default or custom zones, and on an old zone name that is no longer listed but still labels past counts (type it in). Type an existing zone's name on the right to merge into it — every historical count line and recount under the old name moves with it. Not available while this venue has an audit in progress, and a merge is refused if both zones were counted separately in the same audit.
             </div>
           </Field>
         )}
