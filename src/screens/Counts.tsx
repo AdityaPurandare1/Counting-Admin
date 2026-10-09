@@ -8,6 +8,7 @@ import { IN_SCOPE_CATEGORIES } from '@/lib/types';
 import { Btn, Card, Eyebrow, Pill, Progress, Segment } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
 import { getDefaultZones } from '@/lib/venueMap';
+import { isOpenIssue } from '@/lib/issues';
 import { buildAuditReportModel, buildAuditWorkbookBlob, localIsoDate } from '@/lib/auditReport';
 import { loadAuditReportData } from '@/lib/auditReportData';
 
@@ -1269,7 +1270,7 @@ function EntriesTable({
     const q = search.trim().toLowerCase();
     return entries.filter(e => {
       if (filter === 'zone'    && e.zone !== currentZone) return false;
-      if (filter === 'flagged' && !e.issue) return false;
+      if (filter === 'flagged' && !isOpenIssue(e)) return false;
       if (q && !(e.item_name + ' ' + (e.counted_by_name ?? '')).toLowerCase().includes(q)) return false;
       return true;
     });
@@ -1359,7 +1360,7 @@ function EntryRow({
   };
 
   return (
-    <tr style={{ borderBottom: '1px solid var(--border)', background: entry.issue ? 'var(--copper-100)' : undefined }}>
+    <tr style={{ borderBottom: '1px solid var(--border)', background: isOpenIssue(entry) ? 'var(--copper-100)' : undefined }}>
       <td style={{ padding: '8px 14px', fontWeight: 500 }}>{entry.item_name}</td>
       <td style={{ padding: '8px 14px' }}>
         {canEdit ? (

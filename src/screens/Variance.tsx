@@ -6,6 +6,7 @@ import type { KountAudit, KountEntry, KountMember, KountAvtReport, KountAvtRow }
 import { Pill, Eyebrow, Card, Btn, Num, Money, Avatar } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
 import { buildVarianceWorkbookBlob, type AvtLikeRow } from '@/lib/varianceReport';
+import { isOpenIssue } from '@/lib/issues';
 
 import { isOrgWide, hasCorporateAccess, canRunAudits, canEditCounts } from '@/lib/access';
 /* ───────────────────────────────────────────────────────────────────────
@@ -253,7 +254,7 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
   const stats = useMemo(() => {
     const totalEntries = entries.length;
     const totalQty = entries.reduce((s, e) => s + Number(e.qty || 0), 0);
-    const issueCount = entries.filter(e => e.issue && e.issue !== 'none').length;
+    const issueCount = entries.filter(isOpenIssue).length;
     const byZone = new Map<string, number>();
     const byCounter = new Map<string, number>();
     for (const e of entries) {
@@ -474,7 +475,7 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
         <StatTile label="Entries"     value={<Num value={stats.totalEntries} />} />
         <StatTile label="Total qty"   value={<Num value={stats.totalQty} />} />
         <StatTile label="Counters"    value={<Num value={stats.byCounter.size} />} />
-        <StatTile label="Issues flagged" value={<Num value={stats.issueCount} color={stats.issueCount ? 'var(--raspberry-300)' : undefined} />} />
+        <StatTile label="Open issues" value={<Num value={stats.issueCount} color={stats.issueCount ? 'var(--raspberry-300)' : undefined} />} />
       </div>
 
       {/* Members */}

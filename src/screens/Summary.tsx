@@ -6,6 +6,7 @@ import type { KountAudit, KountEntry, KountMember } from '@/lib/types';
 import { Pill, Eyebrow, Card, Btn, Num, Avatar, Segment } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
 import { csvCell } from '@/lib/csv';
+import { isOpenIssue } from '@/lib/issues';
 
 import { isOrgWide, hasCorporateAccess, canRunAudits } from '@/lib/access';
 /* ───────────────────────────────────────────────────────────────────────
@@ -474,7 +475,7 @@ function SummaryDetail({
     const byZone = new Map<string, { items: number; qty: number; counters: Set<string> }>();
     const byCounter = new Map<string, number>();
     const byMethod: Record<string, number> = { barcode: 0, photo: 0, manual: 0, guided: 0, quick: 0, recount: 0, other: 0 };
-    const issues = entries.filter(r => r.issue && r.issue !== 'none').length;
+    const issues = entries.filter(isOpenIssue).length;
     for (const r of entries) {
       const zone = r.zone;
       const bucket = byZone.get(zone) ?? { items: 0, qty: 0, counters: new Set<string>() };
@@ -577,7 +578,7 @@ function SummaryDetail({
           onClick={() => canDrill && setDrill(drill?.kind === 'counters' ? null : { kind: 'counters' })}
         />
         <StatTile
-          label="Issues flagged"
+          label="Open issues"
           value={<Num value={stats.issues} color={stats.issues ? 'var(--raspberry-300)' : undefined} />}
           clickable={canDrill && stats.issues > 0}
           active={drill?.kind === 'issues'}
@@ -733,7 +734,7 @@ function DrillDetail({
     switch (drill.kind) {
       case 'entries':
       case 'qty':       return entries;
-      case 'issues':    return entries.filter(r => r.issue && r.issue !== 'none');
+      case 'issues':    return entries.filter(isOpenIssue);
       case 'zone':      return entries.filter(r => r.zone === drill.zone);
       case 'counters':  return entries; // grouped view, see below
     }
@@ -743,7 +744,7 @@ function DrillDetail({
     switch (drill.kind) {
       case 'entries':  return `All ${entries.length} entries`;
       case 'qty':      return `All ${entries.length} entries — total qty ${stats.totalQty.toFixed(1)}`;
-      case 'issues':   return `${filtered.length} flagged entries`;
+      case 'issues':   return `${filtered.length} open issue${filtered.length === 1 ? '' : 's'}`;
       case 'zone':     return `Zone: ${drill.zone} — ${filtered.length} entries`;
       case 'counters': return `${stats.byCounter.size} counter${stats.byCounter.size === 1 ? '' : 's'}`;
     }
@@ -785,7 +786,7 @@ function DrillDetail({
             </thead>
             <tbody>
               {filtered.map(r => (
-                <tr key={r.id} style={{ borderBottom: '1px solid var(--border)', background: r.issue && r.issue !== 'none' && drill.kind !== 'issues' ? 'var(--copper-100)' : undefined }}>
+                <tr key={r.id} style={{ borderBottom: '1px solid var(--border)', background: isOpenIssue(r) && drill.kind !== 'issues' ? 'var(--copper-100)' : undefined }}>
                   <td style={{ padding: '6px 8px', fontWeight: 500 }}>{r.item_name}</td>
                   <td style={{ padding: '6px 8px' }}>{r.zone}</td>
                   <td style={{ padding: '6px 8px', fontFamily: 'JetBrains Mono, monospace' }}>{Number(r.qty).toFixed(Number.isInteger(r.qty) ? 0 : 1)}</td>
