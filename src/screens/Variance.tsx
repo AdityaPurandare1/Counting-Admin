@@ -6,6 +6,7 @@ import type { KountAudit, KountEntry, KountMember, KountAvtReport, KountAvtRow }
 import { Pill, Eyebrow, Card, Btn, Num, Money, Avatar } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
 import { buildVarianceWorkbookBlob, type AvtLikeRow } from '@/lib/varianceReport';
+import { UnplacedInvoicesCard, UnmappedPosCard } from '@/components/VenueDataGaps';
 import { isOpenIssue } from '@/lib/issues';
 
 import { isOrgWide, hasCorporateAccess, canRunAudits, canEditCounts } from '@/lib/access';
@@ -597,6 +598,13 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
           </>
         )}
       </Card>
+
+      {/* v0.67 -- data gaps for R365-matched venues (purchase_mapping = venue_item_map): invoice lines
+          that could not be placed on counted items, and POS items that deplete nothing. */}
+      {purchaseMapping === 'venue_item_map' && (
+        <UnplacedInvoicesCard auditId={auditId} reportId={avtReport?.source === 'computed' ? avtReport.id : null} />
+      )}
+      {purchaseMapping === 'venue_item_map' && audit?.venue_id && <UnmappedPosCard venueId={audit.venue_id} />}
 
       {/* Recent entries */}
       <Card padding={16}>
