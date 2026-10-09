@@ -182,6 +182,11 @@ export function Variance({ user }: Props) {
 
 /* ────────────── Per-audit detail pane ────────────── */
 
+/** Panel title by purchase source: R365-matched venues are not Craftable reports. */
+export function varianceSourceLabel(purchaseMapping: string | null | undefined): string {
+  return purchaseMapping === 'venue_item_map' ? 'AVT variance · R365 invoices' : 'Craftable AVT variance';
+}
+
 function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: AccessEntry; onClosed: () => void }) {
   const nav = useNavigate();
   const [audit, setAudit] = useState<KountAudit | null>(null);
@@ -190,6 +195,9 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
   const [avtReport, setAvtReport] = useState<KountAvtReport | null>(null);
   const [avtRows, setAvtRows] = useState<KountAvtRow[]>([]);
   const [closing, setClosing] = useState(false);
+  // Where this venue's purchases come from. 'venue_item_map' (0064; Alphabet) = R365
+  // invoices matched by the venue's own maps; anything else = the Craftable-era feed.
+  const [purchaseMapping, setPurchaseMapping] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     // kount_entries paginated past the 1000-row cap so busy audits don't
@@ -204,6 +212,11 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
       supabase.from('kount_members').select('*').eq('audit_id', auditId),
     ]);
     setAudit((a as KountAudit) ?? null);
+    const venueId = (a as KountAudit | null)?.venue_id;
+    if (venueId) {
+      const { data: kv } = await supabase.from('kount_venues').select('purchase_mapping').eq('id', venueId).maybeSingle();
+      setPurchaseMapping((kv as { purchase_mapping?: string | null } | null)?.purchase_mapping ?? null);
+    }
     setEntries(e);
     setMembers((m as KountMember[]) ?? []);
   }, [auditId]);
@@ -515,7 +528,7 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
       <Card padding={16}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <Eyebrow>Craftable AVT variance</Eyebrow>
+            <Eyebrow>{varianceSourceLabel(purchaseMapping)}</Eyebrow>
             {avtReport
               ? <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
                   uploaded {new Date(avtReport.uploaded_at).toLocaleString()} · by {avtReport.uploaded_by_name || avtReport.uploaded_by_email} · {avtReport.file_name}
