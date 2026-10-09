@@ -18,7 +18,7 @@ import { Reports } from '@/screens/Reports';
 import { Inventory } from '@/screens/Inventory';
 import { StockOnHand } from '@/screens/StockOnHand';
 import { AI } from '@/screens/_placeholders';
-import { refreshAccessList, refreshVenues, resolveAccess, canRunAudits, canManageUsers, hasCorporateAccess } from '@/lib/access';
+import { refreshAccessList, refreshVenues, resolveAccess, canRunAudits, canManageUsers, hasCorporateAccess, isDesktopRole } from '@/lib/access';
 import { refreshVenueLookups } from '@/lib/venueMap';
 import type { AccessEntry } from '@/lib/access';
 import { NotificationProvider } from '@/lib/notifications';
@@ -35,8 +35,6 @@ interface StoredSession {
   expiresAt: number;
 }
 
-/** Roles the desktop app admits at all. Counters use the phone. */
-const DESKTOP_ROLES: string[] = ['admin', 'corporate', 'manager', 'venue_manager'];
 
 function isAccessEntry(x: unknown): x is AccessEntry {
   if (!x || typeof x !== 'object') return false;
@@ -130,7 +128,7 @@ async function runPasswordRecoveryFlow(
     await supabase.auth.signOut().catch(() => {});
     return;
   }
-  if (!DESKTOP_ROLES.includes(profile.role)) {
+  if (!isDesktopRole(profile.role)) {
     alert('Password set, but the desktop app is for admins, corporate, managers and venue management only. Counters use the phone app instead.');
     await supabase.auth.signOut().catch(() => {});
     return;
@@ -164,7 +162,7 @@ export default function App() {
       ]);
       if (!user) return;
       const live = resolveAccess(user.email);
-      if (!live || !DESKTOP_ROLES.includes(live.role)) {
+      if (!live || !isDesktopRole(live.role)) {
         setUser(null);
         nav('/');
       } else if (live.role !== user.role) {

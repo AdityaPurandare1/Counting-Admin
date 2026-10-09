@@ -122,6 +122,19 @@ export function signInUrlForRole(role: Role): string {
   return role === 'counter' ? APP_URL.phone : APP_URL.admin;
 }
 
+/** Roles the desktop app admits at all. Counters use the phone.
+ *
+ *  The ONE list: the login screen and the restored-session check both read it.
+ *  v0.58 added 'admin' to App.tsx's copy but not to Login.tsx's hardcoded
+ *  ['corporate','manager','venue_manager'], so every admin was signed straight
+ *  back out on a fresh password login ("This app is for admins…") while a
+ *  restored session still worked. tests/desktopRoles.test.ts guards it. */
+export const DESKTOP_ROLES: readonly Role[] = ['admin', 'corporate', 'manager', 'venue_manager'];
+
+export function isDesktopRole(role: string): boolean {
+  return (DESKTOP_ROLES as readonly string[]).includes(role);
+}
+
 /** Sees every venue rather than a listed subset. */
 export function isOrgWide(role: Role): boolean {
   return role === 'admin' || role === 'corporate';

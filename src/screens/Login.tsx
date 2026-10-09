@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { resolveAccess, refreshAccessList } from '@/lib/access';
+import { resolveAccess, refreshAccessList, isDesktopRole } from '@/lib/access';
 import type { AccessEntry } from '@/lib/access';
 import { supabase } from '@/lib/supabase';
 
@@ -153,7 +153,7 @@ export function Login({ onSignedIn }: Props) {
       await safeSignOut();
       return fail('Signed in but no app profile found. Ask another admin to set your role.');
     }
-    if (!['corporate', 'manager', 'venue_manager'].includes(resolved.role)) {
+    if (!isDesktopRole(resolved.role)) {
       // Counters (and any future non-desktop role) do not belong on the
       // desktop — invalidate the Supabase session before refusing entry.
       // If signOut fails we cannot just refuse and trust the UI gate; the
