@@ -4,7 +4,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { summarizeUnplaced, type UnplacedLine } from '../src/components/VenueDataGaps';
+import { summarizeUnplaced, groupGuardrails, type UnplacedLine } from '../src/components/VenueDataGaps';
 
 let passed = 0;
 let failed = 0;
@@ -26,10 +26,18 @@ check('empty input is all zeros', JSON.stringify(summarizeUnplaced([])) === JSON
 
 const v = readFileSync(join(process.cwd(), 'src/screens/Variance.tsx'), 'utf8');
 const c = readFileSync(join(process.cwd(), 'src/components/VenueDataGaps.tsx'), 'utf8');
-check('cards render only for R365-matched venues', (v.match(/purchaseMapping === 'venue_item_map' &&/g) ?? []).length === 2);
+check('cards render only for R365-matched venues', (v.match(/purchaseMapping === 'venue_item_map' &&/g) ?? []).length === 3);
 check('unplaced card waits for a computed report', v.includes("reportId={avtReport?.source === 'computed' ? avtReport.id : null}"));
 check("calls kount_unplaced_invoice_lines with p_audit_id", c.includes("supabase.rpc('kount_unplaced_invoice_lines', { p_audit_id: auditId })"));
 check("calls kount_unmapped_pos_items with p_venue_id / p_days", c.includes("supabase.rpc('kount_unmapped_pos_items', { p_venue_id: venueId, p_days: days })"));
-check('both RPC errors are read and shown', (c.match(/if \(error\) \{ console\.error/g) ?? []).length === 2 && (c.match(/Could not load:/g) ?? []).length === 2);
+check('every RPC error is read and shown', (c.match(/Could not load:/g) ?? []).length === 3);
+const g = groupGuardrails([
+  { kind: 'invoice_gap', message: 'a', sort_value: null }, { kind: 'zone_empty', message: 'b', sort_value: 1 },
+  { kind: 'weird', message: 'c', sort_value: null }, { kind: 'zone_empty', message: 'd', sort_value: 2 },
+]);
+check('guardrails grouped in display order, unknown kinds last', g.map(x => x[0]).join(',') === 'zone_empty,invoice_gap,weird', g.map(x => x[0]));
+check('rows kept per kind', g[0][1].length === 2);
+check('count-checks card is gated and passes the open state', v.includes("<CountChecksCard auditId={auditId} isOpen={audit?.status === 'active'} />"));
+check('calls kount_count_guardrails with p_audit_id', c.includes("supabase.rpc('kount_count_guardrails', { p_audit_id: auditId })"));
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

@@ -6,7 +6,7 @@ import type { KountAudit, KountEntry, KountMember, KountAvtReport, KountAvtRow }
 import { Pill, Eyebrow, Card, Btn, Num, Money, Avatar } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
 import { buildVarianceWorkbookBlob, type AvtLikeRow } from '@/lib/varianceReport';
-import { UnplacedInvoicesCard, UnmappedPosCard } from '@/components/VenueDataGaps';
+import { UnplacedInvoicesCard, UnmappedPosCard, CountChecksCard } from '@/components/VenueDataGaps';
 import { isOpenIssue } from '@/lib/issues';
 
 import { isOrgWide, hasCorporateAccess, canRunAudits, canEditCounts } from '@/lib/access';
@@ -524,6 +524,11 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
           </div>
         ))}
       </Card>
+
+      {/* v0.68 -- pre-close checks (0078), same list the phone shows before Count 1 closes. */}
+      {purchaseMapping === 'venue_item_map' && (
+        <CountChecksCard auditId={auditId} isOpen={audit?.status === 'active'} />
+      )}
 
       {/* AVT variance — this audit's OWN computed report (scoped by audit_id) */}
       <Card padding={16}>

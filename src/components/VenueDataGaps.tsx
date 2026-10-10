@@ -162,3 +162,66 @@ export function UnmappedPosCard({ venueId, days = 14 }: { venueId: string; days?
     </Card>
   );
 }
+
+/* v0.68 -- the same pre-close checks the phone shows before Count 1 closes (migration 0078,
+ * kount_count_guardrails): empty zones, items missing since the last count, bottle-size switches,
+ * counts far below a recent delivery, and invoice weeks missing for regular vendors. */
+export interface GuardrailRow { kind: string; message: string; sort_value: number | null }
+
+export const GUARDRAIL_LABELS: Record<string, string> = {
+  zone_empty: 'Zones with stock last time, nothing counted now',
+  low_after_delivery: 'Counts far below recent deliveries',
+  size_switch: 'Possibly the wrong bottle size',
+  not_counted: 'Items counted last time, missing now',
+  invoice_gap: 'Invoices missing (the variance will look short)',
+};
+export const GUARDRAIL_ORDER = ['zone_empty', 'low_after_delivery', 'size_switch', 'not_counted', 'invoice_gap'];
+
+/** Group rows by kind in display order; unknown kinds go last. Exported for the unit test. */
+export function groupGuardrails(rows: GuardrailRow[]): Array<[string, GuardrailRow[]]> {
+  const by = new Map<string, GuardrailRow[]>();
+  for (const r of rows) by.set(r.kind, [...(by.get(r.kind) ?? []), r]);
+  const kinds = [...GUARDRAIL_ORDER.filter(k => by.has(k)), ...[...by.keys()].filter(k => !GUARDRAIL_ORDER.includes(k))];
+  return kinds.map(k => [k, by.get(k)!]);
+}
+
+export function CountChecksCard({ auditId, isOpen }: { auditId: string; isOpen: boolean }) {
+  const [rows, setRows] = useState<GuardrailRow[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      const { data, error } = await supabase.rpc('kount_count_guardrails', { p_audit_id: auditId });
+      if (!live) return;
+      if (error) { console.error('[variance] count checks', error); setErr(error.message); setRows([]); return; }
+      setErr(null);
+      setRows((data as GuardrailRow[]) ?? []);
+    })();
+    return () => { live = false; };
+  }, [auditId]);
+
+  if (rows === null) return null;
+  const groups = groupGuardrails(rows);
+
+  return (
+    <Card padding={16}>
+      <Eyebrow>{isOpen ? 'Check before closing' : 'Count checks'}</Eyebrow>
+      <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginTop: 4 }}>
+        {err ? <span style={{ color: 'var(--raspberry-300)' }}>Could not load: {err}</span>
+          : rows.length === 0 ? 'Nothing flagged against the previous count or the invoice feed.'
+          : isOpen ? 'Compared with the previous count and the invoice feed. The phone shows the same list before Count 1 closes.'
+          : 'What this count missed compared with the previous one, and invoices missing in its window.'}
+      </div>
+      {groups.map(([kind, items]) => (
+        <div key={kind} style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 600 }}>{GUARDRAIL_LABELS[kind] ?? kind} <span style={{ color: 'var(--fg-muted)', fontWeight: 400 }}>({items.length})</span></div>
+          <ul style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 12 }}>
+            {items.slice(0, 12).map((r, i) => <li key={i} style={{ padding: '2px 0' }}>{r.message}</li>)}
+            {items.length > 12 && <li style={{ color: 'var(--fg-muted)' }}>…and {items.length - 12} more</li>}
+          </ul>
+        </div>
+      ))}
+    </Card>
+  );
+}
