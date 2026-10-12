@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { VENUES, isOrgWide } from '@/lib/access';
+import { isOrgWide } from '@/lib/access';
 import type { AccessEntry } from '@/lib/access';
+import { useVisibleVenues } from '@/lib/useVisibleVenues';
 import type { KountAudit, KountEntry } from '@/lib/types';
 import { Pill, Eyebrow, Card, Btn } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
@@ -56,11 +57,7 @@ export function Issues({ user }: Props) {
   const [window_,  setWindow_]  = useState<WindowChoice>('7d');
   const [status,   setStatus]   = useState<StatusChoice>('open');
 
-  const visibleVenues = useMemo(() => {
-    if (isOrgWide(user.role) || user.venueIds === 'all') return VENUES;
-    const set = new Set(Array.isArray(user.venueIds) ? user.venueIds : []);
-    return VENUES.filter(v => set.has(v.id));
-  }, [user]);
+  const visibleVenues = useVisibleVenues(user);
 
   const load = useCallback(async () => {
     setLoading(true);

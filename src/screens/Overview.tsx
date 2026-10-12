@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase, selectAllPagedFiltered } from '@/lib/supabase';
 import type { AccessEntry } from '@/lib/access';
-import { VENUES, isOrgWide } from '@/lib/access';
+import { useVisibleVenues } from '@/lib/useVisibleVenues';
+import { isOrgWide } from '@/lib/access';
 import type { KountAudit, KountAvtReport, KountAvtRow } from '@/lib/types';
 import { Card, Eyebrow, Money, Pill } from '@/components/atoms';
 
@@ -68,11 +69,7 @@ export function Overview({ user }: Props) {
   const [truncated, setTruncated] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const visibleVenues = useMemo(() => {
-    if (isOrgWide(user.role) || user.venueIds === 'all') return VENUES;
-    const set = new Set(Array.isArray(user.venueIds) ? user.venueIds : []);
-    return VENUES.filter(v => set.has(v.id));
-  }, [user]);
+  const visibleVenues = useVisibleVenues(user);
 
   const load = useCallback(async () => {
     setLoading(true);
