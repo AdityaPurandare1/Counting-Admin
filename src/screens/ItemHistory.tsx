@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase, selectAllPagedFiltered } from '@/lib/supabase';
 import type { AccessEntry } from '@/lib/access';
-import { VENUES, isOrgWide } from '@/lib/access';
+import { useVisibleVenues } from '@/lib/useVisibleVenues';
 import type { KountAudit, KountAvtReport, KountAvtRow } from '@/lib/types';
 import { Card, Eyebrow, Money, Num, Pill, Btn } from '@/components/atoms';
 
@@ -50,11 +50,7 @@ export function ItemHistory({ user }: Props) {
   const [searchParams, setSearchParams] = useSearchParams();
   const nav = useNavigate();
 
-  const visibleVenues = useMemo(() => {
-    if (isOrgWide(user.role) || user.venueIds === 'all') return VENUES;
-    const set = new Set(Array.isArray(user.venueIds) ? user.venueIds : []);
-    return VENUES.filter(v => set.has(v.id));
-  }, [user]);
+  const visibleVenues = useVisibleVenues(user);
 
   const [venueId, setVenueId] = useState(() => searchParams.get('venue') || visibleVenues[0]?.id || '');
   const [itemInput, setItemInput] = useState(() => searchParams.get('item') || '');
