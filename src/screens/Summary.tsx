@@ -422,6 +422,33 @@ function SummaryDetail({
     onAuditChanged?.();
   };
 
+  /* v0.70: Reopen a SUBMITTED audit. Server-side (kount_reopen_audit, 0092)
+     because it is more than a status flip: the closed stamps must all be
+     cleared (a stale count1_closed_at would end the next variance window
+     early and drop every later sale), and the computed variance report is
+     removed so the reopened count never shows as the venue's latest. The
+     function also refuses when the venue already has an active audit or the
+     audit has recounts, and when the caller is not corporate/admin. */
+  const reopen = async () => {
+    if (!hasCorporateAccess(user.role)) return; // defense-in-depth: the RPC re-checks
+    if (!audit || !canReactivate) return;
+    if (audit.status !== 'submitted') return;
+    if (!confirm(
+      `Reopen audit ${audit.join_code} (${audit.venue_name})?\n\n` +
+      `It goes back to Active, Count 1. Counters rejoin with the same code ${audit.join_code}; ` +
+      `all ${entries.length} entries are kept.\n\n` +
+      'Its variance report is removed and recalculated when the count is closed again.'
+    )) return;
+    setReactBusy(true);
+    const { data, error: rpcErr } = await supabase.rpc('kount_reopen_audit', { p_audit_id: audit.id });
+    setReactBusy(false);
+    if (rpcErr) { alert('Reopen failed: ' + rpcErr.message); return; }
+    const res = (data ?? {}) as { join_code?: string; entries?: number };
+    alert(`${res.join_code ?? audit.join_code} is open again (${res.entries ?? entries.length} entries kept). Counters can rejoin with the same code.`);
+    await load();
+    onAuditChanged?.();
+  };
+
   /* Permanently delete a cancelled audit. Corporate-only because it's
      destructive — kount_audits' children (kount_entries, kount_members,
      kount_recounts) all cascade, so the audit and every entry under it
@@ -541,6 +568,17 @@ function SummaryDetail({
                 title="Move this audit back to Active. Entries are preserved; admin can resume from Counts."
               >
                 {reactBusy ? 'Reactivating…' : 'Reactivate audit'}
+              </Btn>
+            )}
+            {canReactivate && audit.status === 'submitted' && (
+              <Btn
+                variant="positive"
+                size="sm"
+                onClick={() => void reopen()}
+                disabled={reactBusy || deleteBusy}
+                title="Move this submitted audit back to Active, Count 1. Entries are kept; counters rejoin with the same code."
+              >
+                {reactBusy ? 'Reopening…' : 'Reopen audit'}
               </Btn>
             )}
             {canDelete && audit.status === 'cancelled' && (
