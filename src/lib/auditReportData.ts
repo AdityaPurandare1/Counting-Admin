@@ -21,10 +21,12 @@
  *  Closing that needs a matching tiebreak in the migration — out of scope
  *  here, and noted so the gap is known rather than assumed away.
  *
- *  One thing the SQL does not have to worry about and this file does:
- *  compute_avt_for_audit is SECURITY DEFINER, while this reads purchase_items
- *  under the user's own JWT — so RLS can leave this side with nothing. See the
- *  guard in loadAuditReportData. */
+ *  One thing the SQL does not have to worry about and this file did:
+ *  compute_avt_for_audit is SECURITY DEFINER, while this read purchase_items
+ *  under the user's own JWT — so RLS could leave this side with nothing.
+ *  Since v0.71 the read goes through kount_catalog_prices (0098, SECURITY
+ *  DEFINER; see loadPrices). The guard in loadAuditReportData stays as a
+ *  backstop. */
 
 import { supabase, selectAllPagedFiltered } from '@/lib/supabase';
 import type { MasterItem } from '@/lib/types';
@@ -160,25 +162,24 @@ async function loadMasters(ids: string[]): Promise<Map<string, MasterItem>> {
   return out;
 }
 
-/** Every priced purchase_items row for these masters; pickNewestPrices does
- *  the choosing. */
+/** The newest priced purchase_items row per master; pickNewestPrices does
+ *  the choosing (a no-op tie-break here: the RPC already returns one row per
+ *  master, chosen by the same updated_at-desc / id-desc rule).
+ *
+ *  v0.71: read through kount_catalog_prices (migration 0098, SECURITY
+ *  DEFINER) instead of purchase_items directly. purchase_items' RLS only
+ *  answers KevaOS organization members, so for most counting staff the direct
+ *  read came back empty with no error and the report refused to export
+ *  (Stephanie Pineda: 0 of 133 catalog-priced LL-038 items visible). The RPC
+ *  serves any active Kount corporate/admin/manager and errors for anyone else,
+ *  so a refused caller gets a message, never a silently blank valuation. One
+ *  row per master keeps every chunk well under PostgREST's 1000-row cap. */
 async function loadPrices(ids: string[]): Promise<Map<string, number>> {
   const rows: PriceRow[] = [];
   for (const part of chunk(ids, ID_CHUNK)) {
-    rows.push(...await selectAllPagedFiltered<PriceRow>(
-      () => supabase
-        .from('purchase_items')
-        .select('id,master_item_id,avg_cost,updated_at')
-        .in('master_item_id', part)
-        .not('avg_cost', 'is', null),
-      // The paging key must be UNIQUE. Postgres imposes no order among ties,
-      // so paging on master_item_id can hand back one row twice and skip
-      // another entirely across a page boundary, once a chunk exceeds the
-      // 1000-row page size — and the skipped row can be the newest one,
-      // silently changing cu_price. Which order we page in doesn't matter;
-      // only that every row is seen exactly once.
-      { column: 'id', ascending: true },
-    ));
+    const { data, error: rpcErr } = await supabase.rpc('kount_catalog_prices', { p_master_ids: part });
+    if (rpcErr) throw rpcErr;
+    rows.push(...((data ?? []) as PriceRow[]));
   }
   return pickNewestPrices(rows);
 }
