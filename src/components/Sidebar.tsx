@@ -23,7 +23,9 @@ const NAV_ADMIN = [
   { to: '/stock',          label: 'Stock on hand',  manager: true,  viewer: true  },
   { to: '/food',           label: 'Food count',     manager: true,  viewer: false },
   { to: '/reports',        label: 'Reports',        manager: true,  viewer: true  },
-  { to: '/inventory',      label: 'Inventory',      manager: false, viewer: false },
+  { to: '/transfers',      label: 'Transfers',      manager: true,  viewer: true  },
+  // v0.72: Inventory archived (not needed for now). Restore this row and the /inventory route in App.tsx.
+  // { to: '/inventory',      label: 'Inventory',      manager: false, viewer: false },
   { to: '/catalog',        label: 'Catalog',        manager: false, viewer: false },
   { to: '/venue-settings', label: 'Venue settings', manager: false, viewer: false },
   { to: '/security',       label: 'Security',       manager: false, viewer: false, adminOnly: true },

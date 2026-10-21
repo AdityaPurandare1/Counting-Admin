@@ -1,51 +1,92 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { supabase, selectAllPagedFiltered } from '@/lib/supabase';
 import type { AccessEntry } from '@/lib/access';
 import { VENUES, isOrgWide } from '@/lib/access';
 import type { KountAudit, KountAvtReport, KountAvtRow } from '@/lib/types';
-import { Card, Eyebrow, Btn, Pill } from '@/components/atoms';
+import { Card, Eyebrow, Btn, Pill, Money } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
 import { buildVarianceWorkbookBlob, type AvtLikeRow } from '@/lib/varianceReport';
 
 /* ───────────────────────────────────────────────────────────────────────
-   Reports screen (corporate-only)
+   Reports screen
 
-   Re-sourced (v0.39) from the COMPUTED variance, not recounts: for every
-   audit visible under the venue / audit / date-window filters we load that
-   audit's latest computed kount_avt_reports row (source='computed', newest),
-   then pull all those reports' kount_avt_rows in one `.in('report_id', …)`
-   query, tag each row with its venue / join_code / audit date, and
-   concatenate. The on-screen table and the .xlsx export both come from this
-   one AVT dataset via the shared buildVarianceWorkbookBlob — the same rich,
-   multi-tab workbook the per-audit Variance screen produces.
+   Data (unchanged since v0.39): for every audit visible under the venue /
+   audit / date-window filters, the audit's newest COMPUTED kount_avt_reports
+   row, then all those reports' kount_avt_rows in one paged pull. The table
+   and the .xlsx export both come from that one dataset via
+   buildVarianceWorkbookBlob.
+
+   v0.72 redesign: summary tiles; an audit list that shows EVERY audit in
+   scope -- including ones with no report yet, which used to make a venue
+   look empty (Little Luck's LL-038 had none until 0099's 15-minute job);
+   then the item table with search, category filter, sorting and paging.
    ─────────────────────────────────────────────────────────────────────── */
 
 interface Props { user: AccessEntry }
 
-/** One AVT row tagged with its source audit, for display + export. */
 interface ReportRow extends AvtLikeRow {
   _venueId: string;
   _auditId: string;
   _startedAt: string;
 }
 
+export interface AuditSummary {
+  audit: KountAudit;
+  report: KountAvtReport | null;
+  items: number;
+  net: number;
+  abs: number;
+  within1: number;
+}
+
 const AUDIT_LIMIT = 200;
 const ROW_LIMIT = 20000;
+const PAGE = 200;
 
-type WindowChoice = 'all' | '30d' | '7d';
+type WindowChoice = 'all' | '30d' | '7d' | '90d';
+type SortChoice = 'abs' | 'neg' | 'pos' | 'name';
+export type CatGroup = 'all' | 'Liquor' | 'Wine' | 'Beer' | 'Soft drinks' | 'Bar consumables' | 'Other';
+
+/** Category -> the five groups used everywhere else in variance reporting. Exported for the unit test. */
+export function catGroup(category: string | null | undefined): Exclude<CatGroup, 'all'> {
+  const c = (category ?? '').toLowerCase();
+  if (c.startsWith('liquor')) return 'Liquor';
+  if (c.startsWith('wine')) return 'Wine';
+  if (c.startsWith('beer')) return 'Beer';
+  if (c.startsWith('n/a') || c.startsWith('non_alcoholic')) return 'Soft drinks';
+  if (c.startsWith('bar')) return 'Bar consumables';
+  return 'Other';
+}
+
+/** How an audit was closed, in words. Exported for the unit test. */
+export function closedHow(a: Pick<KountAudit, 'status' | 'count_phase' | 'count1_closed_at' | 'count2_closed_at' | 'completed_at'>): string {
+  if (a.status === 'active') return a.count1_closed_at ? 'Recount in progress' : 'Counting';
+  if (a.status === 'cancelled') return 'Cancelled';
+  if (a.count2_closed_at) return 'Count 2 closed';
+  if (a.count1_closed_at) return 'Finalized after Count 1';
+  return 'Submitted';
+}
+
+const fmtDate = (iso: string | null | undefined) => (iso ? iso.slice(0, 10) : '—');
 
 export function Reports({ user }: Props) {
+  const nav = useNavigate();
   const [rows, setRows] = useState<ReportRow[]>([]);
   const [audits, setAudits] = useState<KountAudit[]>([]);
+  const [reportByAudit, setReportByAudit] = useState<Map<string, KountAvtReport>>(new Map());
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [venue, setVenue] = useState<string>('');
   const [auditId, setAuditId] = useState<string>('');
   const [window_, setWindow_] = useState<WindowChoice>('30d');
   const [exporting, setExporting] = useState(false);
-  // Track when a query hits the hard cap so we can surface a banner instead of
-  // silently truncating.
   const [auditTrunc, setAuditTrunc] = useState(false);
   const [rowTrunc, setRowTrunc] = useState(false);
+  const [q, setQ] = useState('');
+  const [cat, setCat] = useState<CatGroup>('all');
+  const [sort, setSort] = useState<SortChoice>('abs');
+  const [limit, setLimit] = useState(PAGE);
 
   const visibleVenues = useMemo(() => {
     if (isOrgWide(user.role) || user.venueIds === 'all') return VENUES;
@@ -55,156 +96,139 @@ export function Reports({ user }: Props) {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
+    const fail = (what: string, err: unknown) => {
+      console.error('[reports] ' + what, err);
+      setLoadError(what + ' could not be loaded: ' + ((err as { message?: string })?.message ?? String(err)));
+      setRows([]); setRowTrunc(false); setLoading(false);
+    };
 
     const now = Date.now();
-    const cutoff = window_ === '7d'  ? new Date(now - 7  * 86_400_000).toISOString()
-                 : window_ === '30d' ? new Date(now - 30 * 86_400_000).toISOString()
-                 : null;
+    const days = window_ === '7d' ? 7 : window_ === '30d' ? 30 : window_ === '90d' ? 90 : null;
+    const cutoff = days ? new Date(now - days * 86_400_000).toISOString() : null;
 
-    // Pull audits in window first so we can scope report lookups by audit_id
-    // and also drive the audit picker.
-    let aq = supabase
-      .from('kount_audits')
-      .select('*')
-      .order('started_at', { ascending: false })
-      .limit(AUDIT_LIMIT);
+    let aq = supabase.from('kount_audits').select('*').neq('status', 'cancelled')
+      .order('started_at', { ascending: false }).limit(AUDIT_LIMIT);
     if (cutoff) aq = aq.gte('started_at', cutoff);
     const { data: auditRows, error: auditErr } = await aq;
-    if (auditErr) { console.error('[reports] audits', auditErr); setRows([]); setAudits([]); setAuditTrunc(false); setRowTrunc(false); setLoading(false); return; }
+    if (auditErr) { fail('Audits', auditErr); setAudits([]); setAuditTrunc(false); return; }
     setAuditTrunc((auditRows?.length ?? 0) >= AUDIT_LIMIT);
 
-    const allAudits = (auditRows ?? []) as KountAudit[];
-    const visibleAudits = allAudits.filter(a => {
-      if (isOrgWide(user.role) || user.venueIds === 'all') return true;
-      return Array.isArray(user.venueIds) && user.venueIds.includes(a.venue_id);
-    });
+    const visibleAudits = ((auditRows ?? []) as KountAudit[]).filter(a =>
+      isOrgWide(user.role) || user.venueIds === 'all' || (Array.isArray(user.venueIds) && user.venueIds.includes(a.venue_id)));
     setAudits(visibleAudits);
+    if (visibleAudits.length === 0) { setReportByAudit(new Map()); setRows([]); setRowTrunc(false); setLoading(false); return; }
 
-    if (visibleAudits.length === 0) { setRows([]); setRowTrunc(false); setLoading(false); return; }
-
-    // Apply venue + single-audit filters to the set of audits we report on.
-    const scopedAudits = visibleAudits.filter(a => {
-      if (auditId && a.id !== auditId) return false;
-      if (venue && a.venue_id !== venue) return false;
-      return true;
-    });
-    if (scopedAudits.length === 0) { setRows([]); setRowTrunc(false); setLoading(false); return; }
-
-    const auditIds = scopedAudits.map(a => a.id);
-
-    // Pull every COMPUTED report for the scoped audits, then keep the newest
-    // per audit (computed_at, falling back to uploaded_at). Uploaded reports
-    // are DEPRECATED and intentionally excluded — the computed report is the
-    // product.
-    const { data: reportRows, error: reportErr } = await supabase
-      .from('kount_avt_reports')
-      .select('*')
-      .in('audit_id', auditIds)
-      .eq('source', 'computed')
+    const { data: reportRows, error: reportErr } = await supabase.from('kount_avt_reports').select('*')
+      .in('audit_id', visibleAudits.map(a => a.id)).eq('source', 'computed')
       .order('computed_at', { ascending: false, nullsFirst: false });
-    if (reportErr) { console.error('[reports] avt reports', reportErr); setRows([]); setRowTrunc(false); setLoading(false); return; }
-
-    const reports = (reportRows ?? []) as KountAvtReport[];
-    const latestByAudit = new Map<string, KountAvtReport>();
-    for (const rep of reports) {
+    if (reportErr) { fail('Variance reports', reportErr); return; }
+    const latest = new Map<string, KountAvtReport>();
+    for (const rep of (reportRows ?? []) as KountAvtReport[]) {
       if (!rep.audit_id) continue;
-      const existing = latestByAudit.get(rep.audit_id);
-      if (!existing) { latestByAudit.set(rep.audit_id, rep); continue; }
-      const a = new Date(rep.computed_at ?? rep.uploaded_at).getTime();
-      const b = new Date(existing.computed_at ?? existing.uploaded_at).getTime();
-      if (a > b) latestByAudit.set(rep.audit_id, rep);
+      const ex = latest.get(rep.audit_id);
+      if (!ex || new Date(rep.computed_at ?? rep.uploaded_at).getTime() > new Date(ex.computed_at ?? ex.uploaded_at).getTime()) latest.set(rep.audit_id, rep);
     }
+    setReportByAudit(latest);
 
-    const latestReports = [...latestByAudit.values()];
-    if (latestReports.length === 0) { setRows([]); setRowTrunc(false); setLoading(false); return; }
+    const scoped = visibleAudits.filter(a => (!auditId || a.id === auditId) && (!venue || a.venue_id === venue));
+    const reports = scoped.map(a => latest.get(a.id)).filter((r): r is KountAvtReport => !!r);
+    if (reports.length === 0) { setRows([]); setRowTrunc(false); setLoading(false); return; }
 
-    // Pull all rows across the chosen reports, paginating past the 1000-row
-    // PostgREST cap. A soft cap (ROW_LIMIT) protects the UI from a runaway
-    // pull; selectAllPagedFiltered hard-stops at maxPages and throws, which we
-    // treat as truncation rather than letting the table render half a dataset.
-    const reportIds = latestReports.map(r => r.id);
-    let avtRows: KountAvtRow[];
+    let avtRows: KountAvtRow[] = [];
     let truncated = false;
     try {
       avtRows = await selectAllPagedFiltered<KountAvtRow>(
-        () => supabase.from('kount_avt_rows').select('*').in('report_id', reportIds),
-        { column: 'variance_value', ascending: true },
-        1000,
-        ROW_LIMIT / 1000,
-      );
+        () => supabase.from('kount_avt_rows').select('*').in('report_id', reports.map(r => r.id)),
+        { column: 'variance_value', ascending: true }, 1000, ROW_LIMIT / 1000);
     } catch (err) {
-      console.error('[reports] avt rows', err);
-      avtRows = [];
-      // A truncation error still means we have *some* data conceptually, but
-      // selectAllPagedFiltered doesn't return the partial set on throw, so flag
-      // the cap and show the empty/partial state honestly.
       truncated = /truncated/i.test(err instanceof Error ? err.message : '');
+      if (!truncated) { fail('Variance rows', err); return; }
     }
     setRowTrunc(truncated || avtRows.length >= ROW_LIMIT);
 
-    // Map report_id → its audit so each row can be tagged with venue/code/date.
-    const auditByReportId = new Map<string, KountAudit>();
-    const auditById = new Map(scopedAudits.map(a => [a.id, a]));
-    for (const rep of latestReports) {
-      const a = rep.audit_id ? auditById.get(rep.audit_id) : undefined;
-      if (a) auditByReportId.set(rep.id, a);
-    }
+    const auditByReport = new Map<string, KountAudit>();
+    const byId = new Map(scoped.map(a => [a.id, a]));
+    for (const rep of reports) { const a = rep.audit_id ? byId.get(rep.audit_id) : undefined; if (a) auditByReport.set(rep.id, a); }
 
-    const built: ReportRow[] = avtRows.flatMap(r => {
-      const a = auditByReportId.get(r.report_id);
+    setRows(avtRows.flatMap(r => {
+      const a = auditByReport.get(r.report_id);
       if (!a) return [];
       return [{
-        item_name:      r.item_name,
-        category:       r.category,
-        start_qty:      r.start_qty,
-        purchases:      r.purchases,
-        depletions:     r.depletions,
-        actual:         r.actual,
-        theo:           r.theo,
-        variance:       r.variance,
-        cu_price:       r.cu_price,
-        variance_value: r.variance_value,
-        variance_pct:   r.variance_pct,
-        venue_name:     r.venue_name ?? a.venue_name,
-        audit_code:     a.join_code,
-        audit_date:     a.started_at.slice(0, 10),
-        _venueId:       a.venue_id,
-        _auditId:       a.id,
-        _startedAt:     a.started_at,
+        item_name: r.item_name, category: r.category, start_qty: r.start_qty, purchases: r.purchases,
+        depletions: r.depletions, actual: r.actual, theo: r.theo, variance: r.variance, cu_price: r.cu_price,
+        variance_value: r.variance_value, variance_pct: r.variance_pct,
+        venue_name: r.venue_name ?? a.venue_name, audit_code: a.join_code, audit_date: a.started_at.slice(0, 10),
+        _venueId: a.venue_id, _auditId: a.id, _startedAt: a.started_at,
       }];
-    });
-
-    setRows(built);
+    }));
     setLoading(false);
   }, [user, venue, auditId, window_]);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => { setLimit(PAGE); }, [q, cat, sort, venue, auditId, window_]);
+
+  // Per-audit summaries for the audit list (every audit in the venue/window scope, report or not).
+  const auditSummaries = useMemo<AuditSummary[]>(() => {
+    const byAudit = new Map<string, ReportRow[]>();
+    for (const r of rows) byAudit.set(r._auditId, [...(byAudit.get(r._auditId) ?? []), r]);
+    return audits
+      .filter(a => !venue || a.venue_id === venue)
+      .map(a => {
+        const rs = byAudit.get(a.id) ?? [];
+        return {
+          audit: a, report: reportByAudit.get(a.id) ?? null, items: rs.length,
+          net: rs.reduce((s, r) => s + Number(r.variance_value ?? 0), 0),
+          abs: rs.reduce((s, r) => s + Math.abs(Number(r.variance_value ?? 0)), 0),
+          within1: rs.filter(r => Math.abs(Number(r.variance ?? 0)) <= 1).length,
+        };
+      });
+  }, [audits, rows, reportByAudit, venue]);
+
+  const kpi = useMemo(() => {
+    const scopedAudits = auditSummaries.filter(s => !auditId || s.audit.id === auditId);
+    const submitted = scopedAudits.filter(s => s.audit.status === 'submitted');
+    return {
+      submitted: submitted.length,
+      withReport: submitted.filter(s => s.report).length,
+      net: rows.reduce((s, r) => s + Number(r.variance_value ?? 0), 0),
+      abs: rows.reduce((s, r) => s + Math.abs(Number(r.variance_value ?? 0)), 0),
+      within1: rows.length ? Math.round(100 * rows.filter(r => Math.abs(Number(r.variance ?? 0)) <= 1).length / rows.length) : 0,
+    };
+  }, [auditSummaries, rows, auditId]);
+
+  const catCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of rows) { const g = catGroup(r.category); m.set(g, (m.get(g) ?? 0) + 1); }
+    return m;
+  }, [rows]);
+
+  const filtered = useMemo(() => {
+    const term = q.trim().toLowerCase();
+    const out = rows.filter(r => (cat === 'all' || catGroup(r.category) === cat) && (!term || r.item_name.toLowerCase().includes(term)));
+    const v = (r: ReportRow) => Number(r.variance_value ?? 0);
+    if (sort === 'abs') out.sort((a, b) => Math.abs(v(b)) - Math.abs(v(a)));
+    else if (sort === 'neg') out.sort((a, b) => v(a) - v(b));
+    else if (sort === 'pos') out.sort((a, b) => v(b) - v(a));
+    else out.sort((a, b) => a.item_name.localeCompare(b.item_name));
+    return out;
+  }, [rows, q, cat, sort]);
+
+  const multiVenue = useMemo(() => new Set(rows.map(r => r.venue_name ?? '')).size > 1, [rows]);
 
   const exportReport = useCallback(async () => {
     if (rows.length === 0 || exporting) return;
     setExporting(true);
     try {
-      // Title reflects whether the export is scoped to a single venue.
       const venueName = venue ? (VENUES.find(v => v.id === venue)?.name ?? '') : '';
       const title = venueName ? 'Variance Report — ' + venueName : 'Variance Report — All Audits';
       const ts = new Date().toISOString().slice(0, 10);
-      const windowLabel = window_ === '7d' ? 'last 7 days' : window_ === '30d' ? 'last 30 days' : 'all time';
-      const blob = await buildVarianceWorkbookBlob({
-        title,
-        subtitle: `${audits.length} audits in scope · ${windowLabel} · ${ts}`,
-        rows: rows as AvtLikeRow[],
-      });
+      const windowLabel = window_ === '7d' ? 'last 7 days' : window_ === '30d' ? 'last 30 days' : window_ === '90d' ? 'last 90 days' : 'all time';
+      const blob = await buildVarianceWorkbookBlob({ title, subtitle: `${kpi.withReport} audits · ${windowLabel} · ${ts}`, rows: rows as AvtLikeRow[] });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url;
-      a.download = 'variance_report_' + ts + '.xlsx';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      // Deferred revoke, matching Catalog/Counts/Summary: revoking the object
-      // URL in the same tick as click() can abort the download before the
-      // browser has finished reading the blob. Worst for the XLSX workbooks,
-      // which are by far the largest payloads we emit.
+      a.href = url; a.download = 'variance_report_' + ts + '.xlsx';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (e) {
       console.error('[reports] export', e);
@@ -212,138 +236,193 @@ export function Reports({ user }: Props) {
     } finally {
       setExporting(false);
     }
-  }, [rows, exporting, venue, window_, audits.length]);
-
-  const totalCount = rows.length;
-  const multiVenue = useMemo(() => new Set(rows.map(r => r.venue_name ?? '')).size > 1, [rows]);
+  }, [rows, exporting, venue, window_, kpi.withReport]);
 
   return (
     <>
-      {/* v0.50: was a bare .page-head with no .content wrapper — the only
-          screens besides Inventory not using the topbar/content pattern the
-          other twelve use. .page-head/.page-title/.page-sub have no CSS at
-          all, and with no .content there was no scroll container, so this
-          page could not be height-constrained without clipping. */}
       <div className="topbar">
         <div>
           <Eyebrow>Reports</Eyebrow>
           <h1>Audit reports</h1>
-          <div className="page-sub" style={{ marginTop: 4 }}>Computed variance across audits — Item · Venue · Variance qty · Variance $ · Variance %. Export is the full formatted workbook (Summary · Largest Offenders · Possible Causes · Detail).</div>
+          <div className="page-sub" style={{ marginTop: 4 }}>Computed variance for every closed count, by venue and audit. Export gives the full formatted workbook.</div>
         </div>
-      </div>
-
-      <div className="content">
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
-        <select
-          style={pickerStyle}
-          value={venue}
-          onChange={e => {
-            // Changing venue invalidates any pinned audit — reset auditId so
-            // the picker shows the new venue's audits.
-            setVenue(e.target.value);
-            setAuditId('');
-          }}
-        >
-          <option value="">All venues</option>
-          {visibleVenues.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-        </select>
-        <select style={pickerStyle} value={auditId} onChange={e => setAuditId(e.target.value)}>
-          <option value="">All audits in window</option>
-          {audits
-            .filter(a => !venue || a.venue_id === venue)
-            .map(a => (
-              <option key={a.id} value={a.id}>
-                {/* ISO YYYY-MM-DD so the same audit reads identically across locales. */}
-                {a.venue_name} · {a.join_code} · {a.started_at.slice(0, 10)}
-              </option>
-            ))}
-        </select>
-        <select
-          style={pickerStyle}
-          value={window_}
-          onChange={e => {
-            // A window change can strand an auditId that's no longer visible.
-            setWindow_(e.target.value as WindowChoice);
-            setAuditId('');
-          }}
-        >
-          <option value="7d">Last 7 days</option>
-          <option value="30d">Last 30 days</option>
-          <option value="all">All time</option>
-        </select>
-        <div style={{ flex: 1 }} />
-        <Pill tone="neutral" size="sm">{loading ? 'loading…' : totalCount + ' row' + (totalCount === 1 ? '' : 's')}</Pill>
         <Btn variant="primary" size="sm" onClick={() => void exportReport()} disabled={rows.length === 0 || exporting} leading={Ic.download(14)}>
-          {exporting ? 'Building…' : 'Export Report'}
+          {exporting ? 'Building…' : 'Export report'}
         </Btn>
       </div>
 
-      {(auditTrunc || rowTrunc) && !loading && (
-        <div style={{ marginBottom: 12, padding: '10px 12px', borderRadius: 8, background: 'rgba(255,193,7,0.10)', border: '1px solid rgba(255,193,7,0.4)', fontSize: 12, color: 'var(--fg)' }}>
-          ⚠ Result set is capped — narrow the date window or pick a single audit to see the rest.
-          {auditTrunc && <> Audit list hit the {AUDIT_LIMIT}-row cap.</>}
-          {rowTrunc   && <> Variance rows hit the {ROW_LIMIT}-row cap.</>}
+      <div className="content">
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
+          <select style={picker} value={venue} onChange={e => { setVenue(e.target.value); setAuditId(''); }}>
+            <option value="">All venues</option>
+            {visibleVenues.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+          </select>
+          <select style={picker} value={auditId} onChange={e => setAuditId(e.target.value)}>
+            <option value="">All audits in window</option>
+            {audits.filter(a => !venue || a.venue_id === venue).map(a => (
+              <option key={a.id} value={a.id}>{a.venue_name} · {a.join_code} · {a.started_at.slice(0, 10)}</option>
+            ))}
+          </select>
+          <select style={picker} value={window_} onChange={e => { setWindow_(e.target.value as WindowChoice); setAuditId(''); }}>
+            <option value="7d">Last 7 days</option>
+            <option value="30d">Last 30 days</option>
+            <option value="90d">Last 90 days</option>
+            <option value="all">All time</option>
+          </select>
+          {loading && <Pill tone="neutral" size="sm">loading…</Pill>}
         </div>
-      )}
 
-      <Card>
-        {loading && <div style={{ padding: 24, textAlign: 'center', color: 'var(--fg-muted)' }}>Loading reports…</div>}
-        {!loading && rows.length === 0 && (
-          <div style={{ padding: 24, textAlign: 'center', color: 'var(--fg-muted)' }}>
-            No computed variance matches the current filters. Variance is computed automatically when an audit's Count 2 closes on the phone — try widening the date window or clearing the venue.
+        {loadError && <div style={errBox}>{loadError}</div>}
+        {(auditTrunc || rowTrunc) && !loading && (
+          <div style={warnBox}>
+            Result set is capped. Narrow the date window or pick a single audit to see the rest.
+            {auditTrunc && <> The audit list hit the {AUDIT_LIMIT}-audit cap.</>}
+            {rowTrunc && <> Variance rows hit the {ROW_LIMIT}-row cap.</>}
           </div>
         )}
-        {!loading && rows.length > 0 && (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 760 }}>
-              <thead>
-                <tr style={{ textAlign: 'left', color: 'var(--fg-muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1 }}>
-                  <th style={th}>Item</th>
-                  <th style={th}>Category</th>
-                  {multiVenue && <th style={th}>Venue</th>}
-                  <th style={th}>Audit</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Variance (qty)</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Variance $</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Variance %</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r, i) => (
-                  <tr key={r._auditId + ':' + r.item_name + ':' + i} style={{ borderBottom: '1px solid var(--border)' }}>
-                    <td style={{ ...td, fontWeight: 500 }}>{r.item_name}</td>
-                    <td style={{ ...td, color: 'var(--fg-muted)' }}>{r.category || '—'}</td>
-                    {multiVenue && <td style={{ ...td, color: 'var(--fg-muted)' }}>{r.venue_name || '—'}</td>}
-                    <td style={{ ...td, fontFamily: 'monospace' }}>{r.audit_code || '—'}</td>
-                    <td style={{ ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: (r.variance ?? 0) < 0 ? 'var(--raspberry-300, #f06292)' : 'inherit' }}>
-                      {r.variance != null ? r.variance.toFixed(2) : '—'}
-                    </td>
-                    <td style={{ ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: (r.variance_value ?? 0) < 0 ? 'var(--raspberry-300, #f06292)' : 'inherit' }}>
-                      {r.variance_value != null
-                        ? (r.variance_value < 0 ? '-$' : '$') + Math.abs(r.variance_value).toFixed(2)
-                        : '—'}
-                    </td>
-                    <td style={{ ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: (r.variance_pct ?? 0) < 0 ? 'var(--raspberry-300, #f06292)' : 'inherit' }}>
-                      {r.variance_pct != null ? r.variance_pct.toFixed(1) + '%' : '—'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+
+        {/* Summary tiles */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 16 }}>
+          <Tile label="Closed audits with a report" value={<span style={big}>{kpi.withReport}<span style={{ color: 'var(--fg-muted)', fontSize: 16 }}> / {kpi.submitted}</span></span>}
+                sub={kpi.submitted > kpi.withReport ? `${kpi.submitted - kpi.withReport} still computing (runs every 15 min)` : 'all closed audits computed'} />
+          <Tile label="Net variance" value={<Money value={kpi.net} showSign size={22} />} sub="counted minus expected, at cost" />
+          <Tile label="Absolute variance" value={<Money value={kpi.abs} size={22} />} sub="every item's miss, either direction" />
+          <Tile label="Items within ±1 unit" value={<span style={big}>{kpi.within1}%</span>} sub={`${rows.length} item rows`} />
+        </div>
+
+        {/* Audits */}
+        <Card flush style={{ marginBottom: 16 }}>
+          <div style={sectionHead}><Eyebrow>Audits</Eyebrow><span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>Click a row to see only that audit's items</span></div>
+          {auditSummaries.length === 0 && !loading && <div style={empty}>No audits in this window. Try a longer window.</div>}
+          {auditSummaries.length > 0 && (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={tbl(760)}>
+                <thead><tr style={headRow}>
+                  <th style={th}>Venue</th><th style={th}>Audit</th><th style={th}>Closed</th><th style={th}>How it closed</th><th style={th}>Report</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Items</th><th style={{ ...th, textAlign: 'right' }}>Net $</th><th style={{ ...th, textAlign: 'right' }}>Absolute $</th><th style={th} />
+                </tr></thead>
+                <tbody>
+                  {auditSummaries.map(s => {
+                    const a = s.audit; const selected = auditId === a.id;
+                    return (
+                      <tr key={a.id} onClick={() => setAuditId(selected ? '' : a.id)}
+                          style={{ borderTop: '1px solid var(--border)', cursor: 'pointer', background: selected ? 'var(--copper-100, rgba(0,0,0,0.03))' : undefined }}>
+                        <td style={{ ...td, fontWeight: 500 }}>{a.venue_name}</td>
+                        <td style={{ ...td, fontFamily: 'JetBrains Mono, monospace' }}>{a.join_code}</td>
+                        <td style={td}>{fmtDate(a.completed_at ?? a.count2_closed_at ?? a.count1_closed_at ?? a.started_at)}</td>
+                        <td style={{ ...td, color: 'var(--fg-muted)' }}>{closedHow(a)}</td>
+                        <td style={td}>
+                          {s.report ? <Pill tone="positive" size="sm">Ready</Pill>
+                            : a.status === 'submitted' ? <Pill tone="caution" size="sm">Computing</Pill>
+                            : <Pill tone="neutral" size="sm">Not closed</Pill>}
+                        </td>
+                        <td style={{ ...td, textAlign: 'right', fontFamily: 'JetBrains Mono, monospace' }}>{s.report ? s.items : '—'}</td>
+                        <td style={{ ...td, textAlign: 'right' }}>{s.report ? <Money value={s.net} showSign size={13} /> : '—'}</td>
+                        <td style={{ ...td, textAlign: 'right' }}>{s.report ? <Money value={s.abs} size={13} bold={false} /> : '—'}</td>
+                        <td style={{ ...td, textAlign: 'right' }} onClick={e => e.stopPropagation()}>
+                          <Btn variant="ghost" size="sm" onClick={() => nav('/variance?audit=' + a.id)}>Open</Btn>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+
+        {/* Items */}
+        <Card flush>
+          <div style={{ ...sectionHead, flexWrap: 'wrap', gap: 10 }}>
+            <Eyebrow>Items{auditId ? ' · ' + (audits.find(a => a.id === auditId)?.join_code ?? '') : ''}</Eyebrow>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <input style={{ ...picker, width: 220 }} placeholder="Search items" value={q} onChange={e => setQ(e.target.value)} />
+              <select style={picker} value={sort} onChange={e => setSort(e.target.value as SortChoice)}>
+                <option value="abs">Biggest $ either way</option>
+                <option value="neg">Most short first</option>
+                <option value="pos">Most over first</option>
+                <option value="name">Name</option>
+              </select>
+            </div>
           </div>
-        )}
-      </Card>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', padding: '0 14px 10px' }}>
+            {(['all', 'Liquor', 'Wine', 'Beer', 'Soft drinks', 'Bar consumables', 'Other'] as CatGroup[])
+              .filter(g => g === 'all' || catCounts.get(g))
+              .map(g => (
+                <button key={g} onClick={() => setCat(g)} style={chip(cat === g)}>
+                  {g === 'all' ? `All (${rows.length})` : `${g} (${catCounts.get(g)})`}
+                </button>
+              ))}
+          </div>
+          {!loading && rows.length === 0 && (
+            <div style={empty}>
+              No computed variance for these filters. Closed audits get their report automatically, within 15 minutes of closing.
+            </div>
+          )}
+          {filtered.length > 0 && (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={tbl(820)}>
+                <thead><tr style={headRow}>
+                  <th style={th}>Item</th>{multiVenue && <th style={th}>Venue</th>}<th style={th}>Audit</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Counted</th><th style={{ ...th, textAlign: 'right' }}>Expected</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Δ qty</th><th style={{ ...th, textAlign: 'right' }}>Δ $</th><th style={{ ...th, textAlign: 'right' }}>Δ %</th>
+                </tr></thead>
+                <tbody>
+                  {filtered.slice(0, limit).map((r, i) => {
+                    const neg = Number(r.variance_value ?? 0) < 0;
+                    return (
+                      <tr key={r._auditId + ':' + r.item_name + ':' + i} style={{ borderTop: '1px solid var(--border)' }}>
+                        <td style={{ ...td, fontWeight: 500 }}>{r.item_name}<div style={{ fontSize: 11, color: 'var(--fg-muted)', fontWeight: 400 }}>{catGroup(r.category)}</div></td>
+                        {multiVenue && <td style={{ ...td, color: 'var(--fg-muted)' }}>{r.venue_name || '—'}</td>}
+                        <td style={{ ...td, fontFamily: 'JetBrains Mono, monospace', color: 'var(--fg-muted)' }}>{r.audit_code || '—'}</td>
+                        <td style={num}>{r.actual != null ? Number(r.actual) : '—'}</td>
+                        <td style={num}>{r.theo != null ? Number(r.theo).toFixed(1) : '—'}</td>
+                        <td style={{ ...num, color: neg ? 'var(--raspberry-300)' : undefined }}>{r.variance != null ? (r.variance > 0 ? '+' : '') + Number(r.variance).toFixed(1) : '—'}</td>
+                        <td style={{ ...td, textAlign: 'right' }}>{r.variance_value != null ? <Money value={Number(r.variance_value)} showSign size={13} /> : '—'}</td>
+                        <td style={{ ...num, color: neg ? 'var(--raspberry-300)' : 'var(--fg-muted)' }}>{r.variance_pct != null ? Number(r.variance_pct).toFixed(1) + '%' : '—'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {filtered.length > limit && (
+            <div style={{ padding: 12, display: 'flex', gap: 10, alignItems: 'center' }}>
+              <Btn variant="secondary" size="sm" onClick={() => setLimit(l => l + PAGE)}>Show {Math.min(PAGE, filtered.length - limit)} more</Btn>
+              <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>{limit} of {filtered.length} shown</span>
+            </div>
+          )}
+          {rows.length > 0 && filtered.length === 0 && <div style={empty}>No items match "{q}".</div>}
+        </Card>
       </div>
     </>
   );
 }
 
-const pickerStyle: React.CSSProperties = {
-  padding: '6px 10px',
-  border: '1px solid var(--border-strong)',
-  borderRadius: 6,
-  fontFamily: 'inherit',
-  fontSize: 13,
-};
+function Tile({ label, value, sub }: { label: string; value: React.ReactNode; sub: string }) {
+  return (
+    <Card>
+      <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--fg-muted)' }}>{label}</div>
+      <div style={{ marginTop: 6 }}>{value}</div>
+      <div style={{ marginTop: 4, fontSize: 12, color: 'var(--fg-muted)' }}>{sub}</div>
+    </Card>
+  );
+}
 
-const th: React.CSSProperties = { padding: '6px 8px', whiteSpace: 'nowrap' };
-const td: React.CSSProperties = { padding: '8px 8px', verticalAlign: 'top' };
+const picker: React.CSSProperties = { padding: '6px 10px', border: '1px solid var(--border-strong)', borderRadius: 6, fontFamily: 'inherit', fontSize: 13, background: 'var(--surface)' };
+const big: React.CSSProperties = { fontSize: 22, fontWeight: 700, fontVariantNumeric: 'tabular-nums' };
+const sectionHead: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 14px' };
+const headRow: React.CSSProperties = { textAlign: 'left', color: 'var(--fg-muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1 };
+const th: React.CSSProperties = { padding: '8px 12px', whiteSpace: 'nowrap' };
+const td: React.CSSProperties = { padding: '9px 12px', verticalAlign: 'top' };
+const num: React.CSSProperties = { ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontFamily: 'JetBrains Mono, monospace' };
+const tbl = (min: number): React.CSSProperties => ({ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: min });
+const empty: React.CSSProperties = { padding: 24, textAlign: 'center', color: 'var(--fg-muted)' };
+const chip = (on: boolean): React.CSSProperties => ({
+  padding: '4px 10px', borderRadius: 999, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit',
+  border: '1px solid ' + (on ? 'var(--dark-900, #222)' : 'var(--border-strong)'),
+  background: on ? 'var(--dark-900, #222)' : 'var(--surface)', color: on ? 'var(--off-100, #fff)' : 'var(--fg-primary)',
+});
+const errBox: React.CSSProperties = { marginBottom: 12, padding: '10px 12px', borderRadius: 8, background: 'rgba(214,51,108,0.10)', border: '1px solid var(--raspberry-300)', fontSize: 12 };
+const warnBox: React.CSSProperties = { marginBottom: 12, padding: '10px 12px', borderRadius: 8, background: 'rgba(255,193,7,0.10)', border: '1px solid rgba(255,193,7,0.4)', fontSize: 12 };

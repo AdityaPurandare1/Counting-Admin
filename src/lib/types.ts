@@ -217,6 +217,9 @@ export interface KountAvtRow {
   start_qty: number | null;
   purchases: number | null;
   depletions: number | null;
+  /** 0099 -- inter-venue transfers in this audit's window (counted units). Theo adds in, subtracts out. */
+  transfers_in?: number | null;
+  transfers_out?: number | null;
 }
 
 export interface KountCarriedItem {

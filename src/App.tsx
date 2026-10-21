@@ -15,7 +15,8 @@ import { Catalog } from '@/screens/Catalog';
 import { Counts } from '@/screens/Counts';
 import { VenueSettings } from '@/screens/VenueSettings';
 import { Reports } from '@/screens/Reports';
-import { Inventory } from '@/screens/Inventory';
+// v0.72: Inventory archived -- screen kept in src/screens/Inventory.tsx, route redirects.
+import { Transfers } from '@/screens/Transfers';
 import { StockOnHand } from '@/screens/StockOnHand';
 import { FoodCount, canUseFoodCount } from '@/screens/FoodCount';
 import { AI } from '@/screens/_placeholders';
@@ -267,7 +268,8 @@ export default function App() {
             <Route path="/ai"       element={<AI />} />
             <Route path="/approvals" element={canRunAudits(user.role) ? <Approvals user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/catalog"   element={hasCorporateAccess(user.role) ? <Catalog user={user} /> : <Navigate to="/variance" replace />} />
-            <Route path="/inventory" element={hasCorporateAccess(user.role) ? <Inventory user={user} /> : <Navigate to="/variance" replace />} />
+            <Route path="/inventory" element={<Navigate to="/variance" replace />} />
+            <Route path="/transfers" element={canRunAudits(user.role) ? <Transfers user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/stock"     element={canRunAudits(user.role) ? <StockOnHand user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/food"      element={canUseFoodCount(user.role) ? <FoodCount user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/security"  element={canManageUsers(user.role) ? <Security user={user} /> : <Navigate to="/variance" replace />} />

@@ -188,6 +188,11 @@ export function varianceSourceLabel(purchaseMapping: string | null | undefined):
   return purchaseMapping === 'venue_item_map' ? 'AVT variance · R365 invoices' : 'Craftable AVT variance';
 }
 
+/** Net transfer units on a variance row (in minus out). */
+export function transferNet(r: Pick<KountAvtRow, 'transfers_in' | 'transfers_out'>): number {
+  return Number(r.transfers_in ?? 0) - Number(r.transfers_out ?? 0);
+}
+
 function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: AccessEntry; onClosed: () => void }) {
   const nav = useNavigate();
   const [audit, setAudit] = useState<KountAudit | null>(null);
@@ -278,6 +283,9 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
     }
     return { totalEntries, totalQty, issueCount, byZone, byCounter };
   }, [entries]);
+
+  // v0.72: show a Transfers column only when this report holds any (0099).
+  const hasTransfers = useMemo(() => avtRows.some(r => transferNet(r) !== 0), [avtRows]);
 
   const canClose = canRunAudits(user.role)
     && audit?.status === 'active'
@@ -569,6 +577,7 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
                   <th style={{ padding: '4px 4px' }}>Item</th>
                   <th style={{ padding: '4px 4px' }}>Actual</th>
                   <th style={{ padding: '4px 4px' }}>Theo</th>
+                  {hasTransfers && <th style={{ padding: '4px 4px' }} title="Transfers in minus out (0099), already in Theo">Transfers</th>}
                   <th style={{ padding: '4px 4px' }}>Δ qty</th>
                   <th style={{ padding: '4px 4px' }}>Δ $</th>
                 </tr>
@@ -585,6 +594,9 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
                     </td>
                     <td style={{ padding: '6px 4px', fontFamily: 'JetBrains Mono, monospace' }}>{r.actual ?? '—'}</td>
                     <td style={{ padding: '6px 4px', fontFamily: 'JetBrains Mono, monospace' }}>{r.theo ?? '—'}</td>
+                    {hasTransfers && (
+                      <td style={{ padding: '6px 4px', fontFamily: 'JetBrains Mono, monospace' }}>{transferNet(r) ? (transferNet(r) > 0 ? '+' : '') + transferNet(r) : '—'}</td>
+                    )}
                     <td style={{ padding: '6px 4px' }}>
                       {r.variance !== null ? <Num value={Number(r.variance)} signed /> : '—'}
                     </td>
