@@ -1,5 +1,6 @@
 import type { Role } from './types';
 import { supabase } from './supabase';
+import { VENUES_REFRESHED_EVENT } from './visibleVenues';
 
 /** Access-list rows mirror the app_users table (0003_app_users.sql).
  *
@@ -78,6 +79,8 @@ export async function refreshVenues(): Promise<Array<{ id: string; name: string 
       VENUES.length = 0;
       for (const v of mapped) VENUES.push(v);
       try { localStorage.setItem(VENUES_CACHE_KEY, JSON.stringify(mapped)); } catch {}
+      // VENUES is overwritten in place, so screens can't see the change by identity.
+      try { window.dispatchEvent(new Event(VENUES_REFRESHED_EVENT)); } catch {}
     }
     return VENUES;
   } catch { return VENUES; }

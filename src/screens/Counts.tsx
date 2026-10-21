@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { supabase, selectAllPaged, selectAllPagedFiltered } from '@/lib/supabase';
 import { VENUES, isOrgWide, canRunAudits } from '@/lib/access';
 import type { AccessEntry } from '@/lib/access';
+import { useVisibleVenues } from '@/lib/useVisibleVenues';
 import type { KountAudit, KountEntry, KountVenueZone, MasterItem } from '@/lib/types';
 import { IN_SCOPE_CATEGORIES } from '@/lib/types';
 import { Btn, Card, Eyebrow, Pill, Progress, Segment } from '@/components/atoms';
@@ -1499,11 +1500,7 @@ function StartAuditModal({
   onClose: () => void;
   onStarted: (id: string) => void;
 }) {
-  const visibleVenues = useMemo(() => {
-    if (isOrgWide(user.role) || user.venueIds === 'all') return VENUES;
-    const set = new Set(Array.isArray(user.venueIds) ? user.venueIds : []);
-    return VENUES.filter(v => set.has(v.id));
-  }, [user]);
+  const visibleVenues = useVisibleVenues(user);
 
   const [venueId, setVenueId] = useState(visibleVenues[0]?.id ?? '');
   const [busy, setBusy] = useState(false);

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase, selectAllPagedFiltered } from '@/lib/supabase';
 import type { AccessEntry } from '@/lib/access';
+import { useVisibleVenues } from '@/lib/useVisibleVenues';
 import { VENUES, isOrgWide } from '@/lib/access';
 import type { KountAudit, KountAvtReport, KountAvtRow } from '@/lib/types';
 import { Card, Eyebrow, Btn, Pill } from '@/components/atoms';
@@ -47,11 +48,7 @@ export function Reports({ user }: Props) {
   const [auditTrunc, setAuditTrunc] = useState(false);
   const [rowTrunc, setRowTrunc] = useState(false);
 
-  const visibleVenues = useMemo(() => {
-    if (isOrgWide(user.role) || user.venueIds === 'all') return VENUES;
-    const set = new Set(Array.isArray(user.venueIds) ? user.venueIds : []);
-    return VENUES.filter(v => set.has(v.id));
-  }, [user]);
+  const visibleVenues = useVisibleVenues(user);
 
   const load = useCallback(async () => {
     setLoading(true);

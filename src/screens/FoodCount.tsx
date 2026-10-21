@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { VENUES, isOrgWide } from '@/lib/access';
+import { isOrgWide } from '@/lib/access';
+import { useVisibleVenues } from '@/lib/useVisibleVenues';
 import type { AccessEntry } from '@/lib/access';
 import { Card, Eyebrow, Btn, Num, Money, Pill } from '@/components/atoms';
 import {
@@ -109,11 +110,7 @@ function download(bytes: ArrayBuffer | Uint8Array, filename: string) {
 }
 
 export function FoodCount({ user }: Props) {
-  const visibleVenues = useMemo(() => {
-    if (isOrgWide(user.role) || user.venueIds === 'all') return VENUES;
-    const set = new Set(Array.isArray(user.venueIds) ? user.venueIds : []);
-    return VENUES.filter(v => set.has(v.id));
-  }, [user.role, user.venueIds]);
+  const visibleVenues = useVisibleVenues(user);
 
   const [venue, setVenue]             = useState<string>('');
   const [listSize, setListSize]       = useState<number | null>(null);
