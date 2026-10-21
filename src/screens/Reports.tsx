@@ -7,6 +7,7 @@ import type { KountAudit, KountAvtReport, KountAvtRow } from '@/lib/types';
 import { Card, Eyebrow, Btn, Pill, Money } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
 import { buildVarianceWorkbookBlob, type AvtLikeRow } from '@/lib/varianceReport';
+import { loadOpeningAuditIds } from '@/lib/openingCounts';
 
 /* ───────────────────────────────────────────────────────────────────────
    Reports screen
@@ -87,6 +88,8 @@ export function Reports({ user }: Props) {
   const [cat, setCat] = useState<CatGroup>('all');
   const [sort, setSort] = useState<SortChoice>('abs');
   const [limit, setLimit] = useState(PAGE);
+  // v0.73: each venue's opening count (no earlier count to compare) -- labelled, kept out of the totals.
+  const [openingIds, setOpeningIds] = useState<Set<string>>(new Set());
 
   const visibleVenues = useMemo(() => {
     if (isOrgWide(user.role) || user.venueIds === 'all') return VENUES;
@@ -117,6 +120,9 @@ export function Reports({ user }: Props) {
     const visibleAudits = ((auditRows ?? []) as KountAudit[]).filter(a =>
       isOrgWide(user.role) || user.venueIds === 'all' || (Array.isArray(user.venueIds) && user.venueIds.includes(a.venue_id)));
     setAudits(visibleAudits);
+    const opening = await loadOpeningAuditIds();
+    if (opening.error) console.warn('[reports] opening counts not identified', opening.error);
+    setOpeningIds(opening.ids);
     if (visibleAudits.length === 0) { setReportByAudit(new Map()); setRows([]); setRowTrunc(false); setLoading(false); return; }
 
     const { data: reportRows, error: reportErr } = await supabase.from('kount_avt_reports').select('*')
@@ -185,34 +191,39 @@ export function Reports({ user }: Props) {
       });
   }, [audits, rows, reportByAudit, venue]);
 
+  // Rows that count toward totals: everything except opening counts, unless that opening count is
+  // the one audit picked.
+  const countedRows = useMemo(() => rows.filter(r => r._auditId === auditId || !openingIds.has(r._auditId)), [rows, openingIds, auditId]);
+
   const kpi = useMemo(() => {
     const scopedAudits = auditSummaries.filter(s => !auditId || s.audit.id === auditId);
     const submitted = scopedAudits.filter(s => s.audit.status === 'submitted');
     return {
       submitted: submitted.length,
       withReport: submitted.filter(s => s.report).length,
-      net: rows.reduce((s, r) => s + Number(r.variance_value ?? 0), 0),
-      abs: rows.reduce((s, r) => s + Math.abs(Number(r.variance_value ?? 0)), 0),
-      within1: rows.length ? Math.round(100 * rows.filter(r => Math.abs(Number(r.variance ?? 0)) <= 1).length / rows.length) : 0,
+      opening: scopedAudits.filter(s => openingIds.has(s.audit.id) && s.audit.id !== auditId).length,
+      net: countedRows.reduce((s, r) => s + Number(r.variance_value ?? 0), 0),
+      abs: countedRows.reduce((s, r) => s + Math.abs(Number(r.variance_value ?? 0)), 0),
+      within1: countedRows.length ? Math.round(100 * countedRows.filter(r => Math.abs(Number(r.variance ?? 0)) <= 1).length / countedRows.length) : 0,
     };
-  }, [auditSummaries, rows, auditId]);
+  }, [auditSummaries, countedRows, auditId, openingIds]);
 
   const catCounts = useMemo(() => {
     const m = new Map<string, number>();
-    for (const r of rows) { const g = catGroup(r.category); m.set(g, (m.get(g) ?? 0) + 1); }
+    for (const r of countedRows) { const g = catGroup(r.category); m.set(g, (m.get(g) ?? 0) + 1); }
     return m;
-  }, [rows]);
+  }, [countedRows]);
 
   const filtered = useMemo(() => {
     const term = q.trim().toLowerCase();
-    const out = rows.filter(r => (cat === 'all' || catGroup(r.category) === cat) && (!term || r.item_name.toLowerCase().includes(term)));
+    const out = countedRows.filter(r => (cat === 'all' || catGroup(r.category) === cat) && (!term || r.item_name.toLowerCase().includes(term)));
     const v = (r: ReportRow) => Number(r.variance_value ?? 0);
     if (sort === 'abs') out.sort((a, b) => Math.abs(v(b)) - Math.abs(v(a)));
     else if (sort === 'neg') out.sort((a, b) => v(a) - v(b));
     else if (sort === 'pos') out.sort((a, b) => v(b) - v(a));
     else out.sort((a, b) => a.item_name.localeCompare(b.item_name));
     return out;
-  }, [rows, q, cat, sort]);
+  }, [countedRows, q, cat, sort]);
 
   const multiVenue = useMemo(() => new Set(rows.map(r => r.venue_name ?? '')).size > 1, [rows]);
 
@@ -285,7 +296,8 @@ export function Reports({ user }: Props) {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 16 }}>
           <Tile label="Closed audits with a report" value={<span style={big}>{kpi.withReport}<span style={{ color: 'var(--fg-muted)', fontSize: 16 }}> / {kpi.submitted}</span></span>}
                 sub={kpi.submitted > kpi.withReport ? `${kpi.submitted - kpi.withReport} still computing (runs every 15 min)` : 'all closed audits computed'} />
-          <Tile label="Net variance" value={<Money value={kpi.net} showSign size={22} />} sub="counted minus expected, at cost" />
+          <Tile label="Net variance" value={<Money value={kpi.net} showSign size={22} />}
+                sub={kpi.opening ? `excludes ${kpi.opening} opening count${kpi.opening === 1 ? '' : 's'}` : 'counted minus expected, at cost'} />
           <Tile label="Absolute variance" value={<Money value={kpi.abs} size={22} />} sub="every item's miss, either direction" />
           <Tile label="Items within ±1 unit" value={<span style={big}>{kpi.within1}%</span>} sub={`${rows.length} item rows`} />
         </div>
@@ -312,7 +324,8 @@ export function Reports({ user }: Props) {
                         <td style={td}>{fmtDate(a.completed_at ?? a.count2_closed_at ?? a.count1_closed_at ?? a.started_at)}</td>
                         <td style={{ ...td, color: 'var(--fg-muted)' }}>{closedHow(a)}</td>
                         <td style={td}>
-                          {s.report ? <Pill tone="positive" size="sm">Ready</Pill>
+                          {openingIds.has(a.id) ? <span title="The venue's first count: nothing earlier to compare, so its variance is the opening stock. Not in the totals."><Pill tone="neutral" size="sm">Opening count</Pill></span>
+                            : s.report ? <Pill tone="positive" size="sm">Ready</Pill>
                             : a.status === 'submitted' ? <Pill tone="caution" size="sm">Computing</Pill>
                             : <Pill tone="neutral" size="sm">Not closed</Pill>}
                         </td>
@@ -350,7 +363,7 @@ export function Reports({ user }: Props) {
               .filter(g => g === 'all' || catCounts.get(g))
               .map(g => (
                 <button key={g} onClick={() => setCat(g)} style={chip(cat === g)}>
-                  {g === 'all' ? `All (${rows.length})` : `${g} (${catCounts.get(g)})`}
+                  {g === 'all' ? `All (${countedRows.length})` : `${g} (${catCounts.get(g)})`}
                 </button>
               ))}
           </div>

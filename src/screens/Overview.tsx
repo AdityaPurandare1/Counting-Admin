@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { loadOpeningAuditIds } from '@/lib/openingCounts';
 import { useNavigate } from 'react-router-dom';
 import { supabase, selectAllPagedFiltered } from '@/lib/supabase';
 import type { AccessEntry } from '@/lib/access';
@@ -66,6 +67,8 @@ export function Overview({ user }: Props) {
   const [rows, setRows] = useState<TaggedRow[]>([]);
   const [taggedAudits, setTaggedAudits] = useState<TaggedAudit[]>([]);
   const [truncated, setTruncated] = useState(false);
+  // v0.73: opening counts left out of the totals (first count at a venue -- see lib/openingCounts).
+  const [openingExcluded, setOpeningExcluded] = useState<Array<{ code: string; venue: string }>>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const visibleVenues = useMemo(() => {
@@ -111,10 +114,16 @@ export function Overview({ user }: Props) {
     if (auditErr) { fail('Audits', auditErr); return; }
     const auditLimitHit = (auditRows?.length ?? 0) >= AUDIT_LIMIT;
 
-    const scopedAudits = ((auditRows ?? []) as KountAudit[]).filter(a => {
+    const opening = await loadOpeningAuditIds();
+    if (opening.error) console.warn('[overview] opening counts not identified', opening.error);
+    const inScope = ((auditRows ?? []) as KountAudit[]).filter(a => {
       if (isOrgWide(user.role) || user.venueIds === 'all') return true;
       return Array.isArray(user.venueIds) && user.venueIds.includes(a.venue_id);
     });
+    // v0.73: a venue's opening count has nothing to compare against -- its variance is the opening
+    // stock -- so it is listed, not summed.
+    setOpeningExcluded(inScope.filter(a => opening.ids.has(a.id) && periodOf(a.started_at) === 'current').map(a => ({ code: a.join_code, venue: a.venue_name })));
+    const scopedAudits = inScope.filter(a => !opening.ids.has(a.id));
     if (scopedAudits.length === 0) { setRows([]); setTaggedAudits([]); setLoading(false); return; }
 
     // Latest COMPUTED report per audit — uploaded AVT is deprecated, same
@@ -273,6 +282,13 @@ export function Overview({ user }: Props) {
           <div style={{ flex: 1 }} />
           <Pill tone="neutral" size="sm">{loading ? 'loading…' : company.venuesAudited + ' of ' + visibleVenues.length + ' venue' + (visibleVenues.length === 1 ? '' : 's') + ' audited'}</Pill>
         </div>
+
+        {openingExcluded.length > 0 && !loading && (
+          <div style={{ marginBottom: 12, padding: '10px 12px', borderRadius: 8, background: 'var(--surface)', border: '1px solid var(--border)', fontSize: 12, color: 'var(--fg-muted)' }}>
+            Opening counts are not in these totals, because there is no earlier count to compare them with:{' '}
+            {openingExcluded.map(o => `${o.venue} ${o.code}`).join(', ')}.
+          </div>
+        )}
 
         {truncated && !loading && (
           <div style={{ marginBottom: 12, padding: '10px 12px', borderRadius: 8, background: 'rgba(255,193,7,0.10)', border: '1px solid rgba(255,193,7,0.4)', fontSize: 12, color: 'var(--fg)' }}>
