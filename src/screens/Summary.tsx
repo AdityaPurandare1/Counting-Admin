@@ -7,6 +7,7 @@ import { Pill, Eyebrow, Card, Btn, Num, Avatar, Segment } from '@/components/ato
 import { Ic } from '@/components/Icons';
 import { csvCell } from '@/lib/csv';
 import { isOpenIssue } from '@/lib/issues';
+import { summarizeByItem, zoneBreakdown } from '@/lib/summaryByItem';
 
 import { isOrgWide, hasCorporateAccess, canRunAudits } from '@/lib/access';
 /* ───────────────────────────────────────────────────────────────────────
@@ -521,6 +522,30 @@ function SummaryDetail({
     return { totalEntries, totalQty, byZone, byCounter, byMethod, issues, durationMin };
   }, [entries, audit]);
 
+  // v0.76: one row per product, totalled across zones (see lib/summaryByItem).
+  const [itemSearch, setItemSearch] = useState('');
+  const byItem = useMemo(() => summarizeByItem(entries), [entries]);
+  const byItemShown = useMemo(() => {
+    const q = itemSearch.trim().toLowerCase();
+    return q ? byItem.items.filter(i => i.name.toLowerCase().includes(q)) : byItem.items;
+  }, [byItem, itemSearch]);
+
+  const exportItemsCsv = () => {
+    if (!audit) return;
+    const rows: string[][] = [
+      ['item_name', 'total_qty', 'entries', 'zones'],
+      ...byItem.items.map(i => [i.name, String(i.total), String(i.entries), zoneBreakdown(i.zones)]),
+    ];
+    const csv = rows.map(row => row.map(csvCell).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `audit_${audit.join_code}_${audit.venue_name.replace(/\s+/g, '_')}_by_item.csv`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
   const exportCsv = () => {
     if (!audit) return;
     const rows: string[][] = [
@@ -676,6 +701,53 @@ function SummaryDetail({
           onClose={() => setDrill(null)}
         />
       )}
+
+      {/* By item (v0.76) — each product once, totalled across zones */}
+      <Card padding={16}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <Eyebrow>By item · {byItem.items.length} products</Eyebrow>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input
+              value={itemSearch}
+              onChange={e => setItemSearch(e.target.value)}
+              placeholder="Search item…"
+              style={{ padding: '6px 10px', border: '1px solid var(--border)', borderRadius: 8, fontSize: 13 }}
+            />
+            <Btn variant="secondary" size="sm" leading={Ic.download(14)} onClick={exportItemsCsv} disabled={byItem.items.length === 0}>Export by item</Btn>
+          </div>
+        </div>
+        {byItem.recountEntries > 0 && (
+          <div style={{ color: 'var(--fg-muted)', fontSize: 11, marginTop: 6 }}>
+            Count 1 totals; {byItem.recountEntries} recount {byItem.recountEntries === 1 ? 'entry is' : 'entries are'} not added.
+          </div>
+        )}
+        <div style={{ maxHeight: 420, overflowY: 'auto', marginTop: 10 }}>
+          <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: 'var(--fg-muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1 }}>
+                <th style={{ padding: '4px 4px' }}>Item</th>
+                <th style={{ padding: '4px 4px', textAlign: 'right' }}>Total</th>
+                <th style={{ padding: '4px 4px' }}>Where</th>
+              </tr>
+            </thead>
+            <tbody>
+              {byItemShown.map(i => (
+                <tr key={i.key} style={{ borderBottom: '1px solid var(--border)' }}>
+                  <td style={{ padding: '6px 4px' }}>
+                    {i.name}
+                    {!i.linked && <span style={{ color: 'var(--fg-muted)', fontSize: 10, marginLeft: 6 }}>not linked to a catalog item</span>}
+                  </td>
+                  <td style={{ padding: '6px 4px', textAlign: 'right', fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>{i.total}</td>
+                  <td style={{ padding: '6px 4px', color: 'var(--fg-muted)', fontSize: 11 }}>{zoneBreakdown(i.zones)}</td>
+                </tr>
+              ))}
+              {byItemShown.length === 0 && (
+                <tr><td colSpan={3} style={{ padding: '8px 4px', color: 'var(--fg-muted)', fontSize: 12 }}>No matching items.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
 
       {/* By counter */}
       <Card padding={16}>
