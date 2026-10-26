@@ -324,7 +324,11 @@ check('route gated to admin + corporate', app.includes('<Route path="/purchase-p
 check('nav row hidden from managers and venue management', /\{ to: '\/purchase-prices', label: 'Purchase prices', manager: false, viewer: false \}/.test(side));
 check('loads through the 0107 RPC', screen.includes("supabase.rpc('kount_bev_purchase_lines', { p_from: from, p_to: to })"));
 check('prices ALL lines before filtering (cross-venue references)', /const priced = useMemo\(\(\) => \(raw \? priceLines\(raw\) : \[\]\), \[raw\]\);/.test(screen));
-check('version 0.74', src('src/lib/version.ts').includes("APP_VERSION = '0.74'"));
+// At least the version that shipped Purchase prices (an exact pin broke on the next bump).
+check('version >= 0.74', (() => {
+  const m = src('src/lib/version.ts').match(/APP_VERSION = '(\d+)\.(\d+)'/);
+  return !!m && (Number(m[1]) > 0 || Number(m[2]) >= 74);
+})());
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
