@@ -20,7 +20,7 @@ import { Transfers } from '@/screens/Transfers';
 import { StockOnHand } from '@/screens/StockOnHand';
 import { FoodCount, canUseFoodCount } from '@/screens/FoodCount';
 import { PurchasePrices } from '@/screens/PurchasePrices';
-import { AI } from '@/screens/_placeholders';
+import { AskAI } from '@/screens/AskAI';
 import { refreshAccessList, refreshVenues, resolveAccess, canRunAudits, canManageUsers, hasCorporateAccess, isDesktopRole } from '@/lib/access';
 import { refreshVenueLookups } from '@/lib/venueMap';
 import type { AccessEntry } from '@/lib/access';
@@ -266,7 +266,7 @@ export default function App() {
             <Route path="/summary"  element={<Summary user={user} />} />
             <Route path="/reports"  element={canRunAudits(user.role) ? <Reports user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/issues"   element={<Issues user={user} />} />
-            <Route path="/ai"       element={<AI />} />
+            <Route path="/ai"       element={<AskAI user={user} />} />
             <Route path="/approvals" element={canRunAudits(user.role) ? <Approvals user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/catalog"   element={hasCorporateAccess(user.role) ? <Catalog user={user} /> : <Navigate to="/variance" replace />} />
             {/* v0.74: org-wide financial data — admin + corporate only (the RPC enforces the same). */}
