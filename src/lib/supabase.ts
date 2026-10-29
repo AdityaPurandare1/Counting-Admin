@@ -19,6 +19,17 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   },
 });
 
+/** A realtime topic unique to this subscription. supabase.channel(name) hands
+ *  back an existing channel with the same topic even while it is still
+ *  leaving (removeChannel only completes on the server's ack); subscribe() is
+ *  a no-op on it and the ack then drops it — a silently dead subscription.
+ *  A quick unmount/remount (or StrictMode's double effect) reused fixed
+ *  names; call this inside the subscribing effect so every mount gets its own.
+ *  postgres_changes doesn't depend on the topic name. */
+export function channelTopic(base: string): string {
+  return base + '-' + Math.random().toString(36).slice(2, 10);
+}
+
 /** Paginate past the db-max-rows cap (default 1000) so a full catalog loads
  *  without silent truncation. Matches the v1.3 fix in the phone app. Cap is
  *  50 pages = 50 k rows, high enough for the current purchase_items (~23 k)

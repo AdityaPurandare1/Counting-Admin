@@ -6,6 +6,8 @@
  *  the venue block under CONTEXT_CHAR_BUDGET and degrades by dropping rows,
  *  never by cutting a line in half. */
 
+import { localIsoDate } from './auditReport';
+
 export interface AskAiRow {
   item_name: string | null;
   category: string | null;
@@ -81,7 +83,9 @@ export function buildVarianceContext(venueName: string, meta: AskAiReportMeta, r
   }
   const net = shrink + over;
   const pct = theoV !== 0 ? (net / theoV) * 100 : 0;
-  const asOf = meta.asOf ? meta.asOf.slice(0, 10) : 'unknown date';
+  // Local calendar date, not the UTC slice (a report computed at 6pm PDT is tomorrow in UTC).
+  const asOfDate = meta.asOf ? new Date(meta.asOf) : null;
+  const asOf = asOfDate && !Number.isNaN(asOfDate.getTime()) ? localIsoDate(asOfDate) : 'unknown date';
 
   const head: string[] = [
     'VENUE: ' + venueName,

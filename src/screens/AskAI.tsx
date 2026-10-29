@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { VENUES, isOrgWide } from '@/lib/access';
 import type { AccessEntry } from '@/lib/access';
-import type { KountAvtReport, KountAvtRow } from '@/lib/types';
 import { Card, Btn } from '@/components/atoms';
 import { baseSystemPrompt, buildVarianceContext } from '@/lib/askAiContext';
+import { loadLatestVenueReport, type VenueReport } from '@/lib/latestVenueReport';
 
 /* ───────────────────────────────────────────────────────────────────────
    Ask AI (v0.75) — replaces the "port coming later" placeholder.
@@ -48,35 +48,30 @@ export function AskAI({ user }: Props) {
 
   const venueName = visibleVenues.find(v => v.id === venue)?.name ?? venue;
 
-  // Load the venue's latest report (same selection as Variance / Stock on hand).
+  // Load the venue's current report: its newest closed beverage count's own
+  // report, the same one Stock on hand shows (lib/latestVenueReport, v0.77).
   useEffect(() => {
     let cancelled = false;
     if (!venue) return;
     (async () => {
       setContextNote('Loading ' + venueName + ' variance…');
-      const { data: reports, error: repErr } = await supabase
-        .from('kount_avt_reports')
-        .select('*')
-        .contains('venue_ids', [venue])
-        .order('source', { ascending: true })
-        .order('uploaded_at', { ascending: false })
-        .limit(1);
-      if (cancelled) return;
-      if (repErr) { setContext(''); setContextNote('Could not load the variance report: ' + repErr.message); return; }
-      const rep = (reports?.[0] as KountAvtReport) ?? null;
-      let rows: KountAvtRow[] = [];
-      if (rep) {
-        const { data: r, error: rowErr } = await supabase
-          .from('kount_avt_rows').select('*').eq('report_id', rep.id).eq('venue_id', venue);
+      let res: VenueReport;
+      try {
+        res = await loadLatestVenueReport(venue);
+      } catch (e) {
         if (cancelled) return;
-        if (rowErr) { setContext(''); setContextNote('Could not load the variance rows: ' + rowErr.message); return; }
-        rows = (r as KountAvtRow[]) ?? [];
+        setContext(''); setContextNote('Could not load the variance report: ' + (e instanceof Error ? e.message : String(e)));
+        return;
       }
+      if (cancelled) return;
+      const { audit, report: rep, rows } = res;
       const text = buildVarianceContext(venueName, { asOf: rep ? (rep.computed_at ?? rep.uploaded_at) : null, source: rep?.source ?? null }, rows);
       setContext(text);
       setContextNote(rep
-        ? rows.length + ' items from the report of ' + new Date(rep.computed_at ?? rep.uploaded_at).toLocaleDateString()
-        : 'No closed count with a report yet for ' + venueName);
+        ? rows.length + ' items from the report of ' + (audit ? audit.join_code + ', ' : '') + new Date(rep.computed_at ?? rep.uploaded_at).toLocaleDateString()
+        : audit
+          ? 'The latest closed count (' + audit.join_code + ') has no report yet for ' + venueName
+          : 'No closed count with a report yet for ' + venueName);
     })();
     return () => { cancelled = true; };
   }, [venue, venueName]);

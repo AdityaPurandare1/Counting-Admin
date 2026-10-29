@@ -6,6 +6,7 @@ import type { AccessEntry } from '@/lib/access';
 import { VENUES, isOrgWide } from '@/lib/access';
 import type { KountAudit, KountAvtReport, KountAvtRow } from '@/lib/types';
 import { Card, Eyebrow, Money, Pill } from '@/components/atoms';
+import { localIsoDate } from '@/lib/auditReport';
 
 /* ───────────────────────────────────────────────────────────────────────
    Overview (v0.63, from hursh-dev v0.58)
@@ -376,7 +377,7 @@ export function Overview({ user }: Props) {
                               {v.auditCount > 0 && v.prevAuditCount > 0 ? (delta >= 0 ? '▲' : '▼') + ' $' + Math.abs(delta).toFixed(0) : '—'}
                             </td>
                           )}
-                          <td style={{ ...td, color: 'var(--fg-muted)' }}>{v.latestAuditDate ? v.latestAuditDate.slice(0, 10) : '—'}</td>
+                          <td style={{ ...td, color: 'var(--fg-muted)' }}>{v.latestAuditDate ? localIsoDate(new Date(v.latestAuditDate)) : '—'}</td>
                         </tr>
                       );
                     })}

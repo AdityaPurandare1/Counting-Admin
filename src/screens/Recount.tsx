@@ -5,6 +5,7 @@ import type { AccessEntry } from '@/lib/access';
 import type { KountAudit, KountRecount, Severity } from '@/lib/types';
 import { Pill, SevChip, Card, Eyebrow, Btn, Money, Num } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
+import { auditStageLabel } from '@/lib/auditPhase';
 
 import { isOrgWide, hasCorporateAccess } from '@/lib/access';
 /* ───────────────────────────────────────────────────────────────────────
@@ -80,7 +81,7 @@ export function Recount({ user }: Props) {
             <option value="">Select an audit…</option>
             {audits.map(a => (
               <option key={a.id} value={a.id}>
-                {a.join_code} · {a.venue_name} · {a.status === 'submitted' ? 'submitted' : a.count_phase}
+                {a.join_code} · {a.venue_name} · {auditStageLabel(a)}
               </option>
             ))}
           </select>
@@ -91,7 +92,8 @@ export function Recount({ user }: Props) {
       <div className="content">
         {!selectedId
           ? <Card padding={24}><div style={{ color: 'var(--fg-muted)' }}>Pick an audit above to see its flagged items.</div></Card>
-          : <RecountDetail auditId={selectedId} auditLabel={audits.find(a => a.id === selectedId)?.venue_name ?? ''} user={user} />}
+          // Keyed by audit so the zone filter (and the loaded rows) start fresh for each one.
+          : <RecountDetail key={selectedId} auditId={selectedId} auditLabel={audits.find(a => a.id === selectedId)?.venue_name ?? ''} user={user} />}
       </div>
     </>
   );

@@ -160,6 +160,21 @@ export function canEditCounts(role: Role): boolean {
   return isOrgWide(role) || role === 'venue_manager';
 }
 
+/** The kount_members.role to record for someone joining an audit. That column
+ *  only accepts corporate | manager | counter (0001's CHECK), so the newer
+ *  roles are mapped: admin is org-wide like corporate. venue_manager gets null
+ *  — not a member — because the phone keeps it off the roster
+ *  (joinNetworkedAudit: "must not appear in the audit's member roster"). */
+export function memberRoleFor(role: Role): 'corporate' | 'manager' | 'counter' | null {
+  switch (role) {
+    case 'admin':
+    case 'corporate':     return 'corporate';
+    case 'manager':       return 'manager';
+    case 'counter':       return 'counter';
+    case 'venue_manager': return null;
+  }
+}
+
 function rowToEntry(r: AppUserRow): AccessEntry {
   return {
     email: r.email,

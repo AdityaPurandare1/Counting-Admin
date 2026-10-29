@@ -1,17 +1,19 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { supabase } from '@/lib/supabase';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { VENUES, isOrgWide } from '@/lib/access';
 import type { AccessEntry } from '@/lib/access';
-import type { KountAvtReport, KountAvtRow } from '@/lib/types';
+import type { KountAudit, KountAvtReport, KountAvtRow } from '@/lib/types';
 import { Card, Eyebrow, Btn, Num, Money } from '@/components/atoms';
+import { loadLatestVenueReport } from '@/lib/latestVenueReport';
+import { localIsoDate } from '@/lib/auditReport';
 
 /* ───────────────────────────────────────────────────────────────────────
    Stock on hand (v0.41)
 
    Read-only "current complete inventory" for a selected venue. Sourced from
-   the most recent AVT report covering that venue (kount_avt_reports +
-   kount_avt_rows) — the same computed data the Variance screen uses, but
-   framed as inventory rather than variance:
+   the report of the venue's newest closed beverage count (v0.77,
+   lib/latestVenueReport — kount_avt_reports + kount_avt_rows) — the same
+   computed data the Variance screen uses, but framed as inventory rather
+   than variance:
 
      - Counted      = actual (last physical count)
      - Theoretical  = theo   (start + purchases − depletions over the
@@ -35,10 +37,13 @@ export function StockOnHand({ user }: Props) {
   }, [user]);
 
   const [venue, setVenue]     = useState<string>('');
+  const [audit, setAudit]     = useState<KountAudit | null>(null);
   const [report, setReport]   = useState<KountAvtReport | null>(null);
   const [rows, setRows]       = useState<KountAvtRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [search, setSearch]   = useState('');
+  const requestRef = useRef(0);
 
   // Default to the first venue the user can see.
   useEffect(() => {
@@ -47,26 +52,29 @@ export function StockOnHand({ user }: Props) {
 
   const load = useCallback(async (venueId: string) => {
     if (!venueId) return;
+    // Switching venues mid-load must not let the slower answer win.
+    const req = ++requestRef.current;
     setLoading(true);
-    // Same selection as Variance: computed beats uploaded (source asc), newest
-    // within a source (uploaded_at desc).
-    const { data: reports } = await supabase
-      .from('kount_avt_reports')
-      .select('*')
-      .contains('venue_ids', [venueId])
-      .order('source', { ascending: true })
-      .order('uploaded_at', { ascending: false })
-      .limit(1);
-    const rep = (reports?.[0] as KountAvtReport) ?? null;
-    setReport(rep);
-    if (!rep) { setRows([]); setLoading(false); return; }
-    const { data: r } = await supabase
-      .from('kount_avt_rows')
-      .select('*')
-      .eq('report_id', rep.id)
-      .eq('venue_id', venueId);
-    setRows((r as KountAvtRow[]) ?? []);
-    setLoading(false);
+    setLoadError(null);
+    // Drop the previous venue's numbers so its tiles, as-of line and CSV can't
+    // pass for this venue's while it loads.
+    setAudit(null); setReport(null); setRows([]);
+    // v0.77: the venue's newest closed beverage count, then THAT audit's
+    // report — not the newest report by upload time (lib/latestVenueReport).
+    try {
+      const res = await loadLatestVenueReport(venueId);
+      if (req !== requestRef.current) return;
+      setAudit(res.audit);
+      setReport(res.report);
+      setRows(res.rows);
+    } catch (e) {
+      if (req !== requestRef.current) return;
+      console.error('[stock-on-hand] load', e);
+      setAudit(null); setReport(null); setRows([]);
+      setLoadError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (req === requestRef.current) setLoading(false);
+    }
   }, []);
 
   useEffect(() => { if (venue) void load(venue); }, [venue, load]);
@@ -107,7 +115,7 @@ export function StockOnHand({ user }: Props) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    const ts = new Date().toISOString().slice(0, 10);
+    const ts = localIsoDate(new Date());
     const slug = venueName.replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'venue';
     a.download = `stock_on_hand_${slug}_${ts}.csv`;
     document.body.appendChild(a);
@@ -135,22 +143,26 @@ export function StockOnHand({ user }: Props) {
             {visibleVenues.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
           </select>
           <Btn variant="secondary" size="sm" onClick={() => void load(venue)} disabled={!venue || loading}>Refresh</Btn>
-          <Btn variant="secondary" size="sm" onClick={exportCsv} disabled={enriched.length === 0}>Export CSV</Btn>
+          <Btn variant="secondary" size="sm" onClick={exportCsv} disabled={loading || enriched.length === 0}>Export CSV</Btn>
         </div>
       </div>
 
       <div className="content" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         <Card padding={14}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
-            <Tile label="Items" value={<Num value={totals.items} />} />
-            <Tile label="On-hand value" value={<Money value={totals.onHand} />} />
-            <Tile label="Theoretical value" value={<Money value={totals.theoV} />} />
-            <Tile label="Difference" value={<Money value={totals.diffV} showSign />} />
+            <Tile label="Items" value={loading ? '—' : <Num value={totals.items} />} />
+            <Tile label="On-hand value" value={loading ? '—' : <Money value={totals.onHand} />} />
+            <Tile label="Theoretical value" value={loading ? '—' : <Money value={totals.theoV} />} />
+            <Tile label="Difference" value={loading ? '—' : <Money value={totals.diffV} showSign />} />
           </div>
           <div style={{ marginTop: 12, fontSize: 11, color: 'var(--fg-muted)' }}>
-            {asOf
-              ? <><strong>Counted</strong> = last physical count · <strong>Theoretical</strong> = expected (start + purchases − depletions) · as of <strong>{asOf.toLocaleDateString()}</strong> ({report?.source === 'computed' ? 'computed' : 'uploaded'} report). Items with no unit cost show $0 value.</>
-              : 'No inventory report for this venue yet — run and close a count to generate one.'}
+            {loadError
+              ? <span style={{ color: 'var(--raspberry-300)' }}>Inventory could not be loaded — {loadError}</span>
+              : asOf
+              ? <><strong>Counted</strong> = last physical count · <strong>Theoretical</strong> = expected (start + purchases − depletions) · as of <strong>{asOf.toLocaleDateString()}</strong> ({audit ? audit.join_code + ', ' : ''}{report?.source === 'computed' ? 'computed' : 'uploaded'} report). Items with no unit cost show $0 value.</>
+              : audit
+              ? <>The latest closed count ({audit.join_code}{audit.completed_at ? ', closed ' + new Date(audit.completed_at).toLocaleDateString() : ''}) has no inventory report yet — closed counts are computed within 15 minutes.</>
+              : loading ? 'Loading…' : 'No closed count for this venue yet — run and close a count to generate one.'}
           </div>
         </Card>
 
@@ -165,10 +177,13 @@ export function StockOnHand({ user }: Props) {
             />
           </div>
           {loading && <div style={{ color: 'var(--fg-muted)' }}>Loading…</div>}
-          {!loading && enriched.length === 0 && (
+          {!loading && !loadError && enriched.length === 0 && (
             <div style={{ color: 'var(--fg-muted)' }}>
               {report ? 'No items match.' : 'No inventory data for this venue yet.'}
             </div>
+          )}
+          {!loading && loadError && (
+            <div style={{ color: 'var(--raspberry-300)' }}>Could not load this venue's inventory. Use Refresh to try again.</div>
           )}
           {!loading && enriched.length > 0 && (
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>

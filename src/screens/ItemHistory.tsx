@@ -5,6 +5,8 @@ import type { AccessEntry } from '@/lib/access';
 import { VENUES, isOrgWide } from '@/lib/access';
 import type { KountAudit, KountAvtReport, KountAvtRow } from '@/lib/types';
 import { Card, Eyebrow, Money, Num, Pill, Btn } from '@/components/atoms';
+import { loadOpeningAuditIds } from '@/lib/openingCounts';
+import { localIsoDate } from '@/lib/auditReport';
 
 /* ───────────────────────────────────────────────────────────────────────
    Item History (v0.63, from hursh-dev v0.59) — the "time machine" view.
@@ -65,6 +67,20 @@ export function ItemHistory({ user }: Props) {
   const [truncated, setTruncated] = useState(false);
   const [searched, setSearched] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // v0.77: each venue's opening count (lib/openingCounts) has nothing earlier
+  // to compare with, so its "variance" is the opening stock. Shown and marked,
+  // but kept out of totals — as Overview and Reports already do.
+  const [openingIds, setOpeningIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    let live = true;
+    void loadOpeningAuditIds().then(o => {
+      if (!live) return;
+      if (o.error) console.warn('[item-history] opening counts not identified', o.error);
+      setOpeningIds(o.ids);
+    });
+    return () => { live = false; };
+  }, []);
 
   // Re-sync from the URL if it changes under us (e.g. a click-through from
   // Variance/Overview while this screen is already mounted).
@@ -191,22 +207,25 @@ export function ItemHistory({ user }: Props) {
     setSearchParams({ venue: venueId, item }, { replace: true });
   };
 
+  // Opening counts stay in the table (marked) but out of every total below.
+  const countedPoints = useMemo(() => points.filter(p => !openingIds.has(p.auditId)), [points, openingIds]);
+
   const summary = useMemo(() => {
     if (points.length === 0) return null;
-    const totalVariance = points.reduce((s, p) => s + (p.varianceValue ?? 0), 0);
-    const latest = points[points.length - 1];
-    const prev = points.length > 1 ? points[points.length - 2] : null;
-    const trend = prev && latest.varianceValue != null && prev.varianceValue != null
+    const totalVariance = countedPoints.reduce((s, p) => s + (p.varianceValue ?? 0), 0);
+    const latest = countedPoints.length > 0 ? countedPoints[countedPoints.length - 1] : null;
+    const prev = countedPoints.length > 1 ? countedPoints[countedPoints.length - 2] : null;
+    const trend = prev && latest && latest.varianceValue != null && prev.varianceValue != null
       ? latest.varianceValue - prev.varianceValue
       : null;
-    const worst = points.reduce((w, p) => (p.varianceValue != null && (w == null || p.varianceValue < w.varianceValue!)) ? p : w, null as HistoryPoint | null);
-    return { totalVariance, latest, trend, worst, auditCount: points.length };
-  }, [points]);
+    const worst = countedPoints.reduce((w, p) => (p.varianceValue != null && (w == null || p.varianceValue < w.varianceValue!)) ? p : w, null as HistoryPoint | null);
+    return { totalVariance, latest, trend, worst, auditCount: countedPoints.length, openingCount: points.length - countedPoints.length };
+  }, [points, countedPoints]);
 
   // Tiny inline sparkline — no charting dependency, consistent with
   // Overview.tsx. Plots variance_value across audits, oldest to newest.
   const sparkline = useMemo(() => {
-    const vals = points.map(p => p.varianceValue ?? 0);
+    const vals = countedPoints.map(p => p.varianceValue ?? 0);
     if (vals.length < 2) return null;
     const min = Math.min(...vals, 0);
     const max = Math.max(...vals, 0);
@@ -221,7 +240,7 @@ export function ItemHistory({ user }: Props) {
     });
     const path = coords.map(([x, y], i) => (i === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1)).join(' ');
     return { w, h, path, zeroY, coords };
-  }, [points]);
+  }, [countedPoints]);
 
   return (
     <>
@@ -262,6 +281,7 @@ export function ItemHistory({ user }: Props) {
           <RecentAuditsGrid
             venueId={venueId}
             filter={itemInput}
+            openingIds={openingIds}
             onPick={(name) => { setItemInput(name); setSearchedItem(name); setSearchParams({ venue: venueId, item: name }, { replace: true }); }}
           />
         )}
@@ -290,10 +310,13 @@ export function ItemHistory({ user }: Props) {
               <Card>
                 <div style={kpiLabel}>Cumulative variance ({summary.auditCount} audits)</div>
                 <div style={{ marginTop: 6 }}><Money value={summary.totalVariance} showSign size={22} /></div>
+                {summary.openingCount > 0 && (
+                  <div style={{ marginTop: 4, fontSize: 12, color: 'var(--fg-muted)' }}>excludes the opening count</div>
+                )}
               </Card>
               <Card>
                 <div style={kpiLabel}>Latest audit</div>
-                <div style={{ marginTop: 6 }}>{summary.latest.varianceValue != null ? <Money value={summary.latest.varianceValue} showSign size={18} /> : '—'}</div>
+                <div style={{ marginTop: 6 }}>{summary.latest?.varianceValue != null ? <Money value={summary.latest.varianceValue} showSign size={18} /> : '—'}</div>
                 {summary.trend != null && (
                   <div style={{ marginTop: 4, fontSize: 12, color: summary.trend >= 0 ? 'var(--positive, #2e7d32)' : 'var(--raspberry-300)' }}>
                     {summary.trend >= 0 ? '▲ improved' : '▼ worsened'} vs. previous audit
@@ -305,7 +328,7 @@ export function ItemHistory({ user }: Props) {
                 {summary.worst ? (
                   <>
                     <div style={{ marginTop: 6 }}><Money value={summary.worst.varianceValue ?? 0} showSign size={18} /></div>
-                    <div style={{ marginTop: 2, fontSize: 12, color: 'var(--fg-muted)' }}>{summary.worst.startedAt.slice(0, 10)} · {summary.worst.auditCode}</div>
+                    <div style={{ marginTop: 2, fontSize: 12, color: 'var(--fg-muted)' }}>{localIsoDate(new Date(summary.worst.startedAt))} · {summary.worst.auditCode}</div>
                   </>
                 ) : <div style={{ marginTop: 6, color: 'var(--fg-muted)' }}>—</div>}
               </Card>
@@ -318,7 +341,7 @@ export function ItemHistory({ user }: Props) {
                   <line x1={0} y1={sparkline.zeroY} x2={sparkline.w} y2={sparkline.zeroY} stroke="var(--border)" strokeWidth={1} />
                   <path d={sparkline.path} fill="none" stroke="var(--accent-bg)" strokeWidth={2} />
                   {sparkline.coords.map(([x, y], i) => (
-                    <circle key={i} cx={x} cy={y} r={3} fill={points[i].varianceValue != null && points[i].varianceValue! < 0 ? 'var(--raspberry-300)' : 'var(--positive, #2e7d32)'} />
+                    <circle key={i} cx={x} cy={y} r={3} fill={countedPoints[i].varianceValue != null && countedPoints[i].varianceValue! < 0 ? 'var(--raspberry-300)' : 'var(--positive, #2e7d32)'} />
                   ))}
                 </svg>
               </Card>
@@ -346,7 +369,14 @@ export function ItemHistory({ user }: Props) {
                       <tr key={p.auditId} style={{ borderBottom: '1px solid var(--border)', cursor: 'pointer' }}
                           onClick={() => nav('/variance?audit=' + p.auditId)}
                           title="Open this audit in Variance">
-                        <td style={{ ...td, fontWeight: 500 }}>{p.startedAt.slice(0, 10)} · <span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--fg-muted)' }}>{p.auditCode}</span></td>
+                        <td style={{ ...td, fontWeight: 500 }}>
+                          {localIsoDate(new Date(p.startedAt))} · <span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--fg-muted)' }}>{p.auditCode}</span>
+                          {openingIds.has(p.auditId) && (
+                            <span style={{ marginLeft: 6 }} title="The venue's first count: nothing earlier to compare, so its variance is the opening stock. Not in the totals.">
+                              <Pill tone="neutral" size="sm">Opening count</Pill>
+                            </span>
+                          )}
+                        </td>
                         <td style={{ ...td, textAlign: 'right', fontFamily: 'JetBrains Mono, monospace' }}>{p.startQty ?? '—'}</td>
                         <td style={{ ...td, textAlign: 'right', fontFamily: 'JetBrains Mono, monospace' }}>{p.purchases ?? '—'}</td>
                         <td style={{ ...td, textAlign: 'right', fontFamily: 'JetBrains Mono, monospace' }}>{p.transfersNet ? (p.transfersNet > 0 ? '+' : '') + p.transfersNet : '—'}</td>
@@ -387,7 +417,8 @@ const td: React.CSSProperties = { padding: '10px 12px', verticalAlign: 'top' };
    plus the 4-audit total. The filter box narrows it live; clicking an item
    opens that item's full history above.
    ─────────────────────────────────────────────────────────────────────── */
-export interface GridAudit { id: string; code: string; date: string; reportId: string }
+/** `opening`: the venue's opening count — its cells show, its variance stays out of the total. */
+export interface GridAudit { id: string; code: string; date: string; reportId: string; opening?: boolean }
 export interface GridRow {
   item: string;
   category: string | null;
@@ -400,56 +431,60 @@ export function buildGrid(
   audits: GridAudit[],
   rows: Array<Pick<KountAvtRow, 'report_id' | 'item_name' | 'category' | 'actual' | 'variance' | 'variance_value'>>,
 ): GridRow[] {
-  const auditByReport = new Map(audits.map(a => [a.reportId, a.id]));
+  const auditByReport = new Map(audits.map(a => [a.reportId, a]));
   const byItem = new Map<string, GridRow>();
   for (const r of rows) {
-    const auditId = auditByReport.get(r.report_id);
-    if (!auditId) continue;
+    const audit = auditByReport.get(r.report_id);
+    if (!audit) continue;
     const key = r.item_name.trim().toLowerCase();
     let g = byItem.get(key);
     if (!g) { g = { item: r.item_name, category: r.category, cells: {}, total: 0 }; byItem.set(key, g); }
-    g.cells[auditId] = { actual: r.actual, variance: r.variance, value: r.variance_value };
-    g.total += Number(r.variance_value ?? 0);
+    g.cells[audit.id] = { actual: r.actual, variance: r.variance, value: r.variance_value };
+    if (!audit.opening) g.total += Number(r.variance_value ?? 0);
   }
   return [...byItem.values()].sort((a, b) => Math.abs(b.total) - Math.abs(a.total) || a.item.localeCompare(b.item));
 }
 
-function RecentAuditsGrid({ venueId, filter, onPick }: { venueId: string; filter: string; onPick: (item: string) => void }) {
-  const [audits, setAudits] = useState<GridAudit[]>([]);
-  const [rows, setRows] = useState<GridRow[] | null>(null);
+function RecentAuditsGrid({ venueId, filter, openingIds, onPick }: { venueId: string; filter: string; openingIds: Set<string>; onPick: (item: string) => void }) {
+  const [picked, setPicked] = useState<GridAudit[]>([]);
+  // Raw rows; the grid is built below so opening counts that arrive later still apply.
+  const [avt, setAvt] = useState<KountAvtRow[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
+
+  const audits = useMemo(() => picked.map(a => ({ ...a, opening: openingIds.has(a.id) })), [picked, openingIds]);
+  const rows = useMemo(() => (avt === null ? null : buildGrid(audits, avt)), [audits, avt]);
 
   useEffect(() => {
     let live = true;
-    setRows(null); setErr(null);
+    setAvt(null); setErr(null);
     (async () => {
       const { data: aRows, error: aErr } = await supabase.from('kount_audits').select('*')
         .eq('venue_id', venueId).eq('status', 'submitted')
         .order('completed_at', { ascending: false, nullsFirst: false }).limit(20);
       if (!live) return;
-      if (aErr) { setErr('Audits could not be loaded: ' + aErr.message); setRows([]); return; }
+      if (aErr) { setErr('Audits could not be loaded: ' + aErr.message); setAvt([]); return; }
       const list = (aRows ?? []) as KountAudit[];
-      if (list.length === 0) { setAudits([]); setRows([]); return; }
+      if (list.length === 0) { setPicked([]); setAvt([]); return; }
       const { data: rRows, error: rErr } = await supabase.from('kount_avt_reports').select('*')
         .in('audit_id', list.map(a => a.id)).eq('source', 'computed').order('computed_at', { ascending: false, nullsFirst: false });
       if (!live) return;
-      if (rErr) { setErr('Variance reports could not be loaded: ' + rErr.message); setRows([]); return; }
+      if (rErr) { setErr('Variance reports could not be loaded: ' + rErr.message); setAvt([]); return; }
       const latest = new Map<string, KountAvtReport>();
       for (const rep of (rRows ?? []) as KountAvtReport[]) if (rep.audit_id && !latest.has(rep.audit_id)) latest.set(rep.audit_id, rep);
-      const picked: GridAudit[] = list.filter(a => latest.has(a.id)).slice(0, 4)
-        .map(a => ({ id: a.id, code: a.join_code, date: (a.completed_at ?? a.started_at).slice(0, 10), reportId: latest.get(a.id)!.id }))
+      const chosen: GridAudit[] = list.filter(a => latest.has(a.id)).slice(0, 4)
+        .map(a => ({ id: a.id, code: a.join_code, date: localIsoDate(new Date(a.completed_at ?? a.started_at)), reportId: latest.get(a.id)!.id }))
         .reverse();
-      setAudits(picked);
-      if (picked.length === 0) { setRows([]); return; }
+      setPicked(chosen);
+      if (chosen.length === 0) { setAvt([]); return; }
       try {
-        const avt = await selectAllPagedFiltered<KountAvtRow>(
-          () => supabase.from('kount_avt_rows').select('report_id,item_name,category,actual,variance,variance_value').in('report_id', picked.map(p => p.reportId)),
+        const avtRows = await selectAllPagedFiltered<KountAvtRow>(
+          () => supabase.from('kount_avt_rows').select('report_id,item_name,category,actual,variance,variance_value').in('report_id', chosen.map(p => p.reportId)),
           { column: 'item_name', ascending: true }, 1000, 20);
         if (!live) return;
-        setRows(buildGrid(picked, avt));
+        setAvt(avtRows);
       } catch (e) {
         if (!live) return;
-        setErr('Variance rows could not be loaded: ' + (e instanceof Error ? e.message : String(e))); setRows([]);
+        setErr('Variance rows could not be loaded: ' + (e instanceof Error ? e.message : String(e))); setAvt([]);
       }
     })();
     return () => { live = false; };
@@ -478,9 +513,17 @@ function RecentAuditsGrid({ venueId, filter, onPick }: { venueId: string; filter
               {audits.map(a => (
                 <th key={a.id} colSpan={2} style={{ ...th, textAlign: 'center', borderLeft: '1px solid var(--border)' }}>
                   {a.date} · <span style={{ fontFamily: 'JetBrains Mono, monospace' }}>{a.code}</span>
+                  {a.opening && (
+                    <div title="The venue's first count: nothing earlier to compare, so its variance is the opening stock. Not in the total." style={{ textTransform: 'none', letterSpacing: 0 }}>
+                      Opening count · not in total
+                    </div>
+                  )}
                 </th>
               ))}
-              <th style={{ ...th, textAlign: 'right', borderLeft: '1px solid var(--border)' }} rowSpan={2}>4-audit Δ $</th>
+              <th style={{ ...th, textAlign: 'right', borderLeft: '1px solid var(--border)' }} rowSpan={2}>
+                4-audit Δ $
+                {audits.some(a => a.opening) && <div style={{ textTransform: 'none', letterSpacing: 0 }}>excl. opening count</div>}
+              </th>
             </tr>
             <tr style={{ color: 'var(--fg-muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1 }}>
               {audits.map(a => [

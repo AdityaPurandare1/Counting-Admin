@@ -10,6 +10,21 @@ export interface IssueFields {
   issue_resolved?: boolean | null;
 }
 
+// Display labels. The persisted token stays `not-in-craftable` (it's written to
+// kount_entries.issue and referenced across apps), but Craftable is deprecated —
+// surface it to users as "not in inventory". Other tokens just de-hyphenate.
+// Mirrored by issueLabel() in the phone app's counting-app.html.
+const ISSUE_LABELS: Record<string, string> = {
+  'not-in-craftable': 'not in inventory',
+  'no-upc': 'no UPC',
+};
+
+/** What to show for an issue token, everywhere a person reads it (screens + CSV). */
+export function issueLabel(t: string | null | undefined): string {
+  if (!t) return '';
+  return ISSUE_LABELS[t] ?? t.replace(/-/g, ' ');
+}
+
 /** Flagged with a real issue kind ('none' and empty mean no issue). */
 export function hasIssue(e: IssueFields): boolean {
   return !!e.issue && e.issue !== 'none';

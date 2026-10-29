@@ -3,6 +3,7 @@
  * Run with:  npm test   (or: npx tsx tests/askAiContext.test.ts)
  */
 import { baseSystemPrompt, buildVarianceContext, CONTEXT_CHAR_BUDGET, money, type AskAiRow } from '../src/lib/askAiContext';
+import { localIsoDate } from '../src/lib/auditReport';
 
 let passed = 0;
 let failed = 0;
@@ -30,7 +31,9 @@ const rows = [
   row('Mystery Bottle', 'Liquor Cost', 3, 0, 0),         // no cost
 ];
 const ctx = buildVarianceContext('Little Luck', { asOf: '2026-10-20T17:46:34Z', source: 'computed' }, rows);
-check('header names the venue and the date', /VENUE: Little Luck/.test(ctx) && /as of 2026-10-20/.test(ctx), ctx);
+// v0.77: the date is the local calendar day, not the UTC slice -- so the expectation follows the machine's zone.
+check('header names the venue and the date', /VENUE: Little Luck/.test(ctx) && ctx.includes('as of ' + localIsoDate(new Date('2026-10-20T17:46:34Z'))), ctx);
+check('an unreadable date says so instead of NaN', buildVarianceContext('X', { asOf: 'not a date', source: 'computed' }, rows).includes('as of unknown date'));
 check('counts unpriced items', /1 with no unit cost/.test(ctx), ctx);
 check('net variance = shortages + overages', /net variance -\$129\.00/.test(ctx) && /shortages -\$171\.00/.test(ctx) && /overages \$42\.00/.test(ctx), ctx);
 check('largest shortage listed first with its numbers', /LARGEST SHORTAGES[^\n]*\n- Aperol 750ml \| counted 4 \| expected 10 \| variance -6 \(-\$171\.00\) \| unit cost \$28\.50/.test(ctx), ctx);

@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { supabase, selectAllPagedFiltered } from '@/lib/supabase';
+import { supabase, selectAllPagedFiltered, channelTopic } from '@/lib/supabase';
 import type { AccessEntry } from '@/lib/access';
 import type { KountAudit, KountEntry, KountMember, KountAvtReport, KountAvtRow } from '@/lib/types';
 import { Pill, Eyebrow, Card, Btn, Num, Money, Avatar } from '@/components/atoms';
@@ -8,6 +8,9 @@ import { Ic } from '@/components/Icons';
 import { buildVarianceWorkbookBlob, type AvtLikeRow } from '@/lib/varianceReport';
 import { UnplacedInvoicesCard, UnmappedPosCard, CountChecksCard } from '@/components/VenueDataGaps';
 import { isOpenIssue } from '@/lib/issues';
+import { parseQtyDraft } from '@/lib/qtyDraft';
+import { auditStageLabel } from '@/lib/auditPhase';
+import { localIsoDate } from '@/lib/auditReport';
 
 import { isOrgWide, hasCorporateAccess, canRunAudits, canEditCounts } from '@/lib/access';
 /* ───────────────────────────────────────────────────────────────────────
@@ -33,7 +36,11 @@ export function Variance({ user }: Props) {
 
   const [activeAudits, setActiveAudits] = useState<KountAudit[]>([]);
   const [historicAudits, setHistoricAudits] = useState<KountAudit[]>([]);
+  // The newest-25 history from the last UNFILTERED load: the date picker's
+  // quick-pick list, which must not shrink to the one date being viewed.
+  const [recentHistoric, setRecentHistoric] = useState<KountAudit[]>([]);
   const [loadingAudits, setLoadingAudits] = useState(true);
+  const loadSeq = useRef(0);
   const [selectedId, setSelectedId] = useState<string | null>(auditParam);
   // Date filter for the audit picker. Empty = all dates. Compared on the
   // local calendar date (active → started_at, historic → completed_at ?? started_at).
@@ -45,39 +52,61 @@ export function Variance({ user }: Props) {
   }), [user]);
 
   // --- Load both active and recent (submitted + cancelled) audits ---
+  // Unfiltered, history is the 25 newest. With a date picked, history is
+  // queried for that local day on the server instead — filtering the newest
+  // 25 in the browser could never find an older date.
   const loadAudits = useCallback(async () => {
+    // Picking then clearing a date fires two loads; only the newest may land.
+    const seq = ++loadSeq.current;
     setLoadingAudits(true);
+    let historicQ = supabase
+      .from('kount_audits')
+      .select('*')
+      .in('status', ['submitted', 'cancelled'])
+      .order('completed_at', { ascending: false, nullsFirst: false });
+    const range = dateFilter ? localDayRange(dateFilter) : null;
+    historicQ = range
+      // Same key as auditDate(): completed_at, else started_at.
+      ? historicQ
+          .or(`and(completed_at.gte.${range.from},completed_at.lt.${range.to}),and(completed_at.is.null,started_at.gte.${range.from},started_at.lt.${range.to})`)
+          .limit(200)
+      : historicQ.limit(25);
     const [activeRes, historicRes] = await Promise.all([
       supabase
         .from('kount_audits')
         .select('*')
         .eq('status', 'active')
         .order('started_at', { ascending: false }),
-      supabase
-        .from('kount_audits')
-        .select('*')
-        .in('status', ['submitted', 'cancelled'])
-        .order('completed_at', { ascending: false, nullsFirst: false })
-        .limit(25),
+      historicQ,
     ]);
+    if (seq !== loadSeq.current) return;
     setLoadingAudits(false);
     if (activeRes.error)   console.error('[variance] load active',   activeRes.error);
     if (historicRes.error) console.error('[variance] load historic', historicRes.error);
 
     setActiveAudits(filterVisible((activeRes.data ?? []) as KountAudit[]));
-    setHistoricAudits(filterVisible((historicRes.data ?? []) as KountAudit[]));
-  }, [filterVisible]);
+    const historic = filterVisible((historicRes.data ?? []) as KountAudit[]);
+    setHistoricAudits(historic);
+    if (!range && !historicRes.error) setRecentHistoric(historic);
+  }, [filterVisible, dateFilter]);
 
   useEffect(() => { void loadAudits(); }, [loadAudits]);
 
-  // Keep the active-audits list live as the phone app creates/closes audits
+  // Keep the active-audits list live as the phone app creates/closes audits.
+  // Subscribed ONCE, calling the current loader through a ref: re-subscribing
+  // when loadAudits changes (every date pick) reused the topic while the old
+  // channel was still leaving — realtime-js hands that channel back, subscribe()
+  // is a no-op on it, and the server's ack then drops it, so live updates
+  // silently stopped after picking and clearing a date.
+  const loadAuditsRef = useRef(loadAudits);
+  useEffect(() => { loadAuditsRef.current = loadAudits; }, [loadAudits]);
   useEffect(() => {
     const ch = supabase
-      .channel('kount-audits-list')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'kount_audits' }, () => { void loadAudits(); })
+      .channel(channelTopic('kount-audits-list'))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'kount_audits' }, () => { void loadAuditsRef.current(); })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
-  }, [loadAudits]);
+  }, []);
 
   // URL is the source of truth — let manual edits + back-button win.
   // Previously this effect wrote state INTO the URL on every selectedId
@@ -104,12 +133,13 @@ export function Variance({ user }: Props) {
     return localDateKey(iso);
   }, []);
 
-  // Distinct dates present across both lists, newest first, for the picker.
+  // Distinct dates across the active list and the recent (unfiltered) history,
+  // newest first, for the picker.
   const availableDates = useMemo(() => {
     const set = new Set<string>();
-    for (const a of [...activeAudits, ...historicAudits]) set.add(auditDate(a));
+    for (const a of [...activeAudits, ...recentHistoric]) set.add(auditDate(a));
     return [...set].sort((x, y) => (x < y ? 1 : x > y ? -1 : 0));
-  }, [activeAudits, historicAudits, auditDate]);
+  }, [activeAudits, recentHistoric, auditDate]);
 
   const filteredActive   = useMemo(() => dateFilter ? activeAudits.filter(a => auditDate(a) === dateFilter) : activeAudits,   [activeAudits, dateFilter, auditDate]);
   const filteredHistoric = useMemo(() => dateFilter ? historicAudits.filter(a => auditDate(a) === dateFilter) : historicAudits, [historicAudits, dateFilter, auditDate]);
@@ -197,6 +227,7 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
   const nav = useNavigate();
   const [audit, setAudit] = useState<KountAudit | null>(null);
   const [entries, setEntries] = useState<KountEntry[]>([]);
+  const [entriesError, setEntriesError] = useState<string | null>(null);
   const [members, setMembers] = useState<KountMember[]>([]);
   const [avtReport, setAvtReport] = useState<KountAvtReport | null>(null);
   const [avtRows, setAvtRows] = useState<KountAvtRow[]>([]);
@@ -209,14 +240,21 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
     // kount_entries paginated past the 1000-row cap so busy audits don't
     // silently truncate stat tiles (totalEntries, totalQty, byZone,
     // byCounter). Other queries here naturally fit under the cap.
+    // A failed entries read is kept as an error: the tiles show '—', not 0.
+    let entriesErr: string | null = null;
     const [{ data: a }, e, { data: m }] = await Promise.all([
       supabase.from('kount_audits').select('*').eq('id', auditId).single(),
       selectAllPagedFiltered<KountEntry>(
         () => supabase.from('kount_entries').select('*').eq('audit_id', auditId),
         { column: 'timestamp', ascending: false },
-      ).catch((err): KountEntry[] => { console.error('[variance] load entries', err); return []; }),
+      ).catch((err): KountEntry[] => {
+        console.error('[variance] load entries', err);
+        entriesErr = (err as { message?: string })?.message ?? String(err);
+        return [];
+      }),
       supabase.from('kount_members').select('*').eq('audit_id', auditId),
     ]);
+    setEntriesError(entriesErr);
     setAudit((a as KountAudit) ?? null);
     const venueId = (a as KountAudit | null)?.venue_id;
     if (venueId) {
@@ -355,7 +393,11 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
         `${avtError.message || avtError}
 
 ` +
-        'The counts are safe. Recompute from Catalog → Recompute variance once the cause is resolved.'
+        // There is no "Recompute variance" control in Catalog (it only appears
+        // after a merge). What does exist: the 15-minute job (0099) computes
+        // any closed audit that has NO report; an older report stays as is.
+        'The counts are safe. If this audit has no variance report yet, it is retried automatically every 15 minutes. ' +
+        'If it already had one (from closing Count 1), that report stays until the variance is recomputed after the cause is fixed.'
       );
     }
     onClosed();
@@ -420,7 +462,7 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
         variance_value: r.variance_value,
         variance_pct: r.variance_pct,
       }));
-      const ts = new Date().toISOString().slice(0, 10);
+      const ts = localIsoDate(new Date());
       const blob = await buildVarianceWorkbookBlob({
         title: 'Variance Report — ' + audit.venue_name,
         subtitle: `${audit.join_code} · ${ts}`,
@@ -471,7 +513,7 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
               : audit.count_phase === 'review' ? 'inform'
               : 'positive'
             }>
-              {audit.status === 'cancelled' ? 'cancelled' : audit.status === 'submitted' ? 'submitted' : audit.count_phase}
+              {auditStageLabel(audit)}
             </Pill>
             {canClose && (
               <Btn variant="primary" size="md" onClick={closeCount1} disabled={closing} leading={Ic.flag(14)}>
@@ -492,12 +534,23 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
         </div>
       </Card>
 
+      {entriesError && (
+        <Card padding={14} style={{ borderColor: 'var(--raspberry-300)', background: 'var(--raspberry-100)' }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: 240, fontSize: 12, color: 'var(--raspberry-400)' }}>
+              Entries could not be loaded: {entriesError} — entry counts and the list below are unknown, not zero.
+            </div>
+            <Btn variant="secondary" size="sm" onClick={() => void load()}>Retry</Btn>
+          </div>
+        </Card>
+      )}
+
       {/* Stat strip */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
-        <StatTile label="Entries"     value={<Num value={stats.totalEntries} />} />
-        <StatTile label="Total qty"   value={<Num value={stats.totalQty} />} />
-        <StatTile label="Counters"    value={<Num value={stats.byCounter.size} />} />
-        <StatTile label="Open issues" value={<Num value={stats.issueCount} color={stats.issueCount ? 'var(--raspberry-300)' : undefined} />} />
+        <StatTile label="Entries"     value={entriesError ? '—' : <Num value={stats.totalEntries} />} />
+        <StatTile label="Total qty"   value={entriesError ? '—' : <Num value={stats.totalQty} />} />
+        <StatTile label="Counters"    value={entriesError ? '—' : <Num value={stats.byCounter.size} />} />
+        <StatTile label="Open issues" value={entriesError ? '—' : <Num value={stats.issueCount} color={stats.issueCount ? 'var(--raspberry-300)' : undefined} />} />
       </div>
 
       {/* Members */}
@@ -544,12 +597,15 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <Eyebrow>{varianceSourceLabel(purchaseMapping)}</Eyebrow>
             {avtReport
-              ? <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
-                  uploaded {new Date(avtReport.uploaded_at).toLocaleString()} · by {avtReport.uploaded_by_name || avtReport.uploaded_by_email} · {avtReport.file_name}
-                  <span style={{ marginLeft: 6, fontSize: 11, color: avtReport.source === 'computed' ? 'var(--success)' : 'var(--fg-muted)' }}>
-                    · {avtReport.source === 'computed' ? 'Computed' : 'Uploaded'}
+              ? avtReport.source === 'computed'
+                // A computed report has no uploader or file — "by Computed AVT · · Computed" said nothing.
+                ? <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+                    <span style={{ color: 'var(--success)' }}>Computed</span> {new Date(avtReport.computed_at ?? avtReport.uploaded_at).toLocaleString()}
                   </span>
-                </span>
+                : <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+                    uploaded {new Date(avtReport.uploaded_at).toLocaleString()} · by {avtReport.uploaded_by_name || avtReport.uploaded_by_email}
+                    {avtReport.file_name ? <> · {avtReport.file_name}</> : null} · Uploaded
+                  </span>
               : <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>no variance computed for this audit yet — it's computed automatically when the audit's Count 2 closes on the phone</span>}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
@@ -653,6 +709,17 @@ function localDateKey(iso: string): string {
   return `${y}-${m}-${day}`;
 }
 
+/** [from, to) instants of a local calendar day 'YYYY-MM-DD' — the day the date
+ *  picker means, not the UTC one — as ISO strings for a server-side range.
+ *  Built from local midnights, so a DST-change day is 23 or 25 hours long.
+ *  Exported for the unit test. */
+export function localDayRange(day: string): { from: string; to: string } | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
+  if (!m) return null;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]) - 1, Number(m[3])];
+  return { from: new Date(y, mo, d).toISOString(), to: new Date(y, mo, d + 1).toISOString() };
+}
+
 function StatTile({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <Card padding={14}>
@@ -668,8 +735,9 @@ function EntryRow({ entry, canEdit, canDelete }: { entry: KountEntry; canEdit: b
   const [busy, setBusy] = useState(false);
 
   const save = async () => {
-    const parsed = Number(qty);
-    if (!Number.isFinite(parsed) || parsed < 0) { alert('Enter a non-negative number'); return; }
+    // A cleared box is not 0 (Number('') is 0) — see lib/qtyDraft.
+    const parsed = parseQtyDraft(qty);
+    if (parsed === null) { alert('Enter a non-negative number'); return; }
     setBusy(true);
     const { error } = await supabase.from('kount_entries').update({ qty: parsed }).eq('id', entry.id);
     setBusy(false);
@@ -711,7 +779,9 @@ function EntryRow({ entry, canEdit, canDelete }: { entry: KountEntry; canEdit: b
             </>
           ) : (
             <>
-              {canEdit && <Btn variant="ghost" size="sm" onClick={() => setEditing(true)} title="Edit qty">Edit</Btn>}{' '}
+              {/* Start from the live qty: the draft was only set at mount, so a
+                  later realtime change would otherwise be saved back over. */}
+              {canEdit && <Btn variant="ghost" size="sm" onClick={() => { setQty(String(entry.qty)); setEditing(true); }} title="Edit qty">Edit</Btn>}{' '}
               {canDelete && <Btn variant="ghost" size="sm" onClick={remove} disabled={busy} style={{ color: 'var(--raspberry-300)' }}>Delete</Btn>}
             </>
           )}
@@ -782,7 +852,7 @@ function AuditListItem({ audit, selected, onClick }: { audit: KountAudit; select
   : audit.count_phase === 'count1' ? 'gold'
   : audit.count_phase === 'review' ? 'inform'
   : 'positive';
-  const badgeLabel = audit.status === 'cancelled' ? 'cancelled' : audit.status === 'submitted' ? 'submitted' : audit.count_phase;
+  const badgeLabel = auditStageLabel(audit);
   const timestampLabel = isHistoric && audit.completed_at
     ? new Date(audit.completed_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
     : new Date(audit.started_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });

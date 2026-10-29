@@ -8,6 +8,7 @@ import {
   priceLines, buildSeries, buildMovers, splitMovers, monthlySpend, summarize, moversCsv, periodStart, lineSpend, checkReason,
   type PurchaseLine, type PricedLine, type Mover, type Series, type SpendGroup, type MoverSort, type BevCategory, type MonthRange,
 } from '@/lib/purchasePrices';
+import { localIsoDate } from '@/lib/auditReport';
 
 /* ───────────────────────────────────────────────────────────────────────
    Purchase prices (v0.74) — admin + corporate only.
@@ -230,7 +231,7 @@ function ChangesView({ movers, onItem }: { movers: Mover[]; onItem: (id: string)
     const blob = new Blob([moversCsv([...up, ...down])], { type: 'text/csv' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `purchase-price-changes-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `purchase-price-changes-${localIsoDate(new Date())}.csv`;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 30000);
   };

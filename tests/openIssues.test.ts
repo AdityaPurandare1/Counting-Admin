@@ -9,7 +9,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { hasIssue, isOpenIssue } from '../src/lib/issues';
+import { hasIssue, isOpenIssue, issueLabel } from '../src/lib/issues';
 
 let passed = 0;
 let failed = 0;
@@ -35,6 +35,18 @@ for (const f of ['src/screens/Summary.tsx', 'src/screens/Variance.tsx', 'src/scr
   check(`${f} has no bare issue-flag test`, !bare.test(s), s.match(bare)?.[0]);
 }
 check('Issues screen still defaults to open only', /useState<StatusChoice>\('open'\)/.test(src('src/screens/Issues.tsx')));
+
+// v0.77: the stored token stays `not-in-craftable`, but nobody should read it.
+check('label: not-in-craftable reads "not in inventory"', issueLabel('not-in-craftable') === 'not in inventory');
+check('label: no-upc reads "no UPC"', issueLabel('no-upc') === 'no UPC');
+check('label: other tokens de-hyphenate', issueLabel('wrong-vintage') === 'wrong vintage');
+check('label: null/empty -> empty string', issueLabel(null) === '' && issueLabel('') === '' && issueLabel(undefined) === '');
+// Every place a raw issue token used to reach the screen or a CSV goes through issueLabel.
+const rawIssue = /\{(entry|r|e)\.issue\}|r\.issue \?\? ''/;
+for (const f of ['src/screens/Summary.tsx', 'src/screens/Counts.tsx', 'src/screens/Issues.tsx']) {
+  const s = src(f);
+  check(`${f} shows issues through issueLabel`, s.includes('issueLabel(') && !rawIssue.test(s), s.match(rawIssue)?.[0]);
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { supabase, selectAllPaged, selectAllPagedFiltered } from '@/lib/supabase';
-import { VENUES, isOrgWide, canRunAudits } from '@/lib/access';
+import { VENUES, isOrgWide, canRunAudits, memberRoleFor } from '@/lib/access';
 import type { AccessEntry } from '@/lib/access';
 import type { KountAudit, KountEntry, KountVenueZone, MasterItem } from '@/lib/types';
 import { IN_SCOPE_CATEGORIES } from '@/lib/types';
 import { Btn, Card, Eyebrow, Pill, Progress, Segment } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
 import { getDefaultZones } from '@/lib/venueMap';
-import { isOpenIssue } from '@/lib/issues';
+import { isOpenIssue, issueLabel } from '@/lib/issues';
 import { buildAuditReportModel, buildAuditWorkbookBlob, localIsoDate } from '@/lib/auditReport';
 import { loadAuditReportData } from '@/lib/auditReportData';
+import { parseQtyDraft } from '@/lib/qtyDraft';
+import { auditStageLabel, phaseLabel } from '@/lib/auditPhase';
 
 /* ───────────────────────────────────────────────────────────────────────
    Counts — admin counting workspace (v0.17)
@@ -153,7 +155,7 @@ export function Counts({ user }: Props) {
             <option value="">Select an audit…</option>
             {audits.map(a => (
               <option key={a.id} value={a.id}>
-                {a.join_code} · {a.venue_name} · {a.status === 'submitted' ? 'submitted' : a.count_phase}
+                {a.join_code} · {a.venue_name} · {auditStageLabel(a)}
               </option>
             ))}
           </select>
@@ -169,7 +171,9 @@ export function Counts({ user }: Props) {
       <div className="content">
         {!selectedAudit
           ? <Card padding={24}><div style={{ color: 'var(--fg-muted)' }}>Pick an audit above to start counting, or click “Start audit” to open a fresh one.</div></Card>
-          : <CountsWorkspace audit={selectedAudit} user={user} />}
+          // Keyed by audit: switching audits must not carry the previous one's
+          // zone, entries or drafts over (an entry could land in the old venue's zone).
+          : <CountsWorkspace key={selectedAudit.id} audit={selectedAudit} user={user} />}
       </div>
 
       {showStart && isAdminish && (
@@ -186,6 +190,7 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
   const isReadOnly   = audit.status !== 'active';
 
   const [entries, setEntries] = useState<KountEntry[]>([]);
+  const [entriesError, setEntriesError] = useState<string | null>(null);
   const [zonesDb, setZonesDb] = useState<KountVenueZone[]>([]);
   const [catalog, setCatalog] = useState<MasterItem[]>([]);
   const [carried, setCarried] = useState<Set<string>>(new Set());
@@ -212,8 +217,12 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
         { column: 'timestamp', ascending: false },
       );
       setEntries(rows);
+      setEntriesError(null);
     } catch (error) {
       console.error('[counts] load entries', error);
+      // Don't leave the last good (or another audit's) list on screen as if it were current.
+      setEntries([]);
+      setEntriesError((error as { message?: string })?.message ?? String(error));
     }
   }, [audit.id]);
 
@@ -294,13 +303,17 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
     return () => { supabase.removeChannel(ch); };
   }, [audit.id, loadEntries]);
 
+  // Topic carries the audit id too: the workspace is keyed by audit, so moving
+  // between two audits at one venue unmounts and remounts it in one commit. A
+  // venue-only topic would be re-requested while the old channel is still
+  // leaving — realtime-js returns that dying channel and zone updates stop.
   useEffect(() => {
     const ch = supabase
-      .channel('counts-zones-' + audit.venue_id)
+      .channel('counts-zones-' + audit.venue_id + '-' + audit.id)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'kount_venue_zones', filter: `venue_id=eq.${audit.venue_id}` }, () => { void loadZones(); })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
-  }, [audit.venue_id, loadZones]);
+  }, [audit.venue_id, audit.id, loadZones]);
 
   // ── Counts per zone ─────────────────────────────────────────────────
   const countsByZone = useMemo(() => {
@@ -521,7 +534,7 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
         'that only happens when the counting manager closes Count 1 on the phone. ' +
         'Count 2 will start without a recount list.\n\nProceed anyway?'
       : '';
-    if (!confirm(`Advance audit to "${next}"? Counters will see the change immediately.${recountWarning}`)) return;
+    if (!confirm(`Advance audit to "${phaseLabel(next)}"? Counters will see the change immediately.${recountWarning}`)) return;
     const patch: Partial<KountAudit> = { count_phase: next };
     if (next === 'count2') patch.count1_closed_at = new Date().toISOString();
     if (next === 'final')  patch.count2_closed_at = new Date().toISOString();
@@ -559,6 +572,10 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
 
   const cancelAudit = async () => {
     if (!isAdminish || isReadOnly) return;
+    if (entriesError) {
+      alert('The entries for this audit could not be loaded, so how many would be discarded is unknown.\n\nNothing was cancelled. Retry the load first.');
+      return;
+    }
     const itemCount = entries.length;
     const msg = itemCount === 0
       ? 'Cancel this audit? No items have been counted.'
@@ -676,6 +693,17 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
         canAdd={!isReadOnly}
       />
 
+      {entriesError && (
+        <Card padding={14} style={{ borderColor: 'var(--raspberry-300)', background: 'var(--raspberry-100)' }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: 240, fontSize: 12, color: 'var(--raspberry-400)' }}>
+              Entries failed to load: {entriesError} — the list and zone counts below are empty until they load.
+            </div>
+            <Btn variant="secondary" size="sm" onClick={() => void loadEntries()}>Retry</Btn>
+          </div>
+        </Card>
+      )}
+
       {catalogError && (
         <Card padding={14} style={{ borderColor: 'var(--raspberry-300)', background: 'var(--raspberry-100)' }}>
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -739,7 +767,7 @@ function AuditHeader({
   onSubmit: () => void;
   onCancel: () => void;
 }) {
-  const phaseLabel = audit.status === 'submitted' ? 'submitted' : audit.count_phase;
+  const stageLabel = auditStageLabel(audit);
   const phaseTone = audit.status === 'submitted' ? 'positive'
                   : audit.count_phase === 'count1' ? 'gold'
                   : audit.count_phase === 'review' ? 'inform'
@@ -753,7 +781,7 @@ function AuditHeader({
           <Eyebrow>Active audit</Eyebrow>
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 6 }}>
             <div style={{ fontSize: 18, fontWeight: 700 }}>{audit.venue_name}</div>
-            <Pill tone={phaseTone} size="sm">{phaseLabel}</Pill>
+            <Pill tone={phaseTone} size="sm">{stageLabel}</Pill>
           </div>
           <div style={{ marginTop: 6, fontSize: 12, color: 'var(--fg-muted)' }}>
             <span style={{ fontFamily: 'JetBrains Mono, monospace', color: 'var(--accent-bg)', letterSpacing: 2, marginRight: 8 }}>
@@ -775,7 +803,7 @@ function AuditHeader({
             <>
               {next && (
                 <Btn variant="secondary" size="sm" onClick={onAdvance}>
-                  Advance to {next}
+                  Advance to {phaseLabel(next)}
                 </Btn>
               )}
               <Btn variant="primary" size="sm" leading={Ic.checkCircle(14)} onClick={onSubmit}>
@@ -1104,8 +1132,9 @@ function AddEntryCard({
   };
 
   const submit = () => {
-    const q = Number(qty);
-    if (!Number.isFinite(q) || q < 0) { alert('Enter a valid quantity'); return; }
+    // A blank box is not a count of 0 (Number('') is 0) — see lib/qtyDraft.
+    const q = parseQtyDraft(qty);
+    if (q === null) { alert('Enter a valid quantity'); return; }
     if (mode === 'search' && !picked) { alert('Pick an item from the suggestions'); return; }
     if (mode === 'manual' && !customName.trim()) { alert('Enter an item name'); return; }
     if (mode === 'upc' && !picked) { alert('Type a UPC that matches the catalog'); return; }
@@ -1348,13 +1377,26 @@ function EntryRow({
 }) {
   const [qtyDraft, setQtyDraft] = useState<string>('');
   const [editing, setEditing] = useState(false);
+  // Brief note when a typed value is refused, so the revert isn't silent.
+  const [qtyNote, setQtyNote] = useState<string | null>(null);
+  useEffect(() => {
+    if (!qtyNote) return;
+    const t = setTimeout(() => setQtyNote(null), 3000);
+    return () => clearTimeout(t);
+  }, [qtyNote]);
 
   useEffect(() => { if (!editing) setQtyDraft(String(entry.qty)); }, [entry.qty, editing]);
 
   const commit = async () => {
-    const v = Number(qtyDraft);
+    const v = parseQtyDraft(qtyDraft);
     setEditing(false);
-    if (!Number.isFinite(v)) { setQtyDraft(String(entry.qty)); return; }
+    // Cleared or unreadable (a number input reports '' for both) reverts
+    // instead of saving 0 over the real count. A typed 0 still saves.
+    if (v === null) {
+      if (Number(qtyDraft.trim()) < 0) setQtyNote(`Can't be negative — kept ${entry.qty}`);
+      setQtyDraft(String(entry.qty));
+      return;
+    }
     if (v === entry.qty) return;
     await onEditQty(entry.id, v);
   };
@@ -1385,13 +1427,14 @@ function EntryRow({
             style={{ width: 70, padding: '4px 6px', border: '1px solid var(--border)', borderRadius: 4, fontFamily: 'JetBrains Mono, monospace', fontSize: 12 }}
           />
         ) : Number(entry.qty).toFixed(Number.isInteger(entry.qty) ? 0 : 1)}
+        {qtyNote && <div role="status" style={{ marginTop: 2, fontSize: 10, color: 'var(--raspberry-300)', fontFamily: 'inherit' }}>{qtyNote}</div>}
       </td>
       <td style={{ padding: '8px 14px', fontSize: 12, color: 'var(--fg-muted)' }}>{entry.method ?? '—'}</td>
       <td style={{ padding: '8px 14px', fontSize: 12, color: 'var(--fg-muted)' }}>{entry.counted_by_name || entry.counted_by_email}</td>
       <td style={{ padding: '8px 14px', fontSize: 11, color: 'var(--fg-muted)' }}>{new Date(entry.timestamp).toLocaleTimeString()}</td>
       <td style={{ padding: '8px 14px' }}>
         {entry.issue
-          ? <Pill tone={entry.issue_resolved ? 'positive' : 'caution'} size="sm">{entry.issue}</Pill>
+          ? <Pill tone={entry.issue_resolved ? 'positive' : 'caution'} size="sm">{issueLabel(entry.issue)}</Pill>
           : <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>—</span>}
       </td>
       {canDelete && (
@@ -1537,14 +1580,25 @@ function StartAuditModal({
         .single();
       if (error || !data) throw new Error(error?.message ?? 'Insert failed');
 
-      // Add starter as a member (mirrors phone). Fire-and-forget.
-      void supabase.from('kount_members').insert({
-        audit_id:        (data as KountAudit).id,
-        user_email:      user.email,
-        user_name:       user.name,
-        role:            user.role,
-        assigned_zones:  [],
-      });
+      // Add starter as a member (mirrors phone). kount_members.role only
+      // accepts corporate|manager|counter (0001's CHECK), so an admin or
+      // venue_manager insert used to fail silently — memberRoleFor maps the
+      // desktop role, and keeps venue_manager off the roster as the phone does.
+      // The audit already exists, so a roster failure is reported, not fatal.
+      const memberRole = memberRoleFor(user.role);
+      if (memberRole) {
+        const { error: memErr } = await supabase.from('kount_members').insert({
+          audit_id:        (data as KountAudit).id,
+          user_email:      user.email,
+          user_name:       user.name,
+          role:            memberRole,
+          assigned_zones:  [],
+        });
+        if (memErr && memErr.code !== '23505') {
+          console.warn('[counts] add starter as member', memErr);
+          alert(`Audit ${join_code} started, but you could not be added to its member list: ${memErr.message}`);
+        }
+      }
 
       onStarted((data as KountAudit).id);
     } catch (e) {

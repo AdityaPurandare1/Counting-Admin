@@ -6,6 +6,7 @@ import type { AccessEntry } from '@/lib/access';
 import type { KountAudit, KountAvtReport, PurchaseItem } from '@/lib/types';
 import { Pill, Eyebrow, Card, Num } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
+import { phaseLabel } from '@/lib/auditPhase';
 
 /* ───────────────────────────────────────────────────────────────────────
    Venues screen (v0.9)
@@ -169,7 +170,7 @@ function VenueCard({
             <div style={{ fontSize: 15, fontWeight: 700, letterSpacing: '-.005em' }}>{name}</div>
             {!active && !latest && <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 4 }}>No audit history yet</div>}
           </div>
-          {active && <Pill tone={active.count_phase === 'count1' ? 'gold' : active.count_phase === 'review' ? 'inform' : 'positive'} size="sm">{active.count_phase}</Pill>}
+          {active && <Pill tone={active.count_phase === 'count1' ? 'gold' : active.count_phase === 'review' ? 'inform' : 'positive'} size="sm">{phaseLabel(active.count_phase)}</Pill>}
         </div>
       </div>
 

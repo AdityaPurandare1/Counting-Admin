@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { supabase } from '@/lib/supabase';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { supabase, channelTopic } from '@/lib/supabase';
 import { VENUES, isOrgWide } from '@/lib/access';
 import type { AccessEntry } from '@/lib/access';
 import type { KountAudit, KountEntry } from '@/lib/types';
 import { Pill, Eyebrow, Card, Btn } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
+import { issueLabel } from '@/lib/issues';
 
 /* ───────────────────────────────────────────────────────────────────────
    Issues screen (v0.10)
@@ -32,18 +33,6 @@ const KNOWN_ISSUES = [
   'other',
 ] as const;
 
-// Display labels. The persisted token stays `not-in-craftable` (it's written to
-// kount_entries.issue and referenced across apps), but Craftable is deprecated —
-// surface it to users as "not in inventory". Other tokens just de-hyphenate.
-const ISSUE_LABELS: Record<string, string> = {
-  'not-in-craftable': 'not in inventory',
-  'no-upc': 'no UPC',
-};
-const issueLabel = (t: string | null | undefined): string => {
-  if (!t) return '';
-  return ISSUE_LABELS[t] ?? t.replace(/-/g, ' ');
-};
-
 type WindowChoice = 'all' | '7d' | '24h';
 type StatusChoice = 'open' | 'resolved' | 'all';
 
@@ -62,8 +51,13 @@ export function Issues({ user }: Props) {
     return VENUES.filter(v => set.has(v.id));
   }, [user]);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const loadSeq = useRef(0);
+  // `quiet`: a realtime refresh keeps the current table on screen; only a
+  // user-driven load (filters, Refresh) shows "Loading…".
+  const load = useCallback(async (quiet = false) => {
+    // Switching venue / window / status quickly: only the newest answer may land.
+    const seq = ++loadSeq.current;
+    if (!quiet) setLoading(true);
 
     // Time window → timestamp cutoff
     const now = Date.now();
@@ -71,20 +65,29 @@ export function Issues({ user }: Props) {
                  : window_ === '7d'  ? new Date(now - 7 * 86_400_000).toISOString()
                  : null;
 
+    // Venue scope goes to the server (inner-joined through the entry's audit),
+    // so the 500 cap applies to THIS venue's issues. Filtered in the browser
+    // after the cap, a venue whose issues weren't among the newest 500
+    // company-wide looked like it had none.
+    const venueScope = venue
+      ? [venue]
+      : isOrgWide(user.role) ? null : visibleVenues.map(v => v.id);
     let q = supabase
       .from('kount_entries')
-      .select('*')
+      .select(venueScope ? '*, kount_audits!inner(venue_id)' : '*')
       .neq('issue', 'none')
       .order('timestamp', { ascending: false })
       .limit(500);
+    if (venueScope) q = q.in('kount_audits.venue_id', venueScope);
     if (cutoff) q = q.gte('timestamp', cutoff);
     if (status === 'open')     q = q.eq('issue_resolved', false);
     if (status === 'resolved') q = q.eq('issue_resolved', true);
 
     const { data: entriesRows, error } = await q;
+    if (seq !== loadSeq.current) return;
     if (error) { console.error('[issues] load', error); setLoading(false); return; }
 
-    const rows = (entriesRows ?? []) as KountEntry[];
+    const rows = (entriesRows ?? []) as unknown as KountEntry[];
 
     // Pull audits referenced by these entries to get venue context
     const auditIds = Array.from(new Set(rows.map(r => r.audit_id)));
@@ -96,6 +99,7 @@ export function Issues({ user }: Props) {
         .in('id', auditIds);
       for (const a of (auditRows ?? []) as KountAudit[]) auditMap.set(a.id, a);
     }
+    if (seq !== loadSeq.current) return;
     setAudits(auditMap);
 
     // Filter by user's visible venues
@@ -108,10 +112,17 @@ export function Issues({ user }: Props) {
     });
     setEntries(filtered);
     setLoading(false);
-  }, [window_, status, user, visibleVenues]);
+  }, [window_, status, venue, user, visibleVenues]);
 
   useEffect(() => { void load(); }, [load]);
 
+  // Subscribed ONCE; the handler calls the current load() through a ref. The
+  // effect used to depend on load, so every filter change (now including the
+  // venue) re-subscribed the same topic while the old channel was still leaving:
+  // realtime-js returns that channel, subscribe() does nothing on it, and the
+  // server's ack then drops it, so live updates silently stopped.
+  const loadRef = useRef(load);
+  useEffect(() => { loadRef.current = load; }, [load]);
   useEffect(() => {
     // Debounce: during a busy audit kount_entries fires many events per
     // second, and load() re-runs the full filtered query each time.
@@ -119,17 +130,17 @@ export function Issues({ user }: Props) {
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     const debouncedReload = () => {
       if (timeoutId) clearTimeout(timeoutId);
-      timeoutId = setTimeout(() => { void load(); }, 500);
+      timeoutId = setTimeout(() => { void loadRef.current(true); }, 500);
     };
     const ch = supabase
-      .channel('kount-issues-live')
+      .channel(channelTopic('kount-issues-live'))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'kount_entries' }, debouncedReload)
       .subscribe();
     return () => {
       if (timeoutId) clearTimeout(timeoutId);
       supabase.removeChannel(ch);
     };
-  }, [load]);
+  }, []);
 
   const rendered = useMemo(() => {
     return entries.filter(e => {

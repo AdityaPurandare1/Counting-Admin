@@ -1,6 +1,6 @@
-import { createContext, useContext, useEffect, useMemo, useState, useCallback } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import type { ReactNode } from 'react';
-import { supabase } from './supabase';
+import { supabase, channelTopic } from './supabase';
 import type { KountAudit, CountPhase, AuditStatus } from './types';
 import type { AccessEntry } from './access';
 
@@ -62,8 +62,21 @@ function venueVisibleToUser(user: AccessEntry | null, venueId: string): boolean 
   return Array.isArray(user.venueIds) && user.venueIds.includes(venueId);
 }
 
-/** Builds a human-readable title from a phase / status transition. */
-function phaseMessage(audit: KountAudit, prevPhase: CountPhase, prevStatus: AuditStatus): { title: string; body?: string } | null {
+export type AuditState = { status: AuditStatus; count_phase: CountPhase };
+
+/** What an audit was before an UPDATE. kount_audits keeps the default replica
+ *  identity, so payload.old carries only the id; every missing "previous"
+ *  value used to default to active/count1, and reactivating a cancelled audit
+ *  that was in review toasted "Count 1 … completed". So the provider tracks the
+ *  last state it saw per audit. Unknown → null → no toast: a missed
+ *  notification beats a false one. Exported for the unit test. */
+export function priorAuditState(known: AuditState | undefined, old: Partial<KountAudit> | null | undefined): AuditState | null {
+  if (old?.status && old.count_phase) return { status: old.status, count_phase: old.count_phase };
+  return known ?? null;
+}
+
+/** Builds a human-readable title from a phase / status transition. Exported for the unit test. */
+export function phaseMessage(audit: KountAudit, prevPhase: CountPhase, prevStatus: AuditStatus): { title: string; body?: string } | null {
   if (audit.status === 'cancelled' && prevStatus !== 'cancelled') {
     return { title: `Audit cancelled — ${audit.venue_name}` };
   }
@@ -131,23 +144,47 @@ export function NotificationProvider({ user, children }: { user: AccessEntry | n
   // Subscribe to kount_audits changes globally, filter client-side to venues
   // the user can see. Permissive-dev RLS lets anon see every row — if/when we
   // tighten RLS, the filter here becomes redundant but not wrong.
+  // Subscribed per user only; push (which changes with the venue filter) is
+  // read through a ref. Re-subscribing on a filter change reused the topic
+  // while the old channel was still leaving, and realtime-js then dropped it.
+  const pushRef = useRef(push);
+  useEffect(() => { pushRef.current = push; }, [push]);
   useEffect(() => {
     if (!user) return;
 
+    // Last status/phase seen per audit (see priorAuditState). Seeded once here;
+    // a realtime event that lands first wins over the seed for that audit.
+    const known = new Map<string, AuditState>();
+    let live = true;
+    void supabase
+      .from('kount_audits')
+      .select('id,status,count_phase')
+      .order('started_at', { ascending: false })
+      .limit(1000)
+      .then(({ data, error }) => {
+        if (!live) return;
+        if (error) { console.warn('[notifications] audit states not loaded; phase toasts wait for the next change', error); return; }
+        for (const r of (data ?? []) as Array<AuditState & { id: string }>) {
+          if (!known.has(r.id)) known.set(r.id, { status: r.status, count_phase: r.count_phase });
+        }
+      });
+
     const channel = supabase
-      .channel('kount-audits-notifications')
+      .channel(channelTopic('kount-audits-notifications'))
       .on('postgres_changes', {
         event: 'UPDATE',
         schema: 'public',
         table: 'kount_audits',
       }, (payload) => {
         const next = payload.new as KountAudit;
-        const prev = (payload.old ?? {}) as Partial<KountAudit>;
         if (!next || !next.venue_id) return;
+        const prev = priorAuditState(known.get(next.id), payload.old as Partial<KountAudit> | null);
+        known.set(next.id, { status: next.status, count_phase: next.count_phase });
+        if (!prev) return;
         if (!venueVisibleToUser(user, next.venue_id)) return;
-        const msg = phaseMessage(next, (prev.count_phase ?? 'count1') as CountPhase, (prev.status ?? 'active') as AuditStatus);
+        const msg = phaseMessage(next, prev.count_phase, prev.status);
         if (!msg) return;
-        push({
+        pushRef.current({
           title: msg.title,
           body: msg.body,
           auditId: next.id,
@@ -161,8 +198,9 @@ export function NotificationProvider({ user, children }: { user: AccessEntry | n
         table: 'kount_audits',
       }, (payload) => {
         const row = payload.new as KountAudit;
+        if (row?.id) known.set(row.id, { status: row.status, count_phase: row.count_phase });
         if (!row || !venueVisibleToUser(user, row.venue_id)) return;
-        push({
+        pushRef.current({
           title: `New audit started — ${row.venue_name}`,
           body: `by ${row.started_by_name || row.started_by_email}`,
           auditId: row.id,
@@ -172,8 +210,8 @@ export function NotificationProvider({ user, children }: { user: AccessEntry | n
       })
       .subscribe();
 
-    return () => { supabase.removeChannel(channel); };
-  }, [user, push]);
+    return () => { live = false; supabase.removeChannel(channel); };
+  }, [user]);
 
   const unread = useMemo(() => items.filter(i => !i.read).length, [items]);
 

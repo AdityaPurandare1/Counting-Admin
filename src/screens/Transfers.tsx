@@ -64,6 +64,9 @@ export function Transfers({ user }: Props) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [venueFilter, setVenueFilter] = useState('');
   const [showForm, setShowForm] = useState(false);
+  // The save confirmation lives here, not in the form: saving closes the form,
+  // which used to unmount the message the moment it appeared.
+  const [savedMsg, setSavedMsg] = useState<string | null>(null);
 
   const visibleVenues = useMemo(() => {
     if (isOrgWide(user.role) || user.venueIds === 'all') return VENUES;
@@ -126,7 +129,7 @@ export function Transfers({ user }: Props) {
             Bottles moved between venues. A transfer adds to the receiving venue's expected stock and takes it off the sender's, in the count window it falls into.
           </div>
         </div>
-        <Btn variant="primary" size="sm" onClick={() => setShowForm(s => !s)}>{showForm ? 'Close form' : 'Record a transfer'}</Btn>
+        <Btn variant="primary" size="sm" onClick={() => { setSavedMsg(null); setShowForm(s => !s); }}>{showForm ? 'Close form' : 'Record a transfer'}</Btn>
       </div>
 
       <div className="content">
@@ -134,9 +137,10 @@ export function Transfers({ user }: Props) {
           <TransferForm
             user={user}
             venues={visibleVenues}
-            onSaved={() => { setShowForm(false); void load(); }}
+            onSaved={(text) => { setSavedMsg(text); setShowForm(false); void load(); }}
           />
         )}
+        {savedMsg && <div style={okBox}>{savedMsg}</div>}
 
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', margin: '14px 0' }}>
           <select style={picker} value={venueFilter} onChange={e => setVenueFilter(e.target.value)}>
@@ -196,7 +200,7 @@ export function Transfers({ user }: Props) {
   );
 }
 
-function TransferForm({ user, venues, onSaved }: { user: AccessEntry; venues: Array<{ id: string; name: string }>; onSaved: () => void }) {
+function TransferForm({ user, venues, onSaved }: { user: AccessEntry; venues: Array<{ id: string; name: string }>; onSaved: (message: string) => void }) {
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [when, setWhen] = useState(() => toLocalInput(new Date()));
@@ -204,13 +208,13 @@ function TransferForm({ user, venues, onSaved }: { user: AccessEntry; venues: Ar
   const [note, setNote] = useState('');
   const [lines, setLines] = useState<DraftLine[]>([blankLine()]);
   const [saving, setSaving] = useState(false);
-  const [msg, setMsg] = useState<{ tone: 'err' | 'ok'; text: string } | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
 
   const setLine = (key: number, patch: Partial<DraftLine>) => setLines(ls => ls.map(l => (l.key === key ? { ...l, ...patch } : l)));
 
   const save = async () => {
     const problem = validateDraft(from, to, when, lines);
-    if (problem) { setMsg({ tone: 'err', text: problem }); return; }
+    if (problem) { setMsg(problem); return; }
     setSaving(true); setMsg(null);
     const payload = lines.filter(l => l.item).map(l => ({
       master_item_id: l.item!.id, qty: Number(l.qty), ...(l.unitCost.trim() ? { unit_cost: Number(l.unitCost) } : {}),
@@ -220,11 +224,9 @@ function TransferForm({ user, venues, onSaved }: { user: AccessEntry; venues: Ar
       p_transferred_by: by, p_note: note, p_lines: payload,
     });
     setSaving(false);
-    if (error) { setMsg({ tone: 'err', text: 'Not saved: ' + error.message }); return; }
+    if (error) { setMsg('Not saved: ' + error.message); return; }
     const res = (data ?? {}) as { total?: number; recomputed?: string[] };
-    setMsg({ tone: 'ok', text: `Saved ($${Number(res.total ?? 0).toFixed(2)}).` + (res.recomputed?.length ? ` Recomputed: ${res.recomputed.join(', ')}.` : ' It will count in the next variance report.') });
-    setLines([blankLine()]); setNote('');
-    onSaved();
+    onSaved(`Transfer saved ($${Number(res.total ?? 0).toFixed(2)}).` + (res.recomputed?.length ? ` Recomputed: ${res.recomputed.join(', ')}.` : ' It will count in the next variance report.'));
   };
 
   return (
@@ -269,7 +271,7 @@ function TransferForm({ user, venues, onSaved }: { user: AccessEntry; venues: Ar
         <Btn variant="primary" size="sm" onClick={() => void save()} disabled={saving}>{saving ? 'Saving…' : 'Save transfer'}</Btn>
         <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>Units are counted units (bottles, cans). Unit cost defaults to the sending venue's cost.</span>
       </div>
-      {msg && <div style={{ marginTop: 10, fontSize: 12, color: msg.tone === 'err' ? 'var(--raspberry-300)' : 'var(--positive, #2e7d32)' }}>{msg.text}</div>}
+      {msg && <div style={{ marginTop: 10, fontSize: 12, color: 'var(--raspberry-300)' }}>{msg}</div>}
     </Card>
   );
 }
@@ -326,3 +328,4 @@ const headRow: React.CSSProperties = { textAlign: 'left', color: 'var(--fg-muted
 const th: React.CSSProperties = { padding: '10px 12px', whiteSpace: 'nowrap' };
 const td: React.CSSProperties = { padding: '10px 12px', verticalAlign: 'top' };
 const errBox: React.CSSProperties = { marginBottom: 12, padding: '10px 12px', borderRadius: 8, background: 'rgba(214,51,108,0.10)', border: '1px solid var(--raspberry-300)', fontSize: 12 };
+const okBox: React.CSSProperties = { marginTop: 4, padding: '10px 12px', borderRadius: 8, background: 'rgba(46,125,50,0.08)', border: '1px solid var(--positive, #2e7d32)', fontSize: 12, color: 'var(--positive, #2e7d32)' };

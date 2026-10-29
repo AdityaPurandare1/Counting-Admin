@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { supabase, selectAllPagedFiltered } from '@/lib/supabase';
 import type { AccessEntry } from '@/lib/access';
@@ -6,8 +6,8 @@ import type { KountAudit, KountEntry, KountMember } from '@/lib/types';
 import { Pill, Eyebrow, Card, Btn, Num, Avatar, Segment } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
 import { csvCell } from '@/lib/csv';
-import { isOpenIssue } from '@/lib/issues';
-import { summarizeByItem, zoneBreakdown } from '@/lib/summaryByItem';
+import { isOpenIssue, issueLabel } from '@/lib/issues';
+import { finalCells, recountsAheadOfReport, summarizeByItem, zoneBreakdown, WHOLE_ITEM_ZONE, type RecountRow } from '@/lib/summaryByItem';
 
 import { isOrgWide, hasCorporateAccess, canRunAudits } from '@/lib/access';
 /* ───────────────────────────────────────────────────────────────────────
@@ -23,6 +23,33 @@ import { isOrgWide, hasCorporateAccess, canRunAudits } from '@/lib/access';
 
 interface Props { user: AccessEntry }
 
+type StatusFilter = 'submitted' | 'cancelled' | 'all';
+
+/** A deep-linked audit that was in neither list, after fetching it by id:
+ *  'show' it (spliced into the list), or 'give-up' and clear the selection —
+ *  deleted / not found, still active (that lives in Variance and Counts), or
+ *  at a venue this user can't see. Exported for the unit test. */
+export function deepLinkOutcome(row: Pick<KountAudit, 'status'> | null, canSee: boolean): 'show' | 'give-up' {
+  if (!row || !canSee) return 'give-up';
+  return row.status === 'submitted' || row.status === 'cancelled' ? 'show' : 'give-up';
+}
+
+/** Filter changes that bring a listed deep-linked audit into view; null when
+ *  the current filters already show it. Exported for the unit test. */
+export function revealFilters(
+  a: Pick<KountAudit, 'status' | 'venue_id'>,
+  statusFilter: StatusFilter,
+  venueFilter: string,
+): { status?: 'submitted' | 'cancelled'; clearVenue?: true } | null {
+  const statusOk = statusFilter === 'all' || a.status === statusFilter;
+  const venueOk = !venueFilter || venueFilter === a.venue_id;
+  if (statusOk && venueOk) return null;
+  return {
+    ...(statusOk ? {} : { status: a.status === 'cancelled' ? 'cancelled' as const : 'submitted' as const }),
+    ...(venueOk ? {} : { clearVenue: true as const }),
+  };
+}
+
 export function Summary({ user }: Props) {
   const [params, setParams] = useSearchParams();
   const auditParam = params.get('audit');
@@ -37,7 +64,7 @@ export function Summary({ user }: Props) {
   // the default. Cancelled is its own bucket — bad audits, mistakes, walk-
   // aways. "All" stays available because the cross-cutting view is useful
   // when scanning a date range.
-  const [statusFilter, setStatusFilter] = useState<'submitted' | 'cancelled' | 'all'>('submitted');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('submitted');
 
   const filterVisible = useCallback((rows: KountAudit[]) => rows.filter(a => {
     if (isOrgWide(user.role) || user.venueIds === 'all') return true;
@@ -86,14 +113,57 @@ export function Summary({ user }: Props) {
     return xs;
   }, [audits, venueFilter, statusFilter]);
 
+  // Deep link (?audit=<id>, e.g. the Venues card's "Last audit"): make sure the
+  // audit is in the list and that the status / venue filters show it. Mirrors
+  // Counts.tsx: the audit can be older than the 200 loaded, so fetch it by id
+  // and splice it in; and a cancelled one is hidden by the default Submitted
+  // tab, so switch tabs. Marked done per id only once the filters already show
+  // it, so the effect below never sees a half-applied filter change.
+  const revealedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!auditParam || loading || revealedRef.current === auditParam) return;
+    const listed = audits.find(a => a.id === auditParam);
+    if (listed) {
+      const change = revealFilters(listed, statusFilter, venueFilter);
+      if (!change) { revealedRef.current = auditParam; return; }
+      if (change.status) setStatusFilter(change.status);
+      if (change.clearVenue) setVenueFilter('');
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const { data, error } = await supabase
+        .from('kount_audits')
+        .select('*')
+        .eq('id', auditParam)
+        .maybeSingle();
+      if (cancelled) return;
+      const row = error ? null : (data as KountAudit | null);
+      if (deepLinkOutcome(row, !!row && filterVisible([row]).length > 0) === 'give-up' || !row) {
+        if (!row) console.warn('[summary] deep-linked audit not found', auditParam, error);
+        revealedRef.current = auditParam;
+        // Clear it here: the ref alone doesn't re-render, so the effect below
+        // never ran and the panel sat on "Loading audit…" for good.
+        selectAudit(null);
+        return;
+      }
+      setAudits(prev => prev.some(a => a.id === row.id) ? prev : [row, ...prev]);
+    })();
+    return () => { cancelled = true; };
+  }, [auditParam, audits, loading, statusFilter, venueFilter, filterVisible]);
+
   // If the currently-selected audit drops out of the filter (e.g. user
   // switched from Submitted to Cancelled), close the detail panel so the
-  // right pane doesn't show an audit the user can't see in the list.
+  // right pane doesn't show an audit the user can't see in the list. Not
+  // while the list is loading or a deep link is still being resolved — that
+  // used to clear the Venues link's selection before the list arrived.
   useEffect(() => {
+    if (loading) return;
+    if (auditParam && revealedRef.current !== auditParam) return;
     if (selectedId && !filtered.some(a => a.id === selectedId)) {
       selectAudit(null);
     }
-  }, [filtered, selectedId]);
+  }, [filtered, selectedId, loading, auditParam]);
 
   /* Sweep cancelled audits in the user's venue scope. Built for the
      bulk-cleanup workflow after StaleAuditsPrompt mass-cancels —
@@ -256,7 +326,7 @@ export function Summary({ user }: Props) {
       <div className="content" style={{ display: 'grid', gridTemplateColumns: '300px 1fr', gap: 20 }}>
         <aside>
           <div style={{ marginBottom: 12 }}>
-            <Segment<'submitted' | 'cancelled' | 'all'>
+            <Segment<StatusFilter>
               value={statusFilter}
               onChange={setStatusFilter}
               options={[
@@ -290,7 +360,9 @@ export function Summary({ user }: Props) {
 
         <section>
           {selectedId
-            ? <SummaryDetail auditId={selectedId} user={user} onAuditChanged={() => void load()} />
+            // Keyed by audit: nothing loaded for the previous audit (its entry
+            // list, which Delete's confirm reads) may show under this one.
+            ? <SummaryDetail key={selectedId} auditId={selectedId} user={user} onAuditChanged={() => void load()} />
             : <Card padding={24}><div style={{ color: 'var(--fg-muted)' }}>Pick an audit on the left to see its full breakdown.</div></Card>}
         </section>
       </div>
@@ -341,6 +413,11 @@ function SummaryDetail({
 }) {
   const [audit, setAudit]     = useState<KountAudit | null>(null);
   const [entries, setEntries] = useState<KountEntry[]>([]);
+  const [entriesError, setEntriesError] = useState<string | null>(null);
+  const [recounts, setRecounts] = useState<RecountRow[]>([]);
+  const [recountError, setRecountError] = useState<string | null>(null);
+  // computed_at of the audit's variance report: null = no report, undefined = not known.
+  const [reportAt, setReportAt] = useState<string | null | undefined>(undefined);
   const [members, setMembers] = useState<KountMember[]>([]);
   const [drill, setDrill]     = useState<Drill | null>(null);
   const [reactBusy, setReactBusy] = useState(false);
@@ -359,25 +436,47 @@ function SummaryDetail({
   const load = useCallback(async () => {
     // kount_entries paginated past the 1000-row cap so the CSV export
     // and zone breakdown don't silently lose rows from busy audits.
-    const [{ data: a }, e, { data: m }] = await Promise.all([
+    // A failed read is kept as an error, not turned into "no entries": Delete
+    // reads the entry count, and an empty list made it say "safe to drop".
+    const settle = <T,>(what: string, p: Promise<T[]>) => p.then(
+      rows => ({ rows, error: null as string | null }),
+      (err: unknown) => {
+        console.error('[summary] load ' + what, err);
+        return { rows: [] as T[], error: (err as { message?: string })?.message ?? String(err) };
+      },
+    );
+    const [{ data: a }, e, { data: m }, rc, rep] = await Promise.all([
       supabase.from('kount_audits').select('*').eq('id', auditId).single(),
-      selectAllPagedFiltered<KountEntry>(
+      settle('entries', selectAllPagedFiltered<KountEntry>(
         () => supabase.from('kount_entries').select('*').eq('audit_id', auditId),
         { column: 'timestamp', ascending: true },
-      ).catch((err): KountEntry[] => { console.error('[summary] load entries', err); return []; }),
+      )),
       supabase.from('kount_members').select('*').eq('audit_id', auditId),
+      // v0.77: recount corrections, applied the way compute_avt_for_audit does.
+      // Paged by id: created_at is not unique, so it can split a page unevenly.
+      settle('recounts', selectAllPagedFiltered<RecountRow>(
+        () => supabase.from('kount_recounts')
+          .select('id,master_item_id,item_name,zone,count2_qty,status,resolved_at,created_at')
+          .eq('audit_id', auditId),
+        { column: 'id', ascending: true },
+      )),
+      // When this audit's variance was last computed — to say when the stored
+      // variance predates a correction shown here.
+      supabase.from('kount_avt_reports').select('computed_at')
+        .eq('audit_id', auditId).eq('source', 'computed')
+        .order('computed_at', { ascending: false, nullsFirst: false }).limit(1),
     ]);
     setAudit((a as KountAudit) ?? null);
-    setEntries(e);
+    setEntries(e.rows);
+    setEntriesError(e.error);
+    setRecounts(rc.rows);
+    setRecountError(rc.error);
+    if (rep.error) console.warn('[summary] variance report time not loaded', rep.error);
+    setReportAt(rep.error ? undefined : (((rep.data ?? [])[0] as { computed_at: string | null } | undefined)?.computed_at ?? null));
     setMembers((m as KountMember[]) ?? []);
   }, [auditId]);
 
   useEffect(() => { void load(); }, [load]);
-
-  // Switching audits should drop the open drill — what we were drilled into
-  // doesn't apply to the new audit's entries.
-  useEffect(() => { setDrill(null); }, [auditId]);
-
   /* Reactivate a cancelled audit. Flips status back to 'active' and clears
      completed_at so it re-appears in Variance / Counts as in-progress. The
      count_phase is left as-is so a mid-count1 cancellation picks up where
@@ -437,7 +536,7 @@ function SummaryDetail({
     if (!confirm(
       `Reopen audit ${audit.join_code} (${audit.venue_name})?\n\n` +
       `It goes back to Active, Count 1. Counters rejoin with the same code ${audit.join_code}; ` +
-      `all ${entries.length} entries are kept.\n\n` +
+      `all ${entriesError ? '' : entries.length + ' '}entries are kept.\n\n` +
       'Its variance report is removed and recalculated when the count is closed again.'
     )) return;
     setReactBusy(true);
@@ -465,6 +564,10 @@ function SummaryDetail({
     if (!hasCorporateAccess(user.role)) return; // defense-in-depth: read-only roles can't delete
     if (!audit || !canDelete) return;
     if (audit.status !== 'cancelled') return;
+    if (entriesError) {
+      alert(`The entries for ${audit.join_code} could not be loaded, so how many would be destroyed is unknown.\n\nNothing was deleted. Reload and try again.`);
+      return;
+    }
     const entryCount = entries.length;
     const msg = entryCount === 0
       ? `Permanently delete ${audit.join_code} (${audit.venue_name})?\n\nNo entries on file — safe to drop.`
@@ -497,18 +600,28 @@ function SummaryDetail({
     onAuditChanged?.();
   };
 
+  // v0.77: quantities after recount -- the same final numbers the variance
+  // uses (lib/summaryByItem). Entry counts and counters stay per entry.
+  const finals = useMemo(() => finalCells(entries, recounts), [entries, recounts]);
+  // The stored variance only has a correction if it was computed after it.
+  const varianceBehind = reportAt !== undefined && recountsAheadOfReport(finals.appliedRecounts, reportAt);
+
   const stats = useMemo(() => {
     const totalEntries = entries.length;
-    const totalQty = entries.reduce((s, r) => s + Number(r.qty || 0), 0);
+    const totalQty = finals.cells.reduce((s, c) => s + c.qty, 0);
     const byZone = new Map<string, { items: number; qty: number; counters: Set<string> }>();
     const byCounter = new Map<string, number>();
     const byMethod: Record<string, number> = { barcode: 0, photo: 0, manual: 0, guided: 0, quick: 0, recount: 0, other: 0 };
     const issues = entries.filter(isOpenIssue).length;
+    for (const c of finals.cells) {
+      const bucket = byZone.get(c.zone) ?? { items: 0, qty: 0, counters: new Set<string>() };
+      bucket.qty += c.qty;
+      byZone.set(c.zone, bucket);
+    }
     for (const r of entries) {
       const zone = r.zone;
       const bucket = byZone.get(zone) ?? { items: 0, qty: 0, counters: new Set<string>() };
       bucket.items += 1;
-      bucket.qty   += Number(r.qty || 0);
       bucket.counters.add(r.counted_by_name || r.counted_by_email);
       byZone.set(zone, bucket);
       const who = r.counted_by_name || r.counted_by_email;
@@ -520,11 +633,11 @@ function SummaryDetail({
       ? Math.max(0, Math.round((new Date(audit.completed_at).getTime() - new Date(audit.started_at).getTime()) / 60_000))
       : null;
     return { totalEntries, totalQty, byZone, byCounter, byMethod, issues, durationMin };
-  }, [entries, audit]);
+  }, [entries, audit, finals]);
 
   // v0.76: one row per product, totalled across zones (see lib/summaryByItem).
   const [itemSearch, setItemSearch] = useState('');
-  const byItem = useMemo(() => summarizeByItem(entries), [entries]);
+  const byItem = useMemo(() => summarizeByItem(entries, recounts), [entries, recounts]);
   const byItemShown = useMemo(() => {
     const q = itemSearch.trim().toLowerCase();
     return q ? byItem.items.filter(i => i.name.toLowerCase().includes(q)) : byItem.items;
@@ -533,8 +646,8 @@ function SummaryDetail({
   const exportItemsCsv = () => {
     if (!audit) return;
     const rows: string[][] = [
-      ['item_name', 'total_qty', 'entries', 'zones'],
-      ...byItem.items.map(i => [i.name, String(i.total), String(i.entries), zoneBreakdown(i.zones)]),
+      ['item_name', 'total_qty', 'entries', 'zones', 'recounted'],
+      ...byItem.items.map(i => [i.name, String(i.total), String(i.entries), zoneBreakdown(i.zones), i.recounted ? 'yes' : '']),
     ];
     const csv = rows.map(row => row.map(csvCell).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
@@ -551,7 +664,7 @@ function SummaryDetail({
     const rows: string[][] = [
       ['zone','item_name','qty','method','issue','issue_notes','counted_by','timestamp','is_recount'],
       ...entries.map(r => [
-        r.zone, r.item_name, String(r.qty), r.method ?? '', r.issue ?? '', r.issue_notes ?? '',
+        r.zone, r.item_name, String(r.qty), r.method ?? '', issueLabel(r.issue), r.issue_notes ?? '',
         r.counted_by_name || r.counted_by_email, r.timestamp, String(r.is_recount),
       ]),
     ];
@@ -612,8 +725,10 @@ function SummaryDetail({
                 size="sm"
                 leading={Ic.close(14)}
                 onClick={() => void deleteAudit()}
-                disabled={reactBusy || deleteBusy}
-                title="Permanently remove this cancelled audit and all its entries from the server. Cannot be undone."
+                disabled={reactBusy || deleteBusy || !!entriesError}
+                title={entriesError
+                  ? 'Entries could not be loaded, so what this would destroy is unknown. Reload first.'
+                  : 'Permanently remove this cancelled audit and all its entries from the server. Cannot be undone.'}
               >
                 {deleteBusy ? 'Deleting…' : 'Delete audit'}
               </Btn>
@@ -623,6 +738,24 @@ function SummaryDetail({
         </div>
       </Card>
 
+      {entriesError && (
+        <Card padding={14} style={{ borderColor: 'var(--raspberry-300)', background: 'var(--raspberry-100)' }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: 240, fontSize: 12, color: 'var(--raspberry-400)' }}>
+              Entries could not be loaded: {entriesError} — the numbers below are incomplete{audit.status === 'cancelled' ? ' and Delete is off until they load' : ''}.
+            </div>
+            <Btn variant="secondary" size="sm" onClick={() => void load()}>Retry</Btn>
+          </div>
+        </Card>
+      )}
+      {recountError && (
+        <Card padding={14} style={{ borderColor: 'var(--copper-300)', background: 'var(--copper-100)' }}>
+          <div style={{ fontSize: 12, color: 'var(--copper-400)' }}>
+            Recount corrections could not be loaded: {recountError} — quantities below are before recount and may not match the variance.
+          </div>
+        </Card>
+      )}
+
       {/* Stat strip — clickable for admin (corporate) to drill into the underlying entries */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
         <StatTile
@@ -631,7 +764,7 @@ function SummaryDetail({
           onClick={() => canDrill && setDrill(drill?.kind === 'entries' ? null : { kind: 'entries' })}
         />
         <StatTile
-          label="Total qty" value={<Num value={stats.totalQty} />}
+          label={finals.applied > 0 ? 'Total qty · after recount' : 'Total qty'} value={<Num value={stats.totalQty} />}
           clickable={canDrill} active={drill?.kind === 'qty'}
           onClick={() => canDrill && setDrill(drill?.kind === 'qty' ? null : { kind: 'qty' })}
         />
@@ -649,9 +782,24 @@ function SummaryDetail({
         />
       </div>
 
+      {varianceBehind && (
+        <div style={{ fontSize: 11, color: 'var(--copper-400)' }}>
+          {audit.status === 'cancelled'
+            ? 'This count was cancelled, so it has no variance — the Count 2 corrections below are not in any variance report.'
+            : reportAt
+            ? `This audit's variance was computed ${new Date(reportAt).toLocaleString()} and may not include some of the Count 2 corrections below (recounts only reach the variance once linked to a catalog item, fixed 10/28) — they're in once it is recomputed.`
+            : "This audit has no computed variance yet, so the Count 2 corrections below aren't in any variance report."}
+        </div>
+      )}
+
       {/* By zone — each row is its own drill target */}
       <Card padding={16}>
         <Eyebrow>By zone</Eyebrow>
+        {finals.applied > 0 && (
+          <div style={{ color: 'var(--fg-muted)', fontSize: 11, marginTop: 6 }}>
+            Qty with {finals.applied} Count 2 correction{finals.applied === 1 ? '' : 's'} applied, replacing the Count 1 quantity.
+          </div>
+        )}
         {stats.byZone.size === 0 && <div style={{ color: 'var(--fg-muted)', fontSize: 12, marginTop: 8 }}>No entries.</div>}
         <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse', marginTop: 10 }}>
           <thead>
@@ -666,14 +814,16 @@ function SummaryDetail({
           <tbody>
             {[...stats.byZone.entries()].sort((a, b) => b[1].items - a[1].items).map(([zone, b]) => {
               const isActive = drill?.kind === 'zone' && drill.zone === zone;
-              const handler = () => canDrill && setDrill(isActive ? null : { kind: 'zone', zone });
+              // Whole-item recounts have no entries of their own to drill into.
+              const zoneDrill = canDrill && zone !== WHOLE_ITEM_ZONE;
+              const handler = () => zoneDrill && setDrill(isActive ? null : { kind: 'zone', zone });
               return (
                 <tr
                   key={zone}
-                  onClick={canDrill ? handler : undefined}
+                  onClick={zoneDrill ? handler : undefined}
                   style={{
                     borderBottom: '1px solid var(--border)',
-                    cursor: canDrill ? 'pointer' : 'default',
+                    cursor: zoneDrill ? 'pointer' : 'default',
                     background: isActive ? 'var(--amethyst-100)' : undefined,
                   }}
                 >
@@ -683,7 +833,7 @@ function SummaryDetail({
                   <td style={{ padding: '6px 4px', color: 'var(--fg-muted)', fontSize: 11 }}>{[...b.counters].join(', ')}</td>
                   {canDrill && (
                     <td style={{ padding: '6px 4px', textAlign: 'right', color: 'var(--fg-muted)', fontSize: 11 }}>
-                      {isActive ? 'open ↓' : 'view →'}
+                      {zoneDrill ? (isActive ? 'open ↓' : 'view →') : ''}
                     </td>
                   )}
                 </tr>
@@ -698,6 +848,7 @@ function SummaryDetail({
           drill={drill}
           entries={entries}
           stats={stats}
+          afterRecount={finals.applied > 0}
           onClose={() => setDrill(null)}
         />
       )}
@@ -716,9 +867,10 @@ function SummaryDetail({
             <Btn variant="secondary" size="sm" leading={Ic.download(14)} onClick={exportItemsCsv} disabled={byItem.items.length === 0}>Export by item</Btn>
           </div>
         </div>
-        {byItem.recountEntries > 0 && (
+        {(byItem.recountsApplied > 0 || byItem.recountEntries > 0) && (
           <div style={{ color: 'var(--fg-muted)', fontSize: 11, marginTop: 6 }}>
-            Count 1 totals; {byItem.recountEntries} recount {byItem.recountEntries === 1 ? 'entry is' : 'entries are'} not added.
+            {byItem.recountsApplied > 0 && <>Totals with {byItem.recountsApplied} Count 2 correction{byItem.recountsApplied === 1 ? '' : 's'} applied, replacing the Count 1 quantity. </>}
+            {byItem.recountEntries > 0 && <>{byItem.recountEntries} legacy recount-flagged {byItem.recountEntries === 1 ? 'entry is' : 'entries are'} left out, as the variance calculation leaves them out.</>}
           </div>
         )}
         <div style={{ maxHeight: 420, overflowY: 'auto', marginTop: 10 }}>
@@ -735,6 +887,7 @@ function SummaryDetail({
                 <tr key={i.key} style={{ borderBottom: '1px solid var(--border)' }}>
                   <td style={{ padding: '6px 4px' }}>
                     {i.name}
+                    {i.recounted && <span style={{ color: 'var(--fg-muted)', fontSize: 10, marginLeft: 6 }}>recounted</span>}
                     {!i.linked && <span style={{ color: 'var(--fg-muted)', fontSize: 10, marginLeft: 6 }}>not linked to a catalog item</span>}
                   </td>
                   <td style={{ padding: '6px 4px', textAlign: 'right', fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>{i.total}</td>
@@ -830,11 +983,13 @@ function StatTile({
 /* ────────── Drill-down panel ────────── */
 
 function DrillDetail({
-  drill, entries, stats, onClose,
+  drill, entries, stats, afterRecount, onClose,
 }: {
   drill: Drill;
   entries: KountEntry[];
   stats: ReturnType<typeof computeStats> extends infer T ? T : never; // see note below
+  /** stats.totalQty has recount corrections applied; the rows listed are the raw entries. */
+  afterRecount: boolean;
   onClose: () => void;
 }) {
   // The shape of `stats` matches what useMemo returns above; we accept it as
@@ -853,7 +1008,7 @@ function DrillDetail({
   const title = (() => {
     switch (drill.kind) {
       case 'entries':  return `All ${entries.length} entries`;
-      case 'qty':      return `All ${entries.length} entries — total qty ${stats.totalQty.toFixed(1)}`;
+      case 'qty':      return `All ${entries.length} entries — total qty ${stats.totalQty.toFixed(1)}${afterRecount ? ' after recount' : ''}`;
       case 'issues':   return `${filtered.length} open issue${filtered.length === 1 ? '' : 's'}`;
       case 'zone':     return `Zone: ${drill.zone} — ${filtered.length} entries`;
       case 'counters': return `${stats.byCounter.size} counter${stats.byCounter.size === 1 ? '' : 's'}`;
@@ -905,7 +1060,7 @@ function DrillDetail({
                   <td style={{ padding: '6px 8px', fontSize: 11, color: 'var(--fg-muted)' }}>{new Date(r.timestamp).toLocaleString()}</td>
                   {drill.kind === 'issues' && (
                     <td style={{ padding: '6px 8px' }}>
-                      <Pill tone={r.issue_resolved ? 'positive' : 'caution'} size="sm">{r.issue}</Pill>
+                      <Pill tone={r.issue_resolved ? 'positive' : 'caution'} size="sm">{issueLabel(r.issue)}</Pill>
                       {r.issue_notes && <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 2 }}>{r.issue_notes}</div>}
                     </td>
                   )}

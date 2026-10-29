@@ -4,6 +4,7 @@ import type { AccessEntry } from '@/lib/access';
 import type { KountAudit } from '@/lib/types';
 import { Btn, Card, Eyebrow, Pill } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
+import { phaseLabel } from '@/lib/auditPhase';
 
 import { hasCorporateAccess } from '@/lib/access';
 /* ───────────────────────────────────────────────────────────────────────
@@ -30,7 +31,8 @@ const SESSION_DISMISS_KEY = 'kount_admin_stale_audits_dismissed_v1';
 
 interface StaleRow {
   audit: KountAudit;
-  entryCount: number;
+  /** null = the count probe failed; the audit can't be cancelled from here until it loads. */
+  entryCount: number | null;
 }
 
 interface Props {
@@ -63,16 +65,22 @@ export function StaleAuditsPrompt({ user }: Props) {
 
     // Pull entry counts so admin can see whether each audit has real data
     // riding on it before cancelling. Done in parallel — should be fast for
-    // the small number of stale audits we expect.
+    // the small number of stale audits we expect. A failed or count-less probe
+    // is null, not 0: 0 makes the confirm say "safe to drop".
     const counts = await Promise.all(audits.map(async a => {
       const r = await supabase
         .from('kount_entries')
         .select('id', { count: 'exact', head: true })
         .eq('audit_id', a.id);
-      return (r as unknown as { count: number | null }).count ?? 0;
+      if (r.error) { console.warn('[stale-audits] entry count failed for', a.join_code, r.error); return null; }
+      return (r as unknown as { count: number | null }).count ?? null;
     }));
 
     setStale(audits.map((a, i) => ({ audit: a, entryCount: counts[i] })));
+    const unknown = counts.filter(c => c === null).length;
+    setError(unknown > 0
+      ? `Entry counts could not be checked for ${unknown} audit${unknown === 1 ? '' : 's'}, so ${unknown === 1 ? 'it' : 'they'} can't be cancelled from here. Close this and sign in again to retry, or cancel from Variance.`
+      : null);
     setShow(true);
   }, [user]);
 
@@ -83,6 +91,7 @@ export function StaleAuditsPrompt({ user }: Props) {
 
   const cancelOne = async (row: StaleRow) => {
     const a = row.audit;
+    if (row.entryCount === null) return; // unknown count: the button is disabled, this is defense-in-depth
     const ageH = Math.round((Date.now() - new Date(a.started_at).getTime()) / 3_600_000);
     const msg = row.entryCount === 0
       ? `Cancel ${a.join_code} (${a.venue_name})?\n\nNo entries recorded — safe to drop.`
@@ -184,16 +193,18 @@ export function StaleAuditsPrompt({ user }: Props) {
                       <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, color: 'var(--accent-bg)', letterSpacing: 2, fontSize: 13 }}>
                         {a.join_code}
                       </span>
-                      <Pill tone="caution" size="sm">{a.count_phase}</Pill>
+                      <Pill tone="caution" size="sm">{phaseLabel(a.count_phase)}</Pill>
                       <Pill tone="ghost" size="sm">{ageLabel}</Pill>
                     </div>
                     <div style={{ fontSize: 13, fontWeight: 600, marginTop: 4 }}>{a.venue_name}</div>
                     <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 2 }}>
                       started {startedAt.toLocaleString()} · by {a.started_by_name || a.started_by_email}
                       {' · '}
-                      <span style={{ color: row.entryCount === 0 ? 'var(--copper-400)' : 'var(--fg-secondary)' }}>
-                        {row.entryCount} {row.entryCount === 1 ? 'entry' : 'entries'}
-                      </span>
+                      {row.entryCount === null
+                        ? <span style={{ color: 'var(--raspberry-400)' }}>entries unknown</span>
+                        : <span style={{ color: row.entryCount === 0 ? 'var(--copper-400)' : 'var(--fg-secondary)' }}>
+                            {row.entryCount} {row.entryCount === 1 ? 'entry' : 'entries'}
+                          </span>}
                     </div>
                   </div>
                   <Btn
@@ -201,7 +212,8 @@ export function StaleAuditsPrompt({ user }: Props) {
                     size="sm"
                     leading={Ic.close(12)}
                     onClick={() => void cancelOne(row)}
-                    disabled={busyId === a.id}
+                    disabled={busyId === a.id || row.entryCount === null}
+                    title={row.entryCount === null ? 'Entry count unknown — cancel from Variance after checking it' : undefined}
                   >
                     {busyId === a.id ? 'Cancelling…' : 'Cancel'}
                   </Btn>

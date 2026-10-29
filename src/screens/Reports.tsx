@@ -8,6 +8,7 @@ import { Card, Eyebrow, Btn, Pill, Money } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
 import { buildVarianceWorkbookBlob, type AvtLikeRow } from '@/lib/varianceReport';
 import { loadOpeningAuditIds } from '@/lib/openingCounts';
+import { localIsoDate } from '@/lib/auditReport';
 
 /* ───────────────────────────────────────────────────────────────────────
    Reports screen
@@ -69,7 +70,9 @@ export function closedHow(a: Pick<KountAudit, 'status' | 'count_phase' | 'count1
   return 'Submitted';
 }
 
-const fmtDate = (iso: string | null | undefined) => (iso ? iso.slice(0, 10) : '—');
+// Local calendar date of a timestamptz, not the ISO slice: a count closed at
+// 6pm PDT is already tomorrow in UTC (same rule as Counts' audit report).
+const fmtDate = (iso: string | null | undefined) => (iso ? localIsoDate(new Date(iso)) : '—');
 
 export function Reports({ user }: Props) {
   const nav = useNavigate();
@@ -164,7 +167,7 @@ export function Reports({ user }: Props) {
         item_name: r.item_name, category: r.category, start_qty: r.start_qty, purchases: r.purchases,
         depletions: r.depletions, actual: r.actual, theo: r.theo, variance: r.variance, cu_price: r.cu_price,
         variance_value: r.variance_value, variance_pct: r.variance_pct,
-        venue_name: r.venue_name ?? a.venue_name, audit_code: a.join_code, audit_date: a.started_at.slice(0, 10),
+        venue_name: r.venue_name ?? a.venue_name, audit_code: a.join_code, audit_date: fmtDate(a.started_at),
         _venueId: a.venue_id, _auditId: a.id, _startedAt: a.started_at,
       }];
     }));
@@ -173,6 +176,9 @@ export function Reports({ user }: Props) {
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { setLimit(PAGE); }, [q, cat, sort, venue, auditId, window_]);
+  // A category picked for one venue / audit / window may not exist in the next;
+  // it used to survive and leave an empty table with its chip hidden.
+  useEffect(() => { setCat('all'); }, [venue, auditId, window_]);
 
   // Per-audit summaries for the audit list (every audit in the venue/window scope, report or not).
   const auditSummaries = useMemo<AuditSummary[]>(() => {
@@ -227,15 +233,18 @@ export function Reports({ user }: Props) {
 
   const multiVenue = useMemo(() => new Set(rows.map(r => r.venue_name ?? '')).size > 1, [rows]);
 
+  // The workbook carries what the screen counts: countedRows, so opening counts
+  // stay out of it exactly as they stay out of the tiles (unless picked).
   const exportReport = useCallback(async () => {
-    if (rows.length === 0 || exporting) return;
+    if (countedRows.length === 0 || exporting) return;
     setExporting(true);
     try {
       const venueName = venue ? (VENUES.find(v => v.id === venue)?.name ?? '') : '';
       const title = venueName ? 'Variance Report — ' + venueName : 'Variance Report — All Audits';
-      const ts = new Date().toISOString().slice(0, 10);
+      const ts = localIsoDate(new Date());
       const windowLabel = window_ === '7d' ? 'last 7 days' : window_ === '30d' ? 'last 30 days' : window_ === '90d' ? 'last 90 days' : 'all time';
-      const blob = await buildVarianceWorkbookBlob({ title, subtitle: `${kpi.withReport} audits · ${windowLabel} · ${ts}`, rows: rows as AvtLikeRow[] });
+      const auditCount = new Set(countedRows.map(r => r._auditId)).size;
+      const blob = await buildVarianceWorkbookBlob({ title, subtitle: `${auditCount} audits · ${windowLabel} · ${ts}`, rows: countedRows as AvtLikeRow[] });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url; a.download = 'variance_report_' + ts + '.xlsx';
@@ -247,7 +256,7 @@ export function Reports({ user }: Props) {
     } finally {
       setExporting(false);
     }
-  }, [rows, exporting, venue, window_, kpi.withReport]);
+  }, [countedRows, exporting, venue, window_]);
 
   return (
     <>
@@ -257,7 +266,7 @@ export function Reports({ user }: Props) {
           <h1>Audit reports</h1>
           <div className="page-sub" style={{ marginTop: 4 }}>Computed variance for every closed count, by venue and audit. Export gives the full formatted workbook.</div>
         </div>
-        <Btn variant="primary" size="sm" onClick={() => void exportReport()} disabled={rows.length === 0 || exporting} leading={Ic.download(14)}>
+        <Btn variant="primary" size="sm" onClick={() => void exportReport()} disabled={countedRows.length === 0 || exporting} leading={Ic.download(14)}>
           {exporting ? 'Building…' : 'Export report'}
         </Btn>
       </div>
@@ -271,7 +280,7 @@ export function Reports({ user }: Props) {
           <select style={picker} value={auditId} onChange={e => setAuditId(e.target.value)}>
             <option value="">All audits in window</option>
             {audits.filter(a => !venue || a.venue_id === venue).map(a => (
-              <option key={a.id} value={a.id}>{a.venue_name} · {a.join_code} · {a.started_at.slice(0, 10)}</option>
+              <option key={a.id} value={a.id}>{a.venue_name} · {a.join_code} · {fmtDate(a.started_at)}</option>
             ))}
           </select>
           <select style={picker} value={window_} onChange={e => { setWindow_(e.target.value as WindowChoice); setAuditId(''); }}>
@@ -299,7 +308,7 @@ export function Reports({ user }: Props) {
           <Tile label="Net variance" value={<Money value={kpi.net} showSign size={22} />}
                 sub={kpi.opening ? `excludes ${kpi.opening} opening count${kpi.opening === 1 ? '' : 's'}` : 'counted minus expected, at cost'} />
           <Tile label="Absolute variance" value={<Money value={kpi.abs} size={22} />} sub="every item's miss, either direction" />
-          <Tile label="Items within ±1 unit" value={<span style={big}>{kpi.within1}%</span>} sub={`${rows.length} item rows`} />
+          <Tile label="Items within ±1 unit" value={<span style={big}>{kpi.within1}%</span>} sub={`${countedRows.length} item rows`} />
         </div>
 
         {/* Audits */}
@@ -360,16 +369,19 @@ export function Reports({ user }: Props) {
           </div>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', padding: '0 14px 10px' }}>
             {(['all', 'Liquor', 'Wine', 'Beer', 'Soft drinks', 'Bar consumables', 'Other'] as CatGroup[])
-              .filter(g => g === 'all' || catCounts.get(g))
+              // The active chip always shows, even at 0, so a filter is never applied invisibly.
+              .filter(g => g === 'all' || g === cat || catCounts.get(g))
               .map(g => (
                 <button key={g} onClick={() => setCat(g)} style={chip(cat === g)}>
-                  {g === 'all' ? `All (${countedRows.length})` : `${g} (${catCounts.get(g)})`}
+                  {g === 'all' ? `All (${countedRows.length})` : `${g} (${catCounts.get(g) ?? 0})`}
                 </button>
               ))}
           </div>
-          {!loading && rows.length === 0 && (
+          {!loading && countedRows.length === 0 && (
             <div style={empty}>
-              No computed variance for these filters. Closed audits get their report automatically, within 15 minutes of closing.
+              {rows.length > 0
+                ? 'Only opening counts in these filters, and they are kept out of variance. Click one in the audit list to see its items.'
+                : 'No computed variance for these filters. Closed audits get their report automatically, within 15 minutes of closing.'}
             </div>
           )}
           {filtered.length > 0 && (
@@ -406,7 +418,7 @@ export function Reports({ user }: Props) {
               <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>{limit} of {filtered.length} shown</span>
             </div>
           )}
-          {rows.length > 0 && filtered.length === 0 && <div style={empty}>No items match "{q}".</div>}
+          {countedRows.length > 0 && filtered.length === 0 && <div style={empty}>No items match{q ? ` "${q}"` : ''}{cat !== 'all' ? ` in ${cat}` : ''}.</div>}
         </Card>
       </div>
     </>
