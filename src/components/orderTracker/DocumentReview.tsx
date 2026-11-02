@@ -6,14 +6,16 @@ import {
   type DocKind, type DocRowPlan, type LineStatus,
 } from '@/lib/orderTracker';
 import {
-  AlreadySavedError, applyDocument, readDocument, removeDocumentPdf, uploadDocumentPdf,
+  AlreadySavedError, applyDocument, documentUrl, readDocument, removeDocumentPdf, uploadDocumentPdf,
   type ReadDocument, type TrackerData,
 } from '@/lib/orderTrackerData';
+import type { InboxItem } from '@/lib/orderMail';
 import { errBox, fmtMoney, headRow, lbl, okBox, picker, rowBorder, smallInput, subTxt, tbl, td, tdNum, th, thR } from './shared';
 
-/** Upload a vendor PDF → AI reads it → the person checks it → save updates the order. */
-export function DocumentReview({ file, data, today, onDone, onCancel }: {
-  file: File; data: TrackerData; today: string; onDone: (orderId: string) => void; onCancel: () => void;
+/** Upload a vendor PDF → AI reads it → the person checks it → save updates the order.
+ *  From the Inbox (`inbox`): the morning pull already stored and read the PDF, so neither is repeated. */
+export function DocumentReview({ file, inbox = null, data, today, onDone, onCancel }: {
+  file: File | null; inbox?: InboxItem | null; data: TrackerData; today: string; onDone: (orderId: string) => void; onCancel: () => void;
 }) {
   const [doc, setDoc] = useState<ReadDocument | null>(null);
   const [readErr, setReadErr] = useState<string | null>(null);
@@ -33,12 +35,15 @@ export function DocumentReview({ file, data, today, onDone, onCancel }: {
   const [saveErr, setSaveErr] = useState<string | null>(null);
   // One id per review: the PDF is stored under it and the database refuses a
   // second save of it, so a retry after a dropped connection cannot double-count.
-  const docId = useMemo(() => crypto.randomUUID(), [file]);
+  // An inbox document keeps the id the pull gave it (it is the inbox row's id).
+  const docId = useMemo(() => inbox?.id ?? crypto.randomUUID(), [file, inbox?.id]);
 
   // 1. read the PDF — once per file (each read is a paid AI call; a data reload must not repeat it)
   useEffect(() => {
     let live = true;
-    readDocument(file).then(d => {
+    const reading: Promise<ReadDocument> = inbox?.parsed ? Promise.resolve(inbox.parsed as ReadDocument)
+      : file ? readDocument(file) : Promise.reject(new Error('Nothing to read.'));
+    reading.then(d => {
       if (!live) return;
       setDoc(d);
       setKind(d.doc_kind);
@@ -50,12 +55,17 @@ export function DocumentReview({ file, data, today, onDone, onCancel }: {
       setTracking((d.tracking_numbers || []).join(', '));
     }).catch(e => { if (live) setReadErr(e instanceof Error ? e.message : String(e)); });
     return () => { live = false; };
-  }, [file]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [file, inbox?.id]);
 
   // the order it belongs to, picked once when the reading arrives (the person can change it)
   useEffect(() => {
     if (!doc) return;
-    const o = matchOrder(data.orders, data.lines, { order_number: doc.order_number, doc_number: doc.doc_number, kind: doc.doc_kind, vendor_name: doc.vendor_name });
+    const live = (id: string | null | undefined) => data.orders.find(o => o.id === id && !o.archived_at);
+    // from the Inbox: the order the pull pointed at, else an earlier document of the same email thread
+    const fromInbox = live(inbox?.order_id)
+      ?? (inbox?.conversation_id ? live(data.documents.find(d => d.source_conversation_id === inbox.conversation_id && d.order_id)?.order_id) : undefined);
+    const o = fromInbox ?? matchOrder(data.orders, data.lines, { order_number: doc.order_number, doc_number: doc.doc_number, kind: doc.doc_kind, vendor_name: doc.vendor_name });
     setTarget(o?.id ?? 'new');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc]);
@@ -85,11 +95,20 @@ export function DocumentReview({ file, data, today, onDone, onCancel }: {
     setSaving(true); setSaveErr(null);
     let path: string | null = null;
     try {
-      path = await uploadDocumentPdf(docId, file);
-      const orderId = await applyDocument(planDocumentSave({
+      // an inbox PDF is already stored (and stays: it belongs to the inbox row)
+      path = inbox ? inbox.storage_path : await uploadDocumentPdf(docId, file!);
+      const payload = planDocumentSave({
         docId, kind, vendor, docNumber, docDate, orderNumber, expected, tracking, order, orderLines, deliverTo, venueId,
-        rows, today, fileName: file.name, storagePath: path, total: doc.total, parsed: doc,
-      }));
+        rows, today, fileName: inbox?.file_name || file?.name || 'document.pdf', storagePath: path, total: doc.total, parsed: doc,
+      });
+      if (inbox) {
+        payload.inbox_id = inbox.id;
+        payload.decision = 'Saved from the inbox.';
+        payload.note += ' — from email';
+        payload.document.source_message_id = inbox.message_id;
+        payload.document.source_conversation_id = inbox.conversation_id;
+      }
+      const orderId = await applyDocument(payload);
       setSaved(true);
       onDone(orderId);
     } catch (e) {
@@ -100,7 +119,7 @@ export function DocumentReview({ file, data, today, onDone, onCancel }: {
         // a database refusal means nothing was written, so the stored PDF goes too; a dropped
         // connection is left alone (the save may have gone through — a retry will say so)
         const refused = !!(e as { refused?: boolean }).refused;
-        if (refused && path) await removeDocumentPdf(path).catch(() => undefined);
+        if (refused && path && !inbox) await removeDocumentPdf(path).catch(() => undefined);
         setSaveErr((e instanceof Error ? e.message : String(e)) +
           (refused ? ' — nothing was saved.' : ' — the connection dropped before the save was confirmed. Try again: if it went through, you will be told.'));
       }
@@ -112,7 +131,15 @@ export function DocumentReview({ file, data, today, onDone, onCancel }: {
 
   return (
     <Card padding={16} style={{ marginBottom: 14 }}>
-      <Eyebrow>Add a document · {file.name}</Eyebrow>
+      <Eyebrow>{inbox ? 'From email' : 'Add a document'} · {inbox?.file_name ?? file?.name}</Eyebrow>
+      {inbox && (
+        <div style={{ ...subTxt, marginTop: 4 }}>
+          {inbox.sender_name || inbox.sender_email} · {inbox.subject} ·{' '}
+          <button style={{ border: 'none', background: 'none', padding: 0, font: 'inherit', textDecoration: 'underline', cursor: 'pointer' }}
+            onClick={() => void documentUrl(inbox.storage_path).then(u => window.open(u, '_blank', 'noopener')).catch(e => setSaveErr(String(e)))}>open the PDF</button>
+          {inbox.decision && <div style={{ marginTop: 2 }}>{inbox.decision}</div>}
+        </div>
+      )}
       {!doc && !readErr && <div style={{ marginTop: 10, fontSize: 13, color: 'var(--fg-secondary)' }}>Reading the PDF… (usually 10–40 seconds)</div>}
       {readErr && (
         <>

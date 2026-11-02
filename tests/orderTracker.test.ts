@@ -8,11 +8,13 @@ import { join } from 'node:path';
 import {
   statusRank, headlineStatus, orderState, isLate, statusAfterDocument, matchDocLines, matchItem, matchOrder,
   onHand, receivedForLine, stockRows, releasesByVenue, validateNewOrder, similarity, addDays, sameVendor,
-  planDocRows, planDocumentSave, documentChecks,
+  planDocRows, planDocumentSave, documentChecks, decideMailDocument, type ReadDoc, type MailSource,
   type OtItem, type OtLine, type OtMove, type OtOrder, type OtDocument, type DocLine, type DocReview,
 } from '../src/lib/orderTracker';
 import { pricePoints, histories, priceMoves, quoteChecks, invoiceRegister, spendByMonth, isInvoiced, priceMovesCsv } from '../src/lib/orderPrices';
 import { buildReportRows } from '../src/lib/orderTrackerReport';
+import { inboxGroups, type InboxItem } from '../src/lib/orderMail';
+import { existsSync } from 'node:fs';
 
 let passed = 0;
 let failed = 0;
@@ -289,6 +291,56 @@ check('"other" documents change nothing', statusAfterDocument('ORDERED', 'other'
   check('checks: quantity differs from the order', documentChecks({ ...base, rows: [{ ...rows[0], doc: dl({ qty: 80, line_total: 5120 }) }] }, printed, known, fmt).some(c => c.includes('the document says 80, the order line says 100')));
 }
 
+// ── morning mail pull: apply on its own, or wait for a person ──────────
+{
+  const dl = (over: Partial<DocLine>): DocLine => ({ line_kind: 'product', description: 'LIBBEY - CONTOUR GOBLET GLASS 16 OZ/ 12', sku: '9156', qty: 6, unit: '', unit_price: 68.84, line_total: 413.04, pack_size: 12, ...over });
+  const o = order({ order_number: null, vendor_name: 'EE Mercantile', expected_on: null });
+  const goblet = line(o, { description: 'LIBBEY - CONTOUR GOBLET GLASS 16 OZ/ 12', sku: '9156', qty: 6, status: 'QUOTED', unit_price: 68.84, quote_number: 'Q-1' });
+  const fork = line(o, { description: 'STEELITE- DESSERT FORK MONZA- 7"/ 12', sku: '5340Z023', qty: 17, status: 'QUOTED', unit_price: 107.19, quote_number: 'Q-1', sort: 1 });
+  const quoteDoc: OtDocument = { id: 'qdoc', order_id: o.id, kind: 'quote', doc_number: 'Q-1', doc_date: '2026-10-28', vendor_name: 'EE Mercantile', total: 2235.27, file_name: 'q.pdf', storage_path: 'docs/qdoc.pdf', created_at: '2026-10-28T20:00:00Z', source_conversation_id: 'THREAD-1' };
+  const data = { orders: [o], lines: [goblet, fork], items: [], documents: [quoteDoc] };
+  const inv = (over: Partial<ReadDoc> = {}): ReadDoc => ({
+    doc_kind: 'invoice', is_credit: false, vendor_name: 'EE Mercantile', doc_number: 'INV-2026-086418', doc_date: '2026-10-29', order_number: '', expected_date: '',
+    tracking_numbers: [], subtotal: 2235.27, total: 2397.33,
+    lines: [dl({}), dl({ description: 'STEELITE- DESSERT FORK MONZA- 7"/ 12', sku: '5340Z023', qty: 17, unit_price: 107.19, line_total: 1822.23 }),
+      dl({ line_kind: 'tax', description: 'Tax 7.25%', sku: '', qty: 0, unit_price: 0, line_total: 162.06, pack_size: 0 })], ...over,
+  });
+  const src = (over: Partial<MailSource> = {}): MailSource => ({ id: 'inbox-1', message_id: 'MSG-1', conversation_id: 'THREAD-1', file_name: 'Invoice-INV-2026-086418.pdf', storage_path: 'docs/inbox-1.pdf', ...over });
+  const fmt = (x: number) => '$' + x.toFixed(2);
+
+  const a = decideMailDocument(inv(), src(), data, '2026-10-30', fmt);
+  check('mail: the invoice in the quote\'s email thread applies on its own', a.state === 'applied' && a.reason.includes('same email thread'), a);
+  if (a.state === 'applied') {
+    check('mail: both lines -> INVOICED with the invoice #', a.payload.updates.length === 2 && a.payload.updates.every(u => u.status === 'INVOICED' && u.invoice_number === 'INV-2026-086418'), a.payload.updates);
+    check('mail: the save closes its inbox row and remembers the thread', a.payload.inbox_id === 'inbox-1' && a.payload.document.id === 'inbox-1'
+      && a.payload.document.source_conversation_id === 'THREAD-1' && a.payload.document.source_message_id === 'MSG-1');
+    check('mail: the trail says it was automatic', a.payload.note.includes('applied automatically'));
+    check('mail: tax is not added as a line', a.payload.new_lines.length === 0, a.payload.new_lines);
+  }
+  const noThread = decideMailDocument(inv(), src({ conversation_id: 'OTHER' }), data, '2026-10-30', fmt);
+  check('mail: no thread, no number match -> waits ("create one")', noThread.state === 'pending' && noThread.reason.startsWith('No matching order'), noThread);
+  const byPo = decideMailDocument(inv({ order_number: 'PO-77' }), src({ conversation_id: null }), { ...data, orders: [{ ...o, order_number: 'PO-77' }] }, '2026-10-30', fmt);
+  check('mail: matched by PO # from the same vendor', byPo.state === 'applied' && byPo.reason.includes('PO #'), byPo);
+  const otherVendor = decideMailDocument(inv({ vendor_name: 'Uline' }), src(), data, '2026-10-30', fmt);
+  check('mail: same thread but another vendor -> waits', otherVendor.state === 'pending', otherVendor);
+  const extra = decideMailDocument(inv({ lines: [...inv().lines, dl({ description: 'MEPRA - WINE COOLER', sku: '200680', qty: 10, unit_price: 313.88, line_total: 3138.8 })] }), src(), data, '2026-10-30', fmt);
+  check('mail: an item not on the order -> waits', extra.state === 'pending' && extra.reason.includes('not on'), extra);
+  const qty = decideMailDocument(inv({ lines: [dl({ qty: 5, line_total: 344.2 })], subtotal: 344.2 }), src(), data, '2026-10-30', fmt);
+  check('mail: a review warning (qty differs) -> waits, with the warning', qty.state === 'pending' && qty.reason.includes('the document says 5'), qty);
+  const credit = decideMailDocument(inv({ is_credit: true, doc_kind: 'other', doc_number: '' }), src(), data, '2026-10-30', fmt);
+  check('mail: a credit memo always waits', credit.state === 'pending' && credit.reason.includes('credit memo'), credit);
+  const other = decideMailDocument(inv({ doc_kind: 'other', doc_number: '' }), src(), data, '2026-10-30', fmt);
+  check('mail: not a purchasing document -> ignored', other.state === 'ignored', other);
+  const savedInv: OtDocument = { ...quoteDoc, id: 'd9', kind: 'invoice', doc_number: 'INV-2026-086418', created_at: '2026-10-29T22:00:00Z' };
+  const again = decideMailDocument(inv(), src(), { ...data, documents: [quoteDoc, savedInv] }, '2026-10-30', fmt);
+  check('mail: an invoice already saved (forwarded again by AP) -> ignored', again.state === 'ignored' && again.reason.startsWith('Already saved'), again);
+  const o2 = order({ vendor_name: 'EE Mercantile' });
+  const twoOrders = decideMailDocument(inv(), src(), { ...data, orders: [o, o2], documents: [quoteDoc, { ...quoteDoc, id: 'q2', order_id: o2.id, doc_number: 'Q-2' }] }, '2026-10-30', fmt);
+  check('mail: a thread that spans two orders is not trusted', twoOrders.state === 'pending', twoOrders);
+  const archived = decideMailDocument(inv(), src(), { ...data, orders: [{ ...o, archived_at: 'x' }] }, '2026-10-30', fmt);
+  check('mail: never onto an archived order', archived.state === 'pending', archived);
+}
+
 // ── report rows ────────────────────────────────────────────────────────
 {
   const bag = item();
@@ -315,14 +367,45 @@ check('order prices route gated to admin + corporate', app.includes('<Route path
 check('Purchasing section lists the three tabs', /NAV_PURCHASING = \[\s*\{ to: '\/order-tracker',\s+label: 'Order tracker' \},\s*\{ to: '\/order-prices',\s+label: 'Order prices' \},\s*\{ to: '\/purchase-prices', label: 'Liquor & wine prices' \},\s*\];/.test(side));
 check('Purchasing section rendered only for admin + corporate', side.includes("const isAdmin    = userRole === 'admin' || userRole === 'corporate';") && /\{isAdmin && \(\s*<>\s*<div className="sidebar-group-label">Purchasing<\/div>/.test(side));
 check('documents read through the admin/corporate-gated function', src('src/lib/orderTrackerData.ts').includes("supabase.functions.invoke('kount-read-purchase-doc'"));
-check('a reload never re-reads the PDF (read keyed on the file only)', /readDocument\(file\)[\s\S]*?\}, \[file\]\);/.test(src('src/components/orderTracker/DocumentReview.tsx')));
+check('a reload never re-reads the PDF (read keyed on the file / inbox row only)', /readDocument\(file\)[\s\S]*?\}, \[file, inbox\?\.id\]\);/.test(src('src/components/orderTracker/DocumentReview.tsx')));
 
 {
   const dr = src('src/components/orderTracker/DocumentReview.tsx'), data = src('src/lib/orderTrackerData.ts');
-  check('a document saves in ONE database call (no step-by-step writes from the review)', dr.includes('applyDocument(planDocumentSave(') && !/\b(createOrder|updateLine|addLines|saveItem|updateOrder)\(/.test(dr));
+  check('a document saves in ONE database call (no step-by-step writes from the review)', dr.includes('const payload = planDocumentSave(') && dr.includes('await applyDocument(payload)') && !/\b(createOrder|updateLine|addLines|saveItem|updateOrder)\(/.test(dr));
   check('...through the transactional RPC', data.includes("supabase.rpc('kount_ot_apply_document', { p })"));
-  check('the PDF is stored by document id before the save', data.includes('docs/${docId}.pdf') && /uploadDocumentPdf\(docId, file\)[\s\S]*applyDocument/.test(dr));
+  check('the PDF is stored by document id before the save', data.includes('docs/${docId}.pdf') && /uploadDocumentPdf\(docId, file!?\)[\s\S]*applyDocument/.test(dr));
   check('a reload never re-plans the rows (planned on reading / order / type only)', /setRows\(planDocRows\([\s\S]*?\}, \[doc, target, kind\]\);/.test(dr));
+}
+
+// ── v0.80 inbox (morning mail pull) ───────────────────────────────────
+{
+  const it = (over: Partial<InboxItem>): InboxItem => ({
+    id: id('x'), message_id: 'm', conversation_id: null, subject: null, sender_email: 'a@eemercantile.co', sender_name: null, received_at: '2026-10-30T16:00:00Z',
+    file_name: 'x.pdf', size_bytes: 1, storage_path: 'docs/x.pdf', state: 'pending', parsed: null, attempts: 1, read_error: null, decision: null, order_id: null,
+    decided_by: null, created_at: '2026-10-30T16:01:00Z', updated_at: '2026-10-30T16:02:00Z', ...over,
+  });
+  const g = inboxGroups([
+    it({ state: 'pending', received_at: '2026-10-29T10:00:00Z' }), it({ state: 'error', received_at: '2026-10-31T10:00:00Z' }), it({ state: 'unread' }),
+    it({ state: 'applied', updated_at: '2026-10-30T17:00:00Z' }), it({ state: 'applied', updated_at: '2026-08-01T17:00:00Z' }), it({ state: 'ignored' }),
+  ], new Date('2026-11-02T18:00:00Z'));
+  check('inbox: waiting = pending + could not read, newest first', g.waiting.length === 2 && g.waiting[0].state === 'error', g.waiting.map(x => x.state));
+  check('inbox: being read / skipped', g.reading.length === 1 && g.skipped.length === 1);
+  check('inbox: saved list is the last 30 days', g.applied.length === 1, g.applied.length);
+
+  const dr = src('src/components/orderTracker/DocumentReview.tsx'), ot = src('src/screens/OrderTracker.tsx');
+  check('inbox review never re-reads the PDF (uses what the pull read)', dr.includes('inbox?.parsed ? Promise.resolve(inbox.parsed as ReadDocument)'));
+  check('inbox review never re-uploads (the PDF is the inbox row\'s)', dr.includes('path = inbox ? inbox.storage_path : await uploadDocumentPdf(docId, file!)') && dr.includes('refused && path && !inbox'));
+  check('inbox review closes its row in the same save', dr.includes('payload.inbox_id = inbox.id') && dr.includes('useMemo(() => inbox?.id ?? crypto.randomUUID()'));
+  check('order tracker shows the Inbox tab with a waiting count', ot.includes("{ value: 'inbox', label: waiting ? `Inbox (${waiting})` : 'Inbox' }"));
+  check('a failing inbox load never hides the orders', ot.includes('loadMail().catch(() => [] as InboxItem[])'));
+  const mail = src('src/lib/orderMail.ts');
+  check('the mailbox sign-in never reaches the browser (status RPC only)', mail.includes("supabase.rpc('kount_ot_mail_status')") && !/kount_ot_mail_account|token_get/.test(mail));
+  // the pull runs the SAME rules: its copy of this file must not drift
+  const serverCopy = join(process.cwd(), '..', 'Counting-App', 'supabase', 'functions', '_shared', 'orderTracker.ts');
+  if (existsSync(serverCopy)) {
+    check('the morning pull runs an identical copy of src/lib/orderTracker.ts', readFileSync(serverCopy, 'utf8') === src('src/lib/orderTracker.ts'),
+      'copy src/lib/orderTracker.ts to Counting-App/supabase/functions/_shared/orderTracker.ts and redeploy kount-order-mail');
+  }
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

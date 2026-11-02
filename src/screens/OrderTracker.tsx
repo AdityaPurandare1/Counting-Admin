@@ -12,6 +12,8 @@ import { NewOrderForm } from '@/components/orderTracker/NewOrderForm';
 import { OrdersView } from '@/components/orderTracker/OrdersView';
 import { WarehouseView } from '@/components/orderTracker/WarehouseView';
 import { DocumentReview } from '@/components/orderTracker/DocumentReview';
+import { InboxView } from '@/components/orderTracker/InboxView';
+import { loadInbox, type InboxItem } from '@/lib/orderMail';
 import { StatusPill, download, errBox, fmtCompact, fmtMoney, headRow, linkBtn, rowBorder, shortDate, subTxt, tbl, td, tdNum, th, thR } from '@/components/orderTracker/shared';
 
 /* ───────────────────────────────────────────────────────────────────────
@@ -23,11 +25,15 @@ import { StatusPill, download, errBox, fmtCompact, fmtMoney, headRow, linkBtn, r
    applied after review, warehouse stock that delivered orders fill and venue
    releases draw down, and an Excel report of all of it. Logic lives in
    src/lib/orderTracker*.ts; tables are kount_ot_* (migration 0132).
+   v0.80 Inbox: the morning mail pull (0135, src/lib/orderMail.ts) — what it
+   applied by itself, and what waits for a person.
    ─────────────────────────────────────────────────────────────────────── */
 
-type View = 'orders' | 'warehouse' | 'overview';
+type View = 'orders' | 'inbox' | 'warehouse' | 'overview';
 
-export function OrderTracker({ today: todayProp, load = loadTracker }: { user: AccessEntry; today?: Date; load?: () => Promise<TrackerData> }) {
+export function OrderTracker({ today: todayProp, load = loadTracker, loadMail = loadInbox }: {
+  user: AccessEntry; today?: Date; load?: () => Promise<TrackerData>; loadMail?: () => Promise<InboxItem[]>;
+}) {
   const today = useMemo(() => isoDay(todayProp ?? new Date()), [todayProp]);
   const [data, setData] = useState<TrackerData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -35,6 +41,8 @@ export function OrderTracker({ today: todayProp, load = loadTracker }: { user: A
   const [view, setView] = useState<View>('orders');
   const [newOpen, setNewOpen] = useState(false);
   const [docFile, setDocFile] = useState<File | null>(null);
+  const [inbox, setInbox] = useState<InboxItem[]>([]);
+  const [reviewing, setReviewing] = useState<InboxItem | null>(null);
   const [focusOrder, setFocusOrder] = useState<string | null>(null);
   const [reportBusy, setReportBusy] = useState(false);
   const [includeClosed, setIncludeClosed] = useState(true);
@@ -45,13 +53,15 @@ export function OrderTracker({ today: todayProp, load = loadTracker }: { user: A
     const s = ++seq.current;
     setLoading(true);
     try {
-      const d = await load();
-      if (s === seq.current) { setData(d); setError(null); }
+      // the inbox is extra: if it can't load (0135 not applied), the tracker still works
+      const [d, mail] = await Promise.all([load(), loadMail().catch(() => [] as InboxItem[])]);
+      if (s === seq.current) { setData(d); setInbox(mail); setError(null); }
     } catch (e) {
       if (s === seq.current) setError(e instanceof Error ? e.message : String(e));
     } finally { if (s === seq.current) setLoading(false); }
-  }, [load]);
+  }, [load, loadMail]);
   useEffect(() => { void reload(); }, [reload]);
+  const waiting = inbox.filter(i => i.state === 'pending' || i.state === 'error').length;
 
   const venueName = useCallback((id: string | null) => (id ? VENUES.find(v => v.id === id)?.name ?? id : 'Warehouse'), []);
 
@@ -77,10 +87,10 @@ export function OrderTracker({ today: todayProp, load = loadTracker }: { user: A
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <Btn variant="primary" size="sm" onClick={() => { setNewOpen(o => !o); setDocFile(null); }}>{newOpen ? 'Close' : 'New order'}</Btn>
+          <Btn variant="primary" size="sm" onClick={() => { setNewOpen(o => !o); setDocFile(null); setReviewing(null); }}>{newOpen ? 'Close' : 'New order'}</Btn>
           <Btn variant="secondary" size="sm" onClick={() => fileRef.current?.click()} title="A quote, order confirmation, invoice or shipping notice (PDF)">Add a document</Btn>
           <input ref={fileRef} type="file" accept="application/pdf" style={{ display: 'none' }}
-                 onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) { setDocFile(f); setNewOpen(false); } }} />
+                 onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) { setDocFile(f); setNewOpen(false); setReviewing(null); } }} />
           <Btn variant="secondary" size="sm" onClick={() => void downloadReport()} disabled={!data || reportBusy}>{reportBusy ? 'Building…' : 'Download report (Excel)'}</Btn>
           <label style={{ fontSize: 11, color: 'var(--fg-muted)', display: 'inline-flex', gap: 4, alignItems: 'center' }} title="Include completed orders in the report">
             <input type="checkbox" checked={includeClosed} onChange={e => setIncludeClosed(e.target.checked)} /> with completed
@@ -101,16 +111,24 @@ export function OrderTracker({ today: todayProp, load = loadTracker }: { user: A
             onCancel={() => setDocFile(null)}
             onDone={orderId => { setDocFile(null); setFocusOrder(orderId); setView('orders'); void reload(); }} />
         )}
+        {data && reviewing && !docFile && (
+          <DocumentReview key={reviewing.id} file={null} inbox={reviewing} data={data} today={today}
+            onCancel={() => setReviewing(null)}
+            onDone={orderId => { setReviewing(null); setFocusOrder(orderId); setView('orders'); void reload(); }} />
+        )}
 
         {data && (
           <div style={{ opacity: loading ? 0.6 : 1, transition: 'opacity .2s' }}>
             <Tiles data={data} today={today} />
-            <div style={{ maxWidth: 420, margin: '16px 0 14px' }}>
+            <div style={{ maxWidth: 540, margin: '16px 0 14px' }}>
               <Segment<View> value={view} onChange={setView} options={[
-                { value: 'orders', label: 'Orders' }, { value: 'warehouse', label: 'Warehouse' }, { value: 'overview', label: 'Overview' },
+                { value: 'orders', label: 'Orders' }, { value: 'inbox', label: waiting ? `Inbox (${waiting})` : 'Inbox' },
+                { value: 'warehouse', label: 'Warehouse' }, { value: 'overview', label: 'Overview' },
               ]} />
             </div>
             {view === 'orders' && <OrdersView data={data} today={today} venueName={venueName} onReload={() => void reload()} focusOrderId={focusOrder} />}
+            {view === 'inbox' && <InboxView items={inbox} onReview={i => { setReviewing(i); setDocFile(null); setNewOpen(false); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+              onOpenOrder={id => { setFocusOrder(id); setView('orders'); }} onChanged={() => void reload()} />}
             {view === 'warehouse' && <WarehouseView data={data} today={today} venueName={venueName} onReload={() => void reload()} />}
             {view === 'overview' && <Overview data={data} today={today} venueName={venueName} onOpen={id => { setFocusOrder(id); setView('orders'); }} />}
           </div>

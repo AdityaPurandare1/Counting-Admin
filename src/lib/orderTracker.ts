@@ -103,6 +103,7 @@ export interface OtDocument {
   storage_path: string | null;
   created_at: string;
   uploaded_by?: string | null;
+  source_conversation_id?: string | null;
 }
 
 export type DocKind = 'quote' | 'confirmation' | 'invoice' | 'shipping' | 'other';
@@ -324,6 +325,9 @@ export function planDocRows(docLines: DocLine[], orderLines: OtLine[], items: Ot
  *  `new_items`; an update changes only the keys it carries. */
 export interface ApplyDocument {
   note: string;
+  /** A PDF from the morning mail pull (kount_ot_inbox, 0135): closed in the same transaction. */
+  inbox_id?: string;
+  decision?: string;
   order_id?: string;
   order_patch?: { order_number?: string; expected_on?: string };
   new_order?: { vendor_name: string; order_number: string | null; venue_id: string | null; deliver_to: 'warehouse' | 'venue'; ordered_on: string | null; expected_on: string | null };
@@ -333,7 +337,11 @@ export interface ApplyDocument {
     item_id: string | null; item_key?: string; description: string; sku: string | null; qty: number; unit: string | null; unit_price: number | null;
     status: LineStatus; quote_number: string | null; invoice_number: string | null; invoice_date: string | null; tracking_number: string | null; expected_on: string | null;
   }>;
-  document: { id: string; kind: DocKind; doc_number: string | null; doc_date: string | null; vendor_name: string; total: number | null; file_name: string; storage_path: string; parsed: unknown };
+  document: {
+    id: string; kind: DocKind; doc_number: string | null; doc_date: string | null; vendor_name: string; total: number | null; file_name: string; storage_path: string; parsed: unknown;
+    /** the email it came from: a later document in the same thread finds this order */
+    source_message_id?: string | null; source_conversation_id?: string | null;
+  };
 }
 
 export interface DocReview {
@@ -459,6 +467,92 @@ export function documentChecks(r: Pick<DocReview, 'kind' | 'vendor' | 'docNumber
     }
   }
   return out;
+}
+
+/* ── the morning mail pull: apply it, or let a person look ────────────── */
+
+/** A document as the reader returns it (kount-read-purchase-doc / _shared/purchase-doc.ts). */
+export interface ReadDoc {
+  doc_kind: DocKind;
+  is_credit?: boolean;
+  vendor_name: string;
+  doc_number: string;
+  doc_date: string;
+  order_number: string;
+  expected_date: string;
+  tracking_numbers: string[];
+  subtotal: number;
+  total: number;
+  lines: DocLine[];
+}
+
+/** The email a PDF came in (kount_ot_inbox). */
+export interface MailSource { id: string; message_id: string; conversation_id: string | null; file_name: string | null; storage_path: string }
+
+export type MailDecision =
+  | { state: 'applied'; payload: ApplyDocument; reason: string }
+  | { state: 'pending'; reason: string; orderId: string | null }
+  | { state: 'ignored'; reason: string };
+
+const isoDate = (s: string | null | undefined) => (/^\d{4}-\d{2}-\d{2}$/.test(String(s ?? '')) ? String(s) : '');
+
+/** What the morning pull does with one read PDF. It saves on its own ONLY
+ *  when the document clearly belongs to one existing order (an earlier
+ *  document in the same email thread, else the PO / quote / invoice number
+ *  from the same vendor), every product on it is already on that order, and
+ *  none of the review checks fire. Everything else waits for a person. */
+export function decideMailDocument(doc: ReadDoc, src: MailSource,
+                                   data: { orders: OtOrder[]; lines: OtLine[]; items: OtItem[]; documents: OtDocument[] },
+                                   today: string, fmt: (x: number) => string): MailDecision {
+  if (!doc || !Array.isArray(doc.lines)) return { state: 'pending', reason: 'The reader returned nothing usable — open the PDF.', orderId: null };
+  const docNumber = String(doc.doc_number ?? '').trim();
+  if (docNumber && doc.doc_kind !== 'other') {
+    const saved = data.documents.find(d => d.kind === doc.doc_kind && normText(d.doc_number) === normText(docNumber) && sameVendor(d.vendor_name, doc.vendor_name));
+    if (saved) return { state: 'ignored', reason: `Already saved on ${saved.created_at.slice(0, 10)} (${DOC_KIND_LABEL[doc.doc_kind].toLowerCase()} ${docNumber}).` };
+  }
+  if (doc.is_credit) return { state: 'pending', reason: 'A credit memo — check it against the order by hand.', orderId: null };
+  if (doc.doc_kind === 'other') return { state: 'ignored', reason: 'Not a quote, order confirmation, invoice or shipping notice.' };
+
+  const live = (id: string | null | undefined) => data.orders.find(o => o.id === id && !o.archived_at);
+  let order: OtOrder | null = null, how = '';
+  if (src.conversation_id) {
+    const sameThread = data.documents.filter(d => d.source_conversation_id === src.conversation_id && d.order_id)
+      .map(d => live(d.order_id)).filter((o): o is OtOrder => !!o && sameVendor(o.vendor_name, doc.vendor_name));
+    const ids = new Set(sameThread.map(o => o.id));
+    if (ids.size === 1) { order = sameThread[0]; how = 'same email thread'; }
+  }
+  if (!order) {
+    order = matchOrder(data.orders, data.lines, { order_number: doc.order_number, doc_number: docNumber, kind: doc.doc_kind, vendor_name: doc.vendor_name });
+    if (order) how = doc.order_number && normText(order.order_number) === normText(doc.order_number) ? 'PO #' : 'document #';
+  }
+  if (!order) return { state: 'pending', reason: 'No matching order yet — create one from it.', orderId: null };
+
+  const orderLines = data.lines.filter(l => l.order_id === order!.id).sort((a, b) => a.sort - b.sort);
+  const rows = planDocRows(doc.lines, orderLines, data.items, doc.doc_kind, false);
+  const included = rows.filter(r => r.include);
+  const label = order.order_number || `the ${order.vendor_name} order`;
+  if (!included.length) return { state: 'pending', reason: `Nothing on it to record automatically on ${label}.`, orderId: order.id };
+  const newProducts = included.filter(r => r.doc.line_kind === 'product' && r.target === 'new');
+  if (newProducts.length) {
+    return { state: 'pending', reason: `${newProducts.length} item${newProducts.length === 1 ? ' is' : 's are'} not on ${label} yet — check before adding.`, orderId: order.id };
+  }
+  const review = { kind: doc.doc_kind, vendor: doc.vendor_name, docNumber, order, orderLines, rows };
+  const checks = documentChecks(review, doc, data, fmt);
+  if (checks.length) return { state: 'pending', reason: checks.join(' '), orderId: order.id };
+
+  const payload = planDocumentSave({
+    ...review, docId: src.id, docDate: isoDate(doc.doc_date), orderNumber: doc.order_number || '', expected: isoDate(doc.expected_date),
+    tracking: (doc.tracking_numbers || []).join(', '), deliverTo: order.deliver_to, venueId: order.venue_id ?? '', today,
+    fileName: src.file_name || 'document.pdf', storagePath: src.storage_path, total: doc.total, parsed: doc,
+  });
+  if (!payload.updates.length && !payload.new_lines.length) return { state: 'pending', reason: `Nothing changes on ${label}.`, orderId: order.id };
+  const reason = `Applied to ${label} (${how}).`;
+  payload.note += ' — from email, applied automatically';
+  payload.inbox_id = src.id;
+  payload.decision = reason;
+  payload.document.source_message_id = src.message_id;
+  payload.document.source_conversation_id = src.conversation_id;
+  return { state: 'applied', payload, reason };
 }
 
 /* ── warehouse stock ──────────────────────────────────────────────────── */
