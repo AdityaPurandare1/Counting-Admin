@@ -175,12 +175,14 @@ export interface BuildAuditWorkbookOpts {
 /** The four GL accounts a Bevager beverage audit reports on, each with the
  *  master_items.category spellings that map to it. The catalog carries both
  *  the Title Case ("Liquor Cost") and legacy lowercase ("liquor") forms for
- *  the same product family, and Bevager rolls both into one account. */
+ *  the same product family, and Bevager rolls both into one account.
+ *  Matched lowercased, so 'liquor cost' etc. land with their Title Case form;
+ *  'beverage' / 'bev' are N/A beverage spellings (v0.78). */
 export const GL_ACCOUNTS: ReadonlyArray<{ account: string; categories: readonly string[] }> = [
   { account: '5310 - Liquor Cost',       categories: ['liquor cost', 'liquor'] },
   { account: '5320 - Wine Cost',         categories: ['wine cost', 'wine'] },
   { account: '5330 - Beer Cost',         categories: ['beer cost', 'beer'] },
-  { account: '5335 - N/A Beverage Cost', categories: ['n/a beverage cost', 'na beverage cost', 'non_alcoholic_beverage'] },
+  { account: '5335 - N/A Beverage Cost', categories: ['n/a beverage cost', 'na beverage cost', 'non_alcoholic_beverage', 'beverage', 'bev'] },
 ];
 
 const ACCOUNT_BY_CATEGORY: Record<string, string> = (() => {

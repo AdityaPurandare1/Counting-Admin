@@ -34,6 +34,7 @@ import {
   applyVenueCosts, chunk, pickNewestPrices, toCountLines,
   type AuditCountLine, type AuditEntryRow, type PriceRow,
 } from '@/lib/auditReport';
+import { confirmsCount1, type RecountRow } from '@/lib/summaryByItem';
 
 /** UUIDs per `.in(...)` request. 100 × 37 chars keeps the query string well
  *  inside any proxy's URL limit while still being only a handful of round
@@ -187,27 +188,33 @@ async function loadPrices(ids: string[]): Promise<Map<string, number>> {
 /** How many recount overrides this audit recorded, or null if we could not
  *  find out. */
 async function countRecounts(auditId: string): Promise<number | null> {
-  const { count, error } = await supabase
-    .from('kount_recounts')
-    .select('id', { count: 'exact', head: true })
-    .eq('audit_id', auditId)
-    // The same filters compute_avt_for_audit's recount_overrides_applied
-    // uses: a recount with no master link or a dismissed one overrides
-    // nothing, so counting it would make the Summary footnote claim
-    // corrections that were never applied. (The SQL additionally counts
-    // distinct (master, zone) pairs; a row count can only exceed that, and
-    // only when the same item was recounted twice in one zone.)
-    .not('master_item_id', 'is', null)
-    .not('count2_qty', 'is', null)
-    .neq('status', 'dismissed');
-  // A failed count is not worth failing the whole export over, but it must
-  // not read as zero either: this number drives the ONLY statement in the
-  // workbook that these figures are pre-correction, and "0 recounts" would
-  // quietly delete it. Return null so the Summary sheet says the lookup
-  // failed, and leave a trace in the console for whoever is asked why.
-  if (error) {
+  try {
+    const rows = await selectAllPagedFiltered<Pick<RecountRow, 'audit_result' | 'count1_qty' | 'count2_qty'>>(
+      () => supabase
+        .from('kount_recounts')
+        .select('id,audit_result,count1_qty,count2_qty')
+        .eq('audit_id', auditId)
+        // The same filters compute_avt_for_audit's recount_overrides_applied
+        // uses: a recount with no master link or a dismissed one overrides
+        // nothing, so counting it would make the Summary footnote claim
+        // corrections that were never applied. (The SQL additionally counts
+        // distinct (master, zone) pairs; a row count can only exceed that, and
+        // only when the same item was recounted twice in one zone.)
+        .not('master_item_id', 'is', null)
+        .not('count2_qty', 'is', null)
+        .neq('status', 'dismissed'),
+      { column: 'id', ascending: true },
+    );
+    // v0.78 (0131): nor does a verified row that repeats its Count 1. That
+    // compares two columns, which a PostgREST filter can't, so it's done here.
+    return rows.filter(r => !confirmsCount1(r)).length;
+  } catch (error) {
+    // A failed count is not worth failing the whole export over, but it must
+    // not read as zero either: this number drives the ONLY statement in the
+    // workbook that these figures are pre-correction, and "0 recounts" would
+    // quietly delete it. Return null so the Summary sheet says the lookup
+    // failed, and leave a trace in the console for whoever is asked why.
     console.warn('[auditReport] recount count failed; workbook will say so', error);
     return null;
   }
-  return count ?? 0;
 }

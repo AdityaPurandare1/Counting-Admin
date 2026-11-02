@@ -54,6 +54,7 @@ import {
   type PriceRow,
 } from '../src/lib/auditReport.ts';
 import type { MasterItem } from '../src/lib/types.ts';
+import { IN_SCOPE_CATEGORIES, IN_SCOPE_FILTER } from '../src/lib/types.ts';
 
 let passed = 0;
 let failed = 0;
@@ -110,6 +111,32 @@ eq('legacy beer', glAccount('beer'), '5330 - Beer Cost');
 eq('legacy non_alcoholic_beverage', glAccount('non_alcoholic_beverage'), '5335 - N/A Beverage Cost');
 eq('slashless na spelling', glAccount('NA Beverage Cost'), '5335 - N/A Beverage Cost');
 eq('padded + odd case', glAccount('  LIQUOR cost '), '5310 - Liquor Cost');
+// v0.78: lowercase / short spellings some catalog rows carry.
+eq('liquor cost', glAccount('liquor cost'), '5310 - Liquor Cost');
+eq('wine cost', glAccount('wine cost'), '5320 - Wine Cost');
+eq('beer cost', glAccount('beer cost'), '5330 - Beer Cost');
+eq('n/a beverage cost', glAccount('n/a beverage cost'), '5335 - N/A Beverage Cost');
+eq('beverage', glAccount('beverage'), '5335 - N/A Beverage Cost');
+eq('bev', glAccount('bev'), '5335 - N/A Beverage Cost');
+eq('Beverage (any case)', glAccount('Beverage'), '5335 - N/A Beverage Cost');
+eq('bar consumables stays out', glAccount('bar consumables'), null);
+eq('bar supplies stays out', glAccount('bar supplies'), null);
+eq('Bar Supplies stays out', glAccount('Bar Supplies'), null);
+eq('a near miss is not N/A beverage', glAccount('beverages cost'), null);
+// Every category the count flow reads lands on a GL account, except the bar
+// consumables / supplies families Bevager leaves out.
+{
+  const unmapped = IN_SCOPE_CATEGORIES.filter(c => !glAccount(c));
+  check('every in-scope category maps to a GL account, bar consumables/supplies excepted',
+    unmapped.every(c => /^bar[ _](consumable|supplies)/i.test(c)), unmapped);
+  for (const c of ['liquor cost', 'wine cost', 'beer cost', 'n/a beverage cost', 'beverage', 'bev', 'bar consumables', 'bar supplies']) {
+    check(`'${c}' is in scope`, (IN_SCOPE_CATEGORIES as readonly string[]).includes(c));
+  }
+  for (const c of ['Wine Cost', 'wine', 'Wine', 'Liquor Cost', 'liquor', 'Liquor', 'Beer Cost', 'beer', 'N/A Beverage Cost', 'non_alcoholic_beverage', 'Bar Consumables', 'bar_consumable', 'Bar Supplies']) {
+    check(`'${c}' is still in scope`, (IN_SCOPE_CATEGORIES as readonly string[]).includes(c));
+  }
+  check('in-scope filter quotes values with spaces and slashes', IN_SCOPE_FILTER.includes('"n/a beverage cost"') && IN_SCOPE_FILTER.includes('"bar supplies"'));
+}
 eq('out of scope', glAccount('Bar Consumables'), null);
 eq('food', glAccount('Produce Cost'), null);
 eq('null', glAccount(null), null);

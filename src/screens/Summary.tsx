@@ -456,7 +456,7 @@ function SummaryDetail({
       // Paged by id: created_at is not unique, so it can split a page unevenly.
       settle('recounts', selectAllPagedFiltered<RecountRow>(
         () => supabase.from('kount_recounts')
-          .select('id,master_item_id,item_name,zone,count2_qty,status,resolved_at,created_at')
+          .select('id,master_item_id,item_name,zone,count1_qty,count2_qty,status,audit_result,resolved_at,created_at')
           .eq('audit_id', auditId),
         { column: 'id', ascending: true },
       )),

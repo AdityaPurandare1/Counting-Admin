@@ -56,7 +56,7 @@ export function catGroup(category: string | null | undefined): Exclude<CatGroup,
   if (c.startsWith('liquor')) return 'Liquor';
   if (c.startsWith('wine')) return 'Wine';
   if (c.startsWith('beer')) return 'Beer';
-  if (c.startsWith('n/a') || c.startsWith('non_alcoholic')) return 'Soft drinks';
+  if (c.startsWith('n/a') || c.startsWith('non_alcoholic') || c === 'beverage' || c === 'bev') return 'Soft drinks';
   if (c.startsWith('bar')) return 'Bar consumables';
   return 'Other';
 }

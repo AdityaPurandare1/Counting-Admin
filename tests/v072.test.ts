@@ -23,6 +23,12 @@ check('N/A Beverage Cost -> Soft drinks', catGroup('N/A Beverage Cost') === 'Sof
 check('non_alcoholic_beverage -> Soft drinks', catGroup('non_alcoholic_beverage') === 'Soft drinks');
 check('bar_consumable -> Bar consumables', catGroup('bar_consumable') === 'Bar consumables');
 check('null -> Other', catGroup(null) === 'Other');
+// v0.78: the lowercase / short spellings group with their canonical forms.
+check('liquor cost -> Liquor', catGroup('liquor cost') === 'Liquor');
+check('n/a beverage cost -> Soft drinks', catGroup('n/a beverage cost') === 'Soft drinks');
+check('beverage / bev -> Soft drinks', catGroup('beverage') === 'Soft drinks' && catGroup('Bev') === 'Soft drinks');
+check('bar supplies -> Bar consumables', catGroup('bar supplies') === 'Bar consumables');
+check('a word starting "bev" is not N/A beverage', catGroup('beverly hills') === 'Other');
 
 // closedHow
 const base = { status: 'submitted', count_phase: 'final', count1_closed_at: null, count2_closed_at: null, completed_at: null } as const;

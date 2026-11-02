@@ -19,13 +19,21 @@
  *  applies the same overrides with the same precedence (latest Counting-App
  *  definition: 0105_poppy_missing_costs.sql, steps 4a):
  *    - per (master, zone-or-null), the latest non-dismissed recount with a
- *      count2_qty and a master link (resolved_at, else created_at; then
- *      created_at, then id);
+ *      count2_qty and a master link that does more than confirm Count 1
+ *      (confirmsCount1) -- by resolved_at, else created_at; then created_at,
+ *      then id;
  *    - a zoned recount REPLACES that zone's entry sum (and adds the zone if
  *      nothing was counted there);
  *    - a whole-item recount (zone null) replaces the item's total across every
  *      zone, and wins over its zoned recounts. It has no zone of its own, so it
- *      is shown under WHOLE_ITEM_ZONE. */
+ *      is shown under WHOLE_ITEM_ZONE.
+ *
+ *  v0.78: a 'verified' recount whose count2_qty equals its own count1_qty
+ *  overrides nothing (Counting-App 0131): the entries stand. The manager
+ *  "Verify all zones" cascade copies a stale count1 snapshot into count2 --
+ *  A-595 Stony Hill verified 0/0 against 31 counted. A verified row with a
+ *  different number is a real correction (P-843 Volcan 23 -> 6) and still
+ *  overrides, as do corrected and no-result rows. */
 
 export interface SummaryEntry {
   master_item_id: string | null;
@@ -42,9 +50,21 @@ export interface RecountRow {
   item_name: string;
   zone: string | null;
   count2_qty: number | string | null;
+  /** The Count 1 snapshot on the row; only read by confirmsCount1. */
+  count1_qty?: number | string | null;
   status: string;
+  audit_result?: 'corrected' | 'verified' | null;
   resolved_at: string | null;
   created_at: string;
+}
+
+/** A verified recount that just repeats its Count 1 snapshot: it overrides
+ *  nothing, the entries stand. An unknown count1 is "not equal", so the row
+ *  overrides. */
+export function confirmsCount1(r: Pick<RecountRow, 'audit_result' | 'count1_qty' | 'count2_qty'>): boolean {
+  if (r.audit_result !== 'verified' || r.count1_qty == null || r.count2_qty == null) return false;
+  const c1 = Number(r.count1_qty), c2 = Number(r.count2_qty);
+  return Number.isFinite(c1) && Number.isFinite(c2) && c1 === c2;
 }
 
 /** Where a whole-item recount lands in a by-zone view. */
@@ -76,6 +96,7 @@ export function effectiveRecounts(recounts: RecountRow[]): RecountRow[] {
   const recency = (r: RecountRow) => r.resolved_at ?? r.created_at;
   for (const r of recounts) {
     if (!r.master_item_id || r.count2_qty == null || r.status === 'dismissed') continue;
+    if (confirmsCount1(r)) continue;   // out like a dismissed row: before the latest-wins pick
     if (!Number.isFinite(Number(r.count2_qty))) continue;
     const k = r.master_item_id + '\u0000' + (r.zone ?? '\u0001');
     const cur = latest.get(k);

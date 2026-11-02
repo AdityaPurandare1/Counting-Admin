@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import { VENUES, isOrgWide } from '@/lib/access';
 import type { AccessEntry } from '@/lib/access';
+import { IN_SCOPE_CATEGORIES } from '@/lib/types';
 import type { KountAudit, KountAvtReport, PurchaseItem } from '@/lib/types';
 import { Pill, Eyebrow, Card, Num } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
@@ -78,14 +79,7 @@ export function Venues({ user }: Props) {
       .from('master_items')
       .select('id', { head: true, count: 'exact' })
       .eq('is_active', true)
-      .in('category', [
-        'Wine Cost', 'wine', 'Wine',
-        'Liquor Cost', 'liquor', 'Liquor',
-        'Beer Cost', 'beer',
-        'N/A Beverage Cost', 'non_alcoholic_beverage',
-        'Bar Consumables', 'bar_consumable',
-        'Bar Supplies',
-      ]) as unknown as { count: number };
+      .in('category', IN_SCOPE_CATEGORIES as unknown as string[]) as unknown as { count: number };
     setItemCount(typeof count === 'number' ? count : null);
   }, []);
 

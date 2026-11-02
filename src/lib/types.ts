@@ -4,17 +4,19 @@
  *  produce, supplies, and services categories are intentionally excluded
  *  from any master_items query the count flow makes. Includes the
  *  lowercase + Title-case variants because the upstream catalog has
- *  inconsistent casing.
+ *  inconsistent casing. v0.78: plus the all-lowercase / short spellings
+ *  ('liquor cost', 'beverage', 'bev', ...) some catalog rows carry, which
+ *  were silently dropped.
  *
  *  Mirror of the IN_SCOPE_CATEGORIES constant in the phone app's
  *  counting-app.html and the WHERE clause in migration 0024. */
 export const IN_SCOPE_CATEGORIES = [
-  'Wine Cost', 'wine', 'Wine',
-  'Liquor Cost', 'liquor', 'Liquor',
-  'Beer Cost', 'beer',
-  'N/A Beverage Cost', 'non_alcoholic_beverage',
-  'Bar Consumables', 'bar_consumable',
-  'Bar Supplies',
+  'Wine Cost', 'wine', 'Wine', 'wine cost',
+  'Liquor Cost', 'liquor', 'Liquor', 'liquor cost',
+  'Beer Cost', 'beer', 'beer cost',
+  'N/A Beverage Cost', 'non_alcoholic_beverage', 'n/a beverage cost', 'beverage', 'bev',
+  'Bar Consumables', 'bar_consumable', 'bar consumables',
+  'Bar Supplies', 'bar supplies',
 ] as const;
 
 /** PostgREST in.(...) format — values with spaces / slashes need quoting. */

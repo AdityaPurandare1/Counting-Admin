@@ -4,7 +4,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { effectiveRecounts, finalCells, recountsAheadOfReport, RECOUNT_LINK_FIXED_AT, summarizeByItem, zoneBreakdown, WHOLE_ITEM_ZONE, type RecountRow, type SummaryEntry } from '../src/lib/summaryByItem';
+import { confirmsCount1, effectiveRecounts, finalCells, recountsAheadOfReport, RECOUNT_LINK_FIXED_AT, summarizeByItem, zoneBreakdown, WHOLE_ITEM_ZONE, type RecountRow, type SummaryEntry } from '../src/lib/summaryByItem';
 
 let passed = 0;
 let failed = 0;
@@ -107,6 +107,42 @@ const oldFix = rc(KRUG, 'Down', 1, { resolved_at: '2026-09-20T22:00:00+00:00' })
 check('behind: report predates the 0118 link even though the correction is older', recountsAheadOfReport([oldFix], '2026-10-21T08:00:00+00:00') === true);
 check('not behind: same correction, report recomputed after 0118 (the 0119 six)', recountsAheadOfReport([oldFix], '2026-10-28T20:00:00+00:00') === false);
 check('cutoff is the 0118 apply time', RECOUNT_LINK_FIXED_AT === '2026-10-28T19:00:00Z');
+
+/* v0.78 (0131): a verified recount that repeats its Count 1 snapshot overrides
+   nothing; a verified one with a new number is a correction. */
+console.log('\nverified recounts');
+const STONY = 'm-stony-a595';
+const stony31 = [e('Stony Hill', 'Storage', 27, STONY), e('Stony Hill', 'Down', 4, STONY)];
+const v00 = rc(STONY, 'Storage', 0, { audit_result: 'verified', count1_qty: 0 });
+check('verified 0/0 against 31 counted -> 31 (A-595 Stony Hill)', itemOf(stony31, [v00], 'm:' + STONY)?.total === 31, itemOf(stony31, [v00], 'm:' + STONY));
+check('...and is not a correction or a recounted mark',
+  finalCells(stony31, [v00]).applied === 0 && itemOf(stony31, [v00], 'm:' + STONY)?.recounted === false);
+check('verified whole-item 40/40 leaves the zones (Ace of Spades shape)',
+  zoneBreakdown(itemOf(base, [rc(KRUG, null, 40, { audit_result: 'verified', count1_qty: 40 })], 'm:' + KRUG)?.zones ?? []) === 'Down 3 · Storage 3');
+check('verified 0/0 of an item never counted adds nothing', itemOf(base, [rc('m-new', null, 0, { audit_result: 'verified', count1_qty: 0 })], 'm:m-new') === undefined);
+const VOLCAN = 'm-volcan';
+const volcan23 = [e('Volcan', 'Bar', 23, VOLCAN)];
+check('verified 23 -> 6 is a correction -> 6 (P-843 Volcan)', itemOf(volcan23, [rc(VOLCAN, 'Bar', 6, { audit_result: 'verified', count1_qty: 23 })], 'm:' + VOLCAN)?.total === 6);
+check('verified with an unknown count1 overrides', total(base, [rc(KRUG, 'Down', 0, { audit_result: 'verified', count1_qty: null })]) === 32);
+check('verified with no count1 field overrides', total(base, [rc(KRUG, 'Down', 0, { audit_result: 'verified' })]) === 32);
+check('numbers compare as numbers (text "0" vs 0)', total(base, [rc(KRUG, 'Down', '0', { audit_result: 'verified', count1_qty: 0 })]) === 35);
+check('corrected overrides, even when count2 == count1', total(base, [rc(KRUG, 'Down', 0, { audit_result: 'corrected', count1_qty: 0 })]) === 32);
+check('a null result overrides, even when count2 == count1', total(base, [rc(KRUG, 'Down', 0, { audit_result: null, count1_qty: 0 })]) === 32);
+check('confirmsCount1 truth table',
+  confirmsCount1({ audit_result: 'verified', count1_qty: 0, count2_qty: 0 })
+  && !confirmsCount1({ audit_result: 'verified', count1_qty: 23, count2_qty: 6 })
+  && !confirmsCount1({ audit_result: 'verified', count1_qty: null, count2_qty: 0 })
+  && !confirmsCount1({ audit_result: 'corrected', count1_qty: 4, count2_qty: 4 })
+  && !confirmsCount1({ audit_result: null, count1_qty: 4, count2_qty: 4 }));
+const olderFix = rc(KRUG, 'Down', 1, { audit_result: 'corrected', created_at: '2026-10-20T10:00:00+00:00' });
+const newerConfirm = rc(KRUG, 'Down', 3, { audit_result: 'verified', count1_qty: 3, created_at: '2026-10-21T10:00:00+00:00' });
+check('a newer confirming row does not hide an older correction', effectiveRecounts([olderFix, newerConfirm]).map(r => r.count2_qty).join() === '1');
+const smSrc = readFileSync(join(process.cwd(), 'src/screens/Summary.tsx'), 'utf8');
+const recountSelect = (smSrc.match(/from\('kount_recounts'\)\s*\.select\('([^']*)'\)/) ?? [])[1] ?? '';
+check('Summary selects count1_qty and audit_result with the recounts', /\bcount1_qty\b/.test(recountSelect) && /\baudit_result\b/.test(recountSelect), recountSelect);
+const ardSrc = readFileSync(join(process.cwd(), 'src/lib/auditReportData.ts'), 'utf8');
+check('the workbook recount footnote applies the same rule',
+  ardSrc.includes("select('id,audit_result,count1_qty,count2_qty')") && ardSrc.includes('rows.filter(r => !confirmsCount1(r)).length'));
 
 const withLegacy = [...base, e('Krug', 'Down', 50, KRUG, true)];
 check('legacy is_recount entries stay out of the totals', total(withLegacy, []) === 35 && finalCells(withLegacy, []).recountEntries === 1);
