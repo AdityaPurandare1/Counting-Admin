@@ -43,7 +43,8 @@ type CatFilter = 'all' | BevCategory;
  *  Venues take a slot by their fixed venue order, so a filter never repaints. */
 const SERIES = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300'];
 const OTHER_GRAY = '#898781';
-const CAT_COLOR: Record<BevCategory, string> = { Liquor: SERIES[0], Wine: SERIES[1] };
+const CAT_COLOR: Record<BevCategory, string> = { Liquor: SERIES[0], Wine: SERIES[1], Mixed: SERIES[2] };
+const CAT_LABEL: Record<string, string> = { Liquor: 'Liquor', Wine: 'Wine', Mixed: 'Not itemized' };
 const TILE_MIN_PCT = 2;
 
 export function PurchasePrices({ load = loadPurchaseLines, today: todayProp }: Props) {
@@ -118,8 +119,8 @@ export function PurchasePrices({ load = loadPurchaseLines, today: todayProp }: P
     <>
       <div className="topbar">
         <div>
-          <Eyebrow>Finance</Eyebrow>
-          <h1>Purchase prices</h1>
+          <Eyebrow>Purchasing</Eyebrow>
+          <h1>Liquor &amp; wine prices</h1>
           <div className="page-sub" style={{ marginTop: 4 }}>
             Liquor and wine invoice prices per bottle, and spend by month, from the invoices on file for each venue.
           </div>
@@ -337,7 +338,9 @@ function SpendView({ lines, cat, today, range }: { lines: PricedLine[]; cat: Cat
   const [group, setGroup] = useState<SpendGroup>('category');
   const ms = useMemo(() => monthlySpend(lines, group, 8, range), [lines, group, range]);
   const curMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
-  const cats: BevCategory[] = cat === 'all' ? ['Liquor', 'Wine'] : [cat];
+  // 'Mixed' (liquor + wine the invoices do not itemize) shows only under All, and only when there is some.
+  const hasMixed = lines.some(l => l.category === 'Mixed' && l.spend);
+  const cats: BevCategory[] = cat === 'all' ? (hasMixed ? ['Liquor', 'Wine', 'Mixed'] : ['Liquor', 'Wine']) : [cat];
   const rows = [...ms.months].reverse();
 
   return (
@@ -345,7 +348,7 @@ function SpendView({ lines, cat, today, range }: { lines: PricedLine[]; cat: Cat
       <Card padding={16}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 16, flexWrap: 'wrap' }}>
           <div style={{ fontWeight: 700 }}>Spend by month</div>
-          {cats.length > 1 && <Legend items={cats.map(c => ({ label: c, color: CAT_COLOR[c], kind: 'rect' as const }))} />}
+          {cats.length > 1 && <Legend items={cats.map(c => ({ label: CAT_LABEL[c], color: CAT_COLOR[c], kind: 'rect' as const }))} />}
           <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>Invoice line totals, credits netted, duplicates removed. {monthName(curMonth)} is month to date.</div>
         </div>
         <SpendChart ms={ms} cats={cats} curMonth={curMonth} />
@@ -363,7 +366,7 @@ function SpendView({ lines, cat, today, range }: { lines: PricedLine[]; cat: Cat
             <thead>
               <tr style={headRow}>
                 <th style={th}>Month</th>
-                {ms.groups.map(g => <th key={g} style={thR}>{g}</th>)}
+                {ms.groups.map(g => <th key={g} style={thR}>{group === 'category' ? CAT_LABEL[g] ?? g : g}</th>)}
                 <th style={thR}>Total</th><th style={thR}>vs month before</th>
               </tr>
             </thead>
@@ -448,7 +451,7 @@ function SpendChart({ ms, cats, curMonth }: { ms: ReturnType<typeof monthlySpend
             <div key={c} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
               <span style={{ width: 12, height: 2, background: CAT_COLOR[c], display: 'inline-block' }} />
               <span style={{ fontWeight: 600 }}>{fmtMoney0(ms.byCategory[months[hover]]?.[c] ?? 0)}</span>
-              <span style={{ color: 'var(--fg-muted)' }}>{c}</span>
+              <span style={{ color: 'var(--fg-muted)' }}>{CAT_LABEL[c]}</span>
             </div>
           ))}
         </Tooltip>
@@ -484,6 +487,13 @@ function ItemView({ priced, series, cat, itemId, setItemId, venueColor }: {
     return buildSeries(priced.filter(l => l.item_id === itemId && (cat === 'all' || l.category === cat)));
   }, [priced, itemId, cat]);
   const name = itemSeries[0]?.itemName ?? items.find(i => i.id === itemId)?.name ?? '';
+  // Colours are assigned among the venues THIS item is bought at, in the fixed venue order:
+  // with 11 venues the six validated hues cannot each own a venue, but one item rarely has 6.
+  const chartColor = useMemo(() => {
+    const idx = new Map([...venueColor.keys()].map((k, i) => [k, i]));
+    const ids = [...new Set(itemSeries.map(s => s.venueId))].sort((a, b) => (idx.get(a) ?? 99) - (idx.get(b) ?? 99));
+    return new Map(ids.map((id, i) => [id, SERIES[i] ?? OTHER_GRAY]));
+  }, [itemSeries, venueColor]);
 
   return (
     <>
@@ -529,7 +539,7 @@ function ItemView({ priced, series, cat, itemId, setItemId, venueColor }: {
                 return (
                   <div key={s.key} style={{ border: '1px solid var(--border)', borderRadius: 10, padding: '10px 12px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--fg-secondary)' }}>
-                      <span style={{ width: 14, height: 2, background: venueColor.get(s.venueId) ?? OTHER_GRAY, display: 'inline-block' }} />{s.venueName}
+                      <span style={{ width: 14, height: 2, background: chartColor.get(s.venueId) ?? OTHER_GRAY, display: 'inline-block' }} />{s.venueName}
                     </div>
                     <div style={{ fontSize: 20, fontWeight: 700, marginTop: 2 }}>{fmtMoney(last.perBottle)}<span style={{ fontSize: 12, fontWeight: 500, color: 'var(--fg-muted)' }}> / bottle</span></div>
                     <div style={subTxt}>latest {shortDate(last.date)} · {last.vendor || '—'}</div>
@@ -538,7 +548,7 @@ function ItemView({ priced, series, cat, itemId, setItemId, venueColor }: {
                 );
               })}
             </div>
-            <PriceChart series={itemSeries} venueColor={venueColor} />
+            <PriceChart series={itemSeries} venueColor={chartColor} />
           </Card>
 
           <div style={{ height: 14 }} />

@@ -20,6 +20,8 @@ import { Transfers } from '@/screens/Transfers';
 import { StockOnHand } from '@/screens/StockOnHand';
 import { FoodCount, canUseFoodCount } from '@/screens/FoodCount';
 import { PurchasePrices } from '@/screens/PurchasePrices';
+import { OrderTracker } from '@/screens/OrderTracker';
+import { OrderPrices } from '@/screens/OrderPrices';
 import { AskAI } from '@/screens/AskAI';
 import { refreshAccessList, refreshVenues, resolveAccess, canRunAudits, canManageUsers, hasCorporateAccess, isDesktopRole } from '@/lib/access';
 import { refreshVenueLookups } from '@/lib/venueMap';
@@ -271,6 +273,9 @@ export default function App() {
             <Route path="/catalog"   element={hasCorporateAccess(user.role) ? <Catalog user={user} /> : <Navigate to="/variance" replace />} />
             {/* v0.74: org-wide financial data — admin + corporate only (the RPC enforces the same). */}
             <Route path="/purchase-prices" element={hasCorporateAccess(user.role) ? <PurchasePrices user={user} /> : <Navigate to="/variance" replace />} />
+            {/* v0.79: Purchasing — admin + corporate only (the kount_ot_* RLS and the reader function enforce the same). */}
+            <Route path="/order-tracker"   element={hasCorporateAccess(user.role) ? <OrderTracker user={user} /> : <Navigate to="/variance" replace />} />
+            <Route path="/order-prices"    element={hasCorporateAccess(user.role) ? <OrderPrices user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/inventory" element={<Navigate to="/variance" replace />} />
             <Route path="/transfers" element={canRunAudits(user.role) ? <Transfers user={user} /> : <Navigate to="/variance" replace />} />
             <Route path="/stock"     element={canRunAudits(user.role) ? <StockOnHand user={user} /> : <Navigate to="/variance" replace />} />

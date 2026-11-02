@@ -26,10 +26,16 @@ const NAV_ADMIN = [
   { to: '/transfers',      label: 'Transfers',      manager: true,  viewer: true  },
   // v0.72: Inventory archived (not needed for now). Restore this row and the /inventory route in App.tsx.
   // { to: '/inventory',      label: 'Inventory',      manager: false, viewer: false },
-  { to: '/purchase-prices', label: 'Purchase prices', manager: false, viewer: false },
   { to: '/catalog',        label: 'Catalog',        manager: false, viewer: false },
   { to: '/venue-settings', label: 'Venue settings', manager: false, viewer: false },
   { to: '/security',       label: 'Security',       manager: false, viewer: false, adminOnly: true },
+];
+
+// v0.79: Purchasing — org-wide money data, admin + corporate only (routes and RLS enforce the same).
+const NAV_PURCHASING = [
+  { to: '/order-tracker',   label: 'Order tracker' },
+  { to: '/order-prices',    label: 'Order prices' },
+  { to: '/purchase-prices', label: 'Liquor & wine prices' },
 ];
 
 const ROLE_LABELS: Record<string, string> = {
@@ -84,6 +90,21 @@ export function Sidebar({ userName, userRole, onSignOut }: Props) {
           {n.label}
         </NavLink>
       ))}
+
+      {isAdmin && (
+        <>
+          <div className="sidebar-group-label">Purchasing</div>
+          {NAV_PURCHASING.map(n => (
+            <NavLink
+              key={n.to}
+              to={n.to}
+              className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}
+            >
+              {n.label}
+            </NavLink>
+          ))}
+        </>
+      )}
 
       {(isAdmin || isManager || isVenueMgr) && (
         <>

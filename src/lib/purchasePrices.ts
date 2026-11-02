@@ -38,7 +38,8 @@
 
 import { csvCell } from './csv';
 
-export type BevCategory = 'Liquor' | 'Wine';
+/** 'Mixed' = liquor + wine that is not itemized (0133: classed by vendor; spend only). */
+export type BevCategory = 'Liquor' | 'Wine' | 'Mixed';
 
 /** One row of kount_bev_purchase_lines. Nulls are stripped server-side, so
  *  every optional field may be absent. */
@@ -223,7 +224,7 @@ export function priceLines(lines: PurchaseLine[]): PricedLine[] {
     if (l.dup_of) return { ...l, ...blank, basis: `copy of invoice ${l.dup_of}`, spend: 0, excluded: 'duplicate' };
     const spend = lineSpend(l);
     if (l.is_credit) return { ...l, ...blank, basis: 'credit', spend, excluded: 'credit' };
-    if (!l.item_id) return { ...l, ...blank, basis: 'not linked to a single item', spend, excluded: 'no item' };
+    if (!l.item_id) return { ...l, ...blank, basis: l.route === 'vendor' ? `liquor + wine by vendor, not itemized` : 'not linked to a single item', spend, excluded: 'no item' };
     if (!(num(l.unit_cost) > 0)) return { ...l, ...blank, basis: 'no unit price on the line', spend, excluded: 'no price' };
     const r = resolvePack(l);
     weak[i] = !!r.weak;
@@ -461,7 +462,7 @@ export function monthlySpend(priced: PricedLine[], groupBy: SpendGroup, maxGroup
     const g = keep.has(groupOf(l)) ? groupOf(l) : 'Other';
     (cells[m] ??= {})[g] = (cells[m][g] ?? 0) + l.spend;
     totals[m] = (totals[m] ?? 0) + l.spend;
-    const c = (byCategory[m] ??= { Liquor: 0, Wine: 0 });
+    const c = (byCategory[m] ??= { Liquor: 0, Wine: 0, Mixed: 0 });
     c[l.category] += l.spend;
   }
   // A month with no invoices is a $0 month, not a missing one — otherwise
@@ -470,7 +471,7 @@ export function monthlySpend(priced: PricedLine[], groupBy: SpendGroup, maxGroup
   const months = range ? monthsBetween(range.from, range.to) : seen.length ? monthsBetween(seen[0], seen[seen.length - 1]) : [];
   for (const m of months) {
     totals[m] ??= 0;
-    byCategory[m] ??= { Liquor: 0, Wine: 0 };
+    byCategory[m] ??= { Liquor: 0, Wine: 0, Mixed: 0 };
   }
   return { months, groups, cells, totals, byCategory };
 }
@@ -491,12 +492,13 @@ export interface PriceSummary {
   downImpact: number;
   unclearLines: number;
   unclearSpend: number;
-  /** Lines in spend that are not tied to one item or have no unit price. */
+  /** Lines in spend that are not tied to one item or have no unit price. Not-itemized
+   *  ('Mixed', classed by vendor) lines are left out: they can never be priced per bottle. */
   unpricedOtherLines: number;
   unpricedOtherSpend: number;
   duplicateLines: number;
   checkCount: number;
-  /** Share of purchase spend (credits and copies left out) priced per bottle, 0..1. */
+  /** Share of itemized purchase spend (credits, copies and not-itemized lines left out) priced per bottle, 0..1. */
   pricedShare: number;
 }
 
@@ -510,8 +512,8 @@ export function summarize(priced: PricedLine[], movers: Mover[], today: Date = n
   const prev = full.length > 1 ? full[full.length - 2] : null;
   const spend = priced.reduce((s, l) => s + l.spend, 0);
   const unclear = priced.filter(l => l.excluded === 'units unclear');
-  const other = priced.filter(l => l.excluded === 'no item' || l.excluded === 'no price');
-  const purchases = priced.filter(l => l.excluded !== 'credit' && l.excluded !== 'duplicate').reduce((s, l) => s + l.spend, 0);
+  const other = priced.filter(l => (l.excluded === 'no item' || l.excluded === 'no price') && l.category !== 'Mixed');
+  const purchases = priced.filter(l => l.excluded !== 'credit' && l.excluded !== 'duplicate' && l.category !== 'Mixed').reduce((s, l) => s + l.spend, 0);
   const pricedSpend = priced.filter(l => !l.excluded).reduce((s, l) => s + l.spend, 0);
   const up = movers.filter(m => m.delta > 0 && !m.needsCheck), down = movers.filter(m => m.delta < 0 && !m.needsCheck);
   return {

@@ -305,6 +305,21 @@ check('mover: vendor change flagged', mv[0].vendorChanged === true, mv[0]);
   check('lines with no item / no price are counted for Needs review', s.unpricedOtherLines === 2 && near(s.unpricedOtherSpend, 1758.2), s);
 }
 
+// ── 0133: liquor + wine that is not itemized (classed by vendor) ───────
+{
+  const out = priceLines([
+    L({ item_id: null, route: 'vendor', category: 'Mixed', vendor_name: 'Empire Merchants', invoice_date: '2026-10-02', line_total: 36458, unit_cost: 36458 }),
+    L({ invoice_date: '2026-10-03', line_total: 252, unit_cost: 252, cu_qty: 12, ref_venue: 21 }),
+  ]);
+  check('not-itemized line: in spend, out of prices, says why', out[0].excluded === 'no item' && out[0].spend === 36458 && /by vendor/.test(out[0].basis), out[0]);
+  const ms = monthlySpend(out, 'category');
+  check('not-itemized spend has its own category bucket', ms.byCategory['2026-10'].Mixed === 36458 && ms.byCategory['2026-10'].Liquor === 252, ms.byCategory);
+  check('and its own breakdown group', ms.groups.includes('Mixed'), ms.groups);
+  const s = summarize(out, [], new Date(2026, 9, 22));
+  check('not-itemized lines are not "lines not priced" (they can never be)', s.unpricedOtherLines === 0, s.unpricedOtherLines);
+  check('and stay out of the priced-share denominator', s.pricedShare === 1, s.pricedShare);
+}
+
 // ── CSV + dates + ticks ────────────────────────────────────────────────
 {
   const csv = moversCsv([{ ...mv[0], itemName: '=HYPERLINK("x")' }]);
@@ -321,7 +336,9 @@ check('niceTicks small range', niceTicks(20, 24, 4).join() === '20,21,22,23,24',
 const src = (p: string) => readFileSync(join(process.cwd(), p), 'utf8');
 const app = src('src/App.tsx'); const side = src('src/components/Sidebar.tsx'); const screen = src('src/screens/PurchasePrices.tsx');
 check('route gated to admin + corporate', app.includes('<Route path="/purchase-prices" element={hasCorporateAccess(user.role) ? <PurchasePrices user={user} />'));
-check('nav row hidden from managers and venue management', /\{ to: '\/purchase-prices', label: 'Purchase prices', manager: false, viewer: false \}/.test(side));
+// v0.79: moved into the Purchasing section, which only admin + corporate see.
+check('nav row in the Purchasing section, rendered for admin + corporate only',
+  /NAV_PURCHASING = \[[\s\S]*\{ to: '\/purchase-prices', label: 'Liquor & wine prices' \}/.test(side) && /\{isAdmin && \(\s*<>\s*<div className="sidebar-group-label">Purchasing<\/div>/.test(side));
 check('loads through the 0107 RPC', screen.includes("supabase.rpc('kount_bev_purchase_lines', { p_from: from, p_to: to })"));
 check('prices ALL lines before filtering (cross-venue references)', /const priced = useMemo\(\(\) => \(raw \? priceLines\(raw\) : \[\]\), \[raw\]\);/.test(screen));
 // At least the version that shipped Purchase prices (an exact pin broke on the next bump).
