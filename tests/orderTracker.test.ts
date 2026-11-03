@@ -423,6 +423,8 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   const hits = extractTracking(jemma);
   check('tracking: both FedEx numbers from E&E\'s reply', hits.length === 2 && hits.every(h => h.carrier === 'FedEx') && hits.map(h => h.number).join() === '879337642791,879337641177', hits);
   check('tracking: UPS 1Z anywhere', extractTracking('Your box: 1Z999AA10123456784 arrives Tue')[0]?.carrier === 'UPS');
+  const ups = extractTracking("Hi Talya, Here's the tracking# for the bags. UPS: 1Z16HE520327398588 matches - UPS: 1ZB87Y470431767890 1ZB87Y470436463502");
+  check('tracking: the tail of a UPS number is never a second (FedEx) number', ups.length === 3 && ups.every(h => h.carrier === 'UPS'), ups);
   check('tracking: USPS 22-digit', extractTracking('USPS tracking 9400 1000 0000 0000 0000 00')[0]?.number === '9400100000000000000000');
   const sig = 'Aleli Abad Buyer- OS&E 323.576.3157 EEMercantile.co. Invoice INV-2026-086418 total $2397.33. Account #: 215732249556 on Oct 29, 2026';
   check('tracking: phone, invoice #, dates and an account # with no tracking word are not taken', extractTracking(sig).length === 0, extractTracking(sig));
