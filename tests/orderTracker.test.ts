@@ -551,19 +551,19 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   const e = plan('Delilah Dallas delivery - 10/05/2026 - 2cs of bags via UPS', whs, 'x:Delilah Dallas');
   check('storage: an order-only venue (Delilah Dallas) is read from the text too', e.problem === null && e.venueId === 'x:Delilah Dallas' && draws(e) === '2 Delilah Gloss Eurotote Bag');
   const f = planStorageLine({ description: 'Delilah LA delivery - 10/05/2026 - 2cs of bags via UPS', venue_id: 'v1' }, whs, items, [], V);
-  check('storage: two equal matches and stock of neither = asked, not guessed', f.problem !== null && /could be/.test(f.problem) && !f.draws.length, f.problem);
+  check('storage: two equal matches and stock of neither = asked, not guessed', f.problem !== null && /could be .* or .*pick one/i.test(f.problem) && !f.draws.length, f.problem);
   const g = plan('TNG delivery - 10/19/2026 - 6 CASES / UBER PICK UP');
-  check('storage: cases with no item named = asked which item', g.problem !== null && /which item the 6 cases/.test(g.problem) && g.venueId === 'v3', g.problem);
-  check('storage: a date with nothing else = asked', /no item or quantity/.test(plan('BSC delivery - 10/13/2026').problem ?? ''));
+  check('storage: cases with no item named = asked which item', g.problem !== null && /which item are the 6 cases\?/i.test(g.problem) && g.venueId === 'v3', g.problem);
+  check('storage: a date with nothing else = asked', /no item or quantity/i.test(plan('BSC delivery - 10/13/2026').problem ?? ''));
   const h = plan('Receiving and Warehousing - TNG napkins - 1pallet', whs, 'v3');
-  check('storage: receiving = stock coming in; a pallet asks how many cases', h.kind === 'receipt' && /how many cases of TNG Custom Napkin \/1000 the pallet/.test(h.problem ?? ''), h.problem);
+  check('storage: receiving = stock coming in; a pallet asks how many cases', h.kind === 'receipt' && /how many cases of TNG Custom Napkin \/1000 were on the pallet\?/i.test(h.problem ?? ''), h.problem);
   const i2 = plan('Delilah Miami UPS returns CS 1', order({ venue_id: 'v2' }));
-  check('storage: a return is stock coming back; "CS 1" is 1 case, the item still has to be named', i2.kind === 'receipt' && /which item the 1 cases/.test(i2.problem ?? ''), i2.problem);
+  check('storage: a return is stock coming back; "CS 1" is 1 case, the item still has to be named', i2.kind === 'receipt' && /which item is the 1 case\?/i.test(i2.problem ?? ''), i2.problem);
   check('storage: a delivery with no venue written and a several-venue order = asked which venue',
-    /which venue/.test(plan('delivery - 11/02/2026 - 2 cs hand soap', whs).problem ?? ''));
-  check('storage: two venues on one line = asked', /more than one venue/.test(plan('Delilah LA / Delilah Miami delivery - 11/02/2026 - 2cs bags', whs).problem ?? ''));
+    /which venue/i.test(plan('delivery - 11/02/2026 - 2 cs hand soap', whs).problem ?? ''));
+  check('storage: two venues on one line = asked', /more than one venue/i.test(plan('Delilah LA / Delilah Miami delivery - 11/02/2026 - 2cs bags', whs).problem ?? ''));
   check('storage: h.wood stock any venue can draw', draws(plan('TNG delivery - 11/02/2026 - 1 cs hand soap')) === "1 Hwood Mrs. Meyer's Hand Soap");
-  check('storage: an item not in stock = asked', /no stock item matches/.test(plan('TNG delivery - 11/02/2026 - 2 cs glass ashtrays').problem ?? ''));
+  check('storage: an item not in stock = asked', /no stock item matches/i.test(plan('TNG delivery - 11/02/2026 - 2 cs glass ashtrays').problem ?? ''));
   const rows = storageMoveRows(a, { id: 'L9', description: 'TNG delivery - 10/12/2026 - 3 CASES TNG-EURO / 2 CASES TNG-PIZZAB' }, '2026-10-20');
   check('storage moves: one release per item, tied to the line, on the delivery day at noon (a count that day wins)',
     rows.length === 2 && rows.every(r => r.line_id === 'L9' && r.kind === 'release' && r.venue_id === 'v3' && r.moved_on === '2026-10-12' && r.created_at === '2026-10-12T19:00:00Z'));
