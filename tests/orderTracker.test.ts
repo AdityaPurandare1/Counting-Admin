@@ -23,6 +23,8 @@ import {
 import { inboxGroups, findSummary, type InboxItem } from '../src/lib/orderMail';
 import { existsSync } from 'node:fs';
 
+// the sibling Counting-App repo (the pull, the reader): only on a machine that has both — CI checks out this repo alone
+const sibling = (...parts: string[]) => { const p = join(process.cwd(), '..', 'Counting-App', ...parts); return existsSync(p) ? readFileSync(p, 'utf8') : null; };
 let passed = 0;
 let failed = 0;
 function check(label: string, cond: boolean, detail?: unknown) {
@@ -675,8 +677,8 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   check('shipping-fee invoice from another vendor naming our invoice: not put on it', otherVendor.state === 'pending', otherVendor);
   check('review: opens on the order of the invoice it names',
     /fromInbox \?\? orderForReferences\(doc\.refers_to, doc\.doc_number, data\)\?\.order \?\? matchOrder\(/.test(readFileSync(join(process.cwd(), 'src/components/orderTracker/DocumentReview.tsx'), 'utf8')));
-  const reader = readFileSync(join(process.cwd(), '..', 'Counting-App', 'supabase', 'functions', '_shared', 'purchase-doc.ts'), 'utf8');
-  check('reader: asks for refers_to and requires it', /refers_to: \{ type: 'array'/.test(reader) && /'tracking_numbers', 'refers_to',/.test(reader));
+  const reader = sibling('supabase', 'functions', '_shared', 'purchase-doc.ts');
+  if (reader) check('reader: asks for refers_to and requires it', /refers_to: \{ type: 'array'/.test(reader) && /'tracking_numbers', 'refers_to',/.test(reader));
 }
 
 // ── Find in Outlook: one older invoice / quote by its number ─────────
@@ -686,8 +688,8 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
     && /already pulled/.test(findSummary('INV-2026-418553', { found: 2, new_pdfs: 0 }))
     && findSummary('INV-2026-418553', { found: 1, new_pdfs: 1, applied: 1, paid: 1 }) === 'INV-2026-418553: 1 PDF pulled — 1 saved to an order, 1 marked paid from R365.'
     && findSummary('X', { found: 0, reason: 'A pull is running — try again in a minute.' }).startsWith('A pull is running'));
-  const fn = readFileSync(join(process.cwd(), '..', 'Counting-App', 'supabase', 'functions', 'kount-order-mail', 'index.ts'), 'utf8');
-  check('find: corporate-only action, holds the run lock and always lets it go, vendor senders only, PDFs read + paid check',
+  const fn = sibling('supabase', 'functions', 'kount-order-mail', 'index.ts');
+  if (fn) check('find: corporate-only action, holds the run lock and always lets it go, vendor senders only, PDFs read + paid check',
     /if \(action === 'find'\)/.test(fn) && fn.indexOf("if (action === 'find')") > fn.indexOf('const caller = await corporateCaller')
     && /kount_ot_mail_begin_run[\s\S]{0,400}findPhase\(sb, number, stats\)[\s\S]{0,400}readPhase[\s\S]{0,200}r365PaidPhase[\s\S]{0,900}finally \{\s*await sb\.from\('kount_ot_mail_account'\)\.update\(\{ running_since: null/.test(fn)
     && /!m\.hasAttachments \|\| !domain \|\| !onList\(domain, domains\)/.test(fn));
@@ -703,8 +705,8 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
     && keepOtherAttachment({ name: 'tiny.png', size: 4000 }) === null && keepOtherAttachment({ name: 'setup.exe', size: 1000 }) === null
     && keepOtherAttachment({ name: 'Invoice.pdf', size: 5000 }) === null && keepOtherAttachment({ name: 'big.xlsx', size: 30 * 1024 * 1024 }) === null);
   check('spreadsheet = xlsx / xls / csv', isSpreadsheet('a.XLSX') && isSpreadsheet('b.csv') && !isSpreadsheet('c.docx') && !isSpreadsheet(null));
-  const fn = readFileSync(join(process.cwd(), '..', 'Counting-App', 'supabase', 'functions', 'kount-order-mail', 'index.ts'), 'utf8');
-  check('pull: other attachments go onto the e-mail\'s order (thread / INV #), once (hash + message|file); a sheet moves each line by its own row, never every line; never fails the pull',
+  const fn = sibling('supabase', 'functions', 'kount-order-mail', 'index.ts');
+  if (fn) check('pull: other attachments go onto the e-mail\'s order (thread / INV #), once (hash + message|file); a sheet moves each line by its own row, never every line; never fails the pull',
     /orderForEmail\(m\.conversationId \?\? null/.test(fn) && /kind: 'other'/.test(fn) && /content_hash: await sha256Hex\(bytes\)/.test(fn)
     && /sheetUpdates\(grid, lines/.test(fn) && /ignoreDuplicates: true/.test(fn) && !/ship_lines: true/.test(fn.slice(fn.indexOf('async function attachOthersOf'), fn.indexOf('async function trackingPhase')))
     && /stats\.others_error = msg\(e\)/.test(fn) && /await otherPhase\(sb, stats\);/.test(fn));
