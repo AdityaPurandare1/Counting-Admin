@@ -92,6 +92,31 @@ export async function updateOrder(id: string, patch: Partial<OtOrder>): Promise<
 }
 
 /** A line change. A status change always says how it happened (the audit trail reads it). */
+/** Delete an order for everyone: its lines go with it; its documents and inbox rows stay, unlinked. */
+export async function deleteOrder(id: string): Promise<void> {
+  const { error } = await supabase.from('kount_ot_orders').delete().eq('id', id);
+  if (error) fail('Order not deleted', error);
+}
+
+/** A file attached to an order by hand (an Excel of tracking numbers, a photo): an 'other' document (0142). */
+export async function attachFile(orderId: string, file: File): Promise<void> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(b => b.toString(16).padStart(2, '0')).join('');
+  const id = crypto.randomUUID();
+  const ext = (file.name.split('.').pop() ?? 'bin').toLowerCase().replace(/[^a-z0-9]/g, '') || 'bin';
+  const path = `other/${id}.${ext}`;
+  const up = await supabase.storage.from(DOC_BUCKET).upload(path, bytes, { contentType: file.type || 'application/octet-stream', upsert: false });
+  if (up.error) fail('File not attached', up.error);
+  const { error } = await supabase.from('kount_ot_documents').insert({
+    id, order_id: orderId, kind: 'other', file_name: file.name.slice(0, 200), storage_path: path, doc_date: new Date().toISOString().slice(0, 10), content_hash: hash,
+  });
+  if (error) {
+    await supabase.storage.from(DOC_BUCKET).remove([path]);
+    if (error.code === '23505') throw new Error('That file is already attached to this order.');
+    fail('File not attached', error);
+  }
+}
+
 export async function updateLine(id: string, patch: Partial<OtLine>, how: { source: 'manual' | 'document'; note?: string | null } = { source: 'manual' }): Promise<void> {
   const body: Record<string, unknown> = { ...patch };
   if ('status' in patch) { body.status_source = how.source; body.status_note = how.note ?? null; }
@@ -238,6 +263,6 @@ export async function applyDocument(p: ApplyDocument): Promise<string> {
 /** A short-lived link to open a stored PDF (the bucket is private). */
 export async function documentUrl(storagePath: string): Promise<string> {
   const { data, error } = await supabase.storage.from(DOC_BUCKET).createSignedUrl(storagePath, 600);
-  if (error || !data?.signedUrl) fail('Could not open the PDF', error);
+  if (error || !data?.signedUrl) fail('Could not open the file', error);
   return data.signedUrl;
 }

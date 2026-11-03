@@ -10,11 +10,16 @@ import {
   onHand, receivedForLine, stockRows, releasesByVenue, validateNewOrder, similarity, addDays, sameVendor,
   planDocRows, planDocumentSave, documentChecks, decideMailDocument, extractTracking, trackingUrl, orderForEmail, venueForDoc, filterByVenue, sortOrders, orderVenueIds,
   planStorageLine, storageMoveRows, isStorageLine, autoOrderNumber, lineOutsideSubtotal, orderForReferences,
+  keepOtherAttachment, isSpreadsheet, sheetUpdates,
   type ReadDoc, type MailSource,
   type OtItem, type OtLine, type OtMove, type OtOrder, type OtDocument, type DocLine, type DocReview,
 } from '../src/lib/orderTracker';
 import { pricePoints, histories, priceMoves, quoteChecks, invoiceRegister, spendByMonth, isInvoiced, priceMovesCsv } from '../src/lib/orderPrices';
 import { buildReportRows } from '../src/lib/orderTrackerReport';
+import {
+  fulfillmentOf, fulfillmentStep, paymentOf, nextEta, orderCategory, timeAgo, lastUpdate, trackerKpis, attentionItems,
+  orderDraft, lineDraft, planOrderSave, isPlanEmpty, setDraftStage, markDraft, draftStage, draftTotal, draftLineTotal,
+} from '../src/lib/orderTrackerView';
 import { inboxGroups, findSummary, type InboxItem } from '../src/lib/orderMail';
 import { existsSync } from 'node:fs';
 
@@ -412,7 +417,7 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   check('inbox review never re-reads the PDF (uses what the pull read)', dr.includes('inbox?.parsed ? Promise.resolve(inbox.parsed as ReadDocument)'));
   check('inbox review never re-uploads (the PDF is the inbox row\'s)', dr.includes('path = inbox ? inbox.storage_path : await uploadDocumentPdf(docId, file!)') && dr.includes('refused && path && !inbox'));
   check('inbox review closes its row in the same save', dr.includes('payload.inbox_id = inbox.id') && dr.includes('useMemo(() => inbox?.id ?? crypto.randomUUID()'));
-  check('order tracker shows the Inbox tab with a waiting count', ot.includes("{ value: 'inbox', label: waiting ? `Inbox (${waiting})` : 'Inbox' }"));
+  check('order tracker shows the Inbox tab with a waiting count', ot.includes("tab('inbox', 'Inbox', waiting)"));
   check('a failing inbox load never hides the orders', ot.includes('loadMail().catch(() => [] as InboxItem[])'));
   const mail = src('src/lib/orderMail.ts');
   check('the mailbox sign-in never reaches the browser (status RPC only)', mail.includes("supabase.rpc('kount_ot_mail_status')") && !/kount_ot_mail_account|token_get/.test(mail));
@@ -684,8 +689,135 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   const fn = readFileSync(join(process.cwd(), '..', 'Counting-App', 'supabase', 'functions', 'kount-order-mail', 'index.ts'), 'utf8');
   check('find: corporate-only action, holds the run lock and always lets it go, vendor senders only, PDFs read + paid check',
     /if \(action === 'find'\)/.test(fn) && fn.indexOf("if (action === 'find')") > fn.indexOf('const caller = await corporateCaller')
-    && /kount_ot_mail_begin_run[\s\S]{0,400}findPhase\(sb, number, stats\)[\s\S]{0,400}readPhase[\s\S]{0,200}r365PaidPhase[\s\S]{0,400}finally \{\s*await sb\.from\('kount_ot_mail_account'\)\.update\(\{ running_since: null/.test(fn)
+    && /kount_ot_mail_begin_run[\s\S]{0,400}findPhase\(sb, number, stats\)[\s\S]{0,400}readPhase[\s\S]{0,200}r365PaidPhase[\s\S]{0,900}finally \{\s*await sb\.from\('kount_ot_mail_account'\)\.update\(\{ running_since: null/.test(fn)
     && /!m\.hasAttachments \|\| !domain \|\| !onList\(domain, domains\)/.test(fn));
+}
+
+// ── other attachments of an order's e-mails (0142) ───────────────────
+{
+  check('kept: a spreadsheet / CSV / Word / a real photo', keepOtherAttachment({ name: 'Tracking Delilah.xlsx', size: 9000 }) === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    && keepOtherAttachment({ name: 'ship.csv', size: 300 }) === 'text/csv' && keepOtherAttachment({ name: 'spec.docx', size: 40000 })?.includes('wordprocessingml') === true
+    && keepOtherAttachment({ name: 'IMG_2041.jpeg', size: 1_800_000 }) === 'image/jpeg');
+  check('left: inline pictures, signature logos (image001.png, small images), unknown types, PDFs (read separately), over 20 MB',
+    keepOtherAttachment({ name: 'photo.jpg', size: 900000, isInline: true }) === null && keepOtherAttachment({ name: 'image001.png', size: 80000 }) === null
+    && keepOtherAttachment({ name: 'tiny.png', size: 4000 }) === null && keepOtherAttachment({ name: 'setup.exe', size: 1000 }) === null
+    && keepOtherAttachment({ name: 'Invoice.pdf', size: 5000 }) === null && keepOtherAttachment({ name: 'big.xlsx', size: 30 * 1024 * 1024 }) === null);
+  check('spreadsheet = xlsx / xls / csv', isSpreadsheet('a.XLSX') && isSpreadsheet('b.csv') && !isSpreadsheet('c.docx') && !isSpreadsheet(null));
+  const fn = readFileSync(join(process.cwd(), '..', 'Counting-App', 'supabase', 'functions', 'kount-order-mail', 'index.ts'), 'utf8');
+  check('pull: other attachments go onto the e-mail\'s order (thread / INV #), once (hash + message|file); a sheet moves each line by its own row, never every line; never fails the pull',
+    /orderForEmail\(m\.conversationId \?\? null/.test(fn) && /kind: 'other'/.test(fn) && /content_hash: await sha256Hex\(bytes\)/.test(fn)
+    && /sheetUpdates\(grid, lines/.test(fn) && /ignoreDuplicates: true/.test(fn) && !/ship_lines: true/.test(fn.slice(fn.indexOf('async function attachOthersOf'), fn.indexOf('async function trackingPhase')))
+    && /stats\.others_error = msg\(e\)/.test(fn) && /await otherPhase\(sb, stats\);/.test(fn));
+}
+
+// ── the redesigned Orders screen (v0.87): what it shows ──────────────
+{
+  const o = order({ order_number: 'CUS-0012', venue_id: 'v4', deliver_to: 'venue', expected_on: '2026-11-20', updated_at: '2026-10-01T00:00:00Z', created_at: '2026-09-01T00:00:00Z' });
+  const paidL = line(o, { status: 'PAID', invoice_number: 'INV-1', invoice_date: '2026-09-01', qty: 2, unit_price: 100, status_at: '2026-10-02T00:00:00Z' });
+  const invL = line(o, { status: 'INVOICED', invoice_number: 'INV-2', invoice_date: '2026-10-10', qty: 1, unit_price: 50, expected_on: '2026-10-25' });
+  const reqL = line(o, { status: 'REQUESTED', qty: 1, unit_price: 10 });
+  check('fulfillment: invoiced / paid = In production (prepaid), the other steps by name',
+    fulfillmentOf('INVOICED') === 'In production' && fulfillmentOf('PAID') === 'In production' && fulfillmentOf('SHIPPED') === 'Shipped' && fulfillmentOf(null) === null
+    && fulfillmentStep('QUOTED') === 2 && fulfillmentStep('RECEIVED') === 6 && fulfillmentStep('CANCELLED') === -1);
+  const p = paymentOf([paidL, invL], '2026-11-03');
+  check('payment: an invoice at Invoiced = not paid, its amount and days waiting', p.state === 'unpaid' && p.unpaid$ === 50 && p.oldestDays === 24 && p.invoices.join() === 'INV-1,INV-2', p);
+  check('payment: all paid / some paid / none invoiced', paymentOf([paidL], '2026-11-03').state === 'paid' && paymentOf([paidL, reqL], '2026-11-03').state === 'part'
+    && paymentOf([reqL], '2026-11-03').label === 'Not invoiced');
+  check('payment: an invoice # typed on a line still at Quoted counts as unpaid', paymentOf([line(o, { status: 'QUOTED', invoice_number: 'INV-9', invoice_date: '2026-11-01' })], '2026-11-03').state === 'unpaid');
+  check('next ETA: the soonest date of what has not arrived (a line\'s own, else the order\'s)', nextEta(o, [paidL, invL]) === '2026-10-25' && nextEta(o, [paidL]) === '2026-11-20'
+    && nextEta(o, [line(o, { status: 'DELIVERED', expected_on: '2026-01-01' })]) === null);
+  check('category from the order # series', orderCategory('CUS-0012') === 'Custom / branded' && orderCategory('ose-0030') === 'Operating supplies' && orderCategory('WHS-0011') === 'Warehousing & delivery' && orderCategory('PO-7') === null);
+  const now = Date.parse('2026-11-03T12:00:00Z');
+  check('updated: just now / minutes / hours / days', timeAgo('2026-11-03T11:59:30Z', now) === 'just now' && timeAgo('2026-11-03T11:00:00Z', now) === '1h ago' && timeAgo('2026-11-03T11:30:00Z', now) === '30m ago'
+    && timeAgo('2026-11-03T06:00:00Z', now) === '6h ago' && timeAgo('2026-10-31T12:00:00Z', now) === '3d ago' && timeAgo(null, now) === '—');
+  check('updated = the latest of the order and its lines', lastUpdate(o, [paidL]) === '2026-10-02T00:00:00Z');
+
+  const data = { orders: [o], lines: [paidL, invL, reqL], items: [] as OtItem[], moves: [] as OtMove[] };
+  const k = trackerKpis(data, '2026-11-03');
+  check('KPIs: open, late (oldest days), on order, invoiced-not-paid, invoices', k.open === 1 && k.openLines === 3 && k.late === 1 && k.oldestLateDays === 9
+    && k.onOrder$ === 250 && k.unpaid$ === 50 && k.unpaidInvoices === 1 && k.oldestUnpaidDays === 24, k);
+  const att = attentionItems(data, '2026-11-03', 3, x => '$' + x);
+  check('bell: late orders first, then unpaid past 14 days, then the Inbox', att.map(a => a.sev).join() === 'crit,warn,info' && att[0].act.kind === 'order'
+    && /1 line past ETA/.test(att[0].sub) && /24 days unpaid/.test(att[1].sub) && att[2].title === '3 documents waiting in the Inbox', att);
+
+  // the drawer: a draft saved in one go
+  const d0 = orderDraft(o, [paidL, invL], '2026-11-03');
+  const same = planOrderSave(o, [paidL, invL], d0, { items: [], received: () => 0 });
+  check('drawer: an untouched draft saves nothing', isPlanEmpty(same) && !same.problems.length, same);
+  const d1 = { ...d0, notes: 'call Aleli', lines: [{ ...d0.lines[0], qty: '3' }, { ...d0.lines[1], removed: true }, { ...lineDraft(null), description: 'Pins', qty: '20', unit_price: '5' }] };
+  const p1 = planOrderSave(o, [paidL, invL], d1, { items: [], received: () => 0 });
+  check('drawer: only what changed — order notes, a qty, a removed line, a new line',
+    JSON.stringify(p1.order) === '{"notes":"call Aleli"}' && p1.updates.length === 1 && JSON.stringify(p1.updates[0].patch) === '{"qty":3}'
+    && p1.removes.join() === invL.id && p1.adds.length === 1 && p1.adds[0].qty === 20 && p1.adds[0].unit_price === 5, p1);
+  check('drawer: problems stop the save', planOrderSave(o, [paidL], { ...d0, vendor_name: ' ' }, { items: [], received: () => 0 }).problems[0] === 'Enter the vendor.'
+    && /Line 1: enter the quantity/.test(planOrderSave(o, [paidL], { ...d0, lines: [{ ...d0.lines[0], qty: 'x' }] }, { items: [], received: () => 0 }).problems.join()));
+  const st = setDraftStage(d0, 'SHIPPED');
+  check('stepper: every live line to the step; counts lines moved back', st.backward === 0 && st.draft.lines.every(l => l.status === 'SHIPPED')
+    && setDraftStage(d0, 'QUOTED').backward === 2 && draftStage(d0) === 'INVOICED');
+  check('payment buttons: forward only', markDraft(d0, 'PAID').lines.map(l => l.status).join() === 'PAID,PAID' && markDraft({ ...d0, lines: [{ ...d0.lines[0], status: 'SHIPPED' }] }, 'PAID').lines[0].status === 'SHIPPED');
+  check('totals: qty × unit cost of live lines', draftTotal(d0) === 250 && draftLineTotal({ qty: '2', unit_price: '' }) === 0);
+  const stocked = item({ name: 'BS Towel', track_stock: true });
+  const wo = { ...o, deliver_to: 'warehouse' as const };
+  const towel = line(wo, { item_id: stocked.id, qty: 10, status: 'DELIVERED' });
+  const recv = planOrderSave(wo, [towel], { ...orderDraft(wo, [towel], '2026-11-03'), lines: [{ ...lineDraft(towel), status: 'RECEIVED' }] }, { items: [stocked], received: () => 4 });
+  check('drawer: ticking received on a stocked warehouse line receives what is left (6 of 10) into stock', recv.receipts.length === 1 && recv.receipts[0].qty === 6 && recv.updates[0].patch.status === 'RECEIVED', recv);
+  const back = planOrderSave(o, [paidL], { ...d0, lines: [{ ...d0.lines[0], status: 'QUOTED' }] }, { items: [], received: () => 0 });
+  check('drawer: a line moved back is counted (the screen asks first)', back.backward === 1);
+  const fresh = planOrderSave(null, [], { ...orderDraft(null, [], '2026-11-03'), vendor_name: 'Uline', lines: [{ ...lineDraft(null), description: 'BS Towel', qty: '2' }] }, { items: [stocked], received: () => 0 });
+  check('new order: all fields, the line\'s item from its exact catalog name', fresh.order.vendor_name === 'Uline' && fresh.order.ordered_on === '2026-11-03' && fresh.adds[0].item_id === stocked.id, fresh);
+}
+
+// ── E&E "Delivery Status" sheets: each row moves its own line (the 11/3 sheets) ──
+{
+  // TNG Kitchenware Delivery Status Report.xlsx — every item "Complete"; "Qty Delievered" spelled so
+  const tng = order({ order_number: 'OSE-0030' });
+  const box = line(tng, { description: 'FOOD STORAGE CONTAINER Cambro Model No. 4SFSCW135 Packed 6 ea', sku: null, qty: 8, status: 'PAID' });
+  const pot = line(tng, { description: 'STOCK POT Rosenthal Sambonet Paderno Model No. 11001-24 Stock pot', sku: null, qty: 2, status: 'PAID' });
+  const lid = line(tng, { description: '11061-24 Lid, 9-1/2" dia., stainless steel', sku: null, qty: 2, status: 'PAID' });
+  const fee = line(tng, { description: 'Shipping', sku: null, qty: 1, status: 'INVOICED' });
+  const H = ['', 'EEMC Descriptionn', 'Item #', 'Qty Ordered', 'SRP', 'Total Cost', 'Inv #', 'Qty Delievered', 'ETA', 'Tracking #', 'Remarks'];
+  const a = sheetUpdates([H,
+    ['1.0', 'CAMBRO - SQUARE CONTAINER 4QT', '4SFSCW135', '8.0', '10.81', '86.48', 'INV-2026-368461', '8.0', '2026-10-06', 'via truck', 'Complete'],
+    ['8.0', 'ROSENTHAL - STOCK POT LID SS', '11001-24', '2.0', '122.45', '244.9', 'INV-2026-368461', '2.0', '2026-10-08', 'UPS 1Z7R988F0346095754', 'Complete'],
+    ['9.0', 'ROSENTHAL - STOCK POT LID SS', '11061-24', '2.0', '28.96', '57.92', 'INV-2026-368461', '2.0', '2026-10-08', 'UPS 1Z7R988F0346095754', 'Complete'],
+  ], [box, pot, lid, fee], 'TNG Kitchenware Delivery Status Report.xlsx');
+  const by = (r: typeof a, l: OtLine) => r.updates.find(u => u.lineId === l.id);
+  check('sheet rows: "Complete" = Delivered, matched by the SKU in the line\'s description, each line once',
+    a.matched === 3 && by(a, box)?.status === 'DELIVERED' && by(a, pot)?.status === 'DELIVERED' && by(a, lid)?.status === 'DELIVERED' && !by(a, fee), a);
+  check('sheet rows: the row\'s tracking goes on its line, carrier numbers onto the order (not "via truck")',
+    by(a, pot)?.tracking === 'UPS 1Z7R988F0346095754' && by(a, box)?.tracking === 'via truck' && a.tracking.map(h => h.number).join() === '1Z7R988F0346095754');
+
+  // The Bird Street Delivery Status September Order.xlsx — complete, a back order, "ETA to follow"
+  const bs = order({ order_number: 'OSE-0009' });
+  const zombie = line(bs, { description: 'LIBBEY - ZOMBIE GLASS - 12 OZ / 36', sku: null, qty: 1, status: 'PAID' });
+  const shot = line(bs, { description: 'SPIEGELAU - SHOT GLASS PERFECT SERVE 2.5 OZ / 12', sku: '4508041', qty: 8, status: 'PAID' });
+  const stolzle = line(bs, { description: 'STOLZLE - STARLIGHT BORDEAUX 22 OZ / 6', sku: 'Z2450035', qty: 1, status: 'PAID' });
+  const HB = ['', 'EEMC Descriptionn', 'Item #', 'Qty Ordered', 'SRP', 'Total Cost', 'Inv # (paid 10/02/2026)', 'Qty Delivered', 'ETA', 'Tracking #', 'Remarks'];
+  const b = sheetUpdates([HB,
+    ['1', 'LIBBEY - ZOMBIE GLASS - 12 OZ / 36', '96', '1', '$161.35', '$161.35', 'INV-2026-414412', '1', '10/20/2026', 'DDP 951018778', 'Complete'],
+    ['2', 'SPIEGELAU - SHOT GLASS PERFECT SERVE 2.5 OZ', '4508041', '8', '$124.74', '$997.92', 'INV-2026-414412', '3', '10/20/2026', 'DDP 951018778', 'BO: 5 case'],
+    ['9', 'STOLZLE - STARLIGHT BORDEAUX', 'Z2450035', '1', '$456.30', '$456.30', 'INV-2026-414412', '', '', '', 'ETA to follow'],
+  ], [zombie, shot, stolzle], 'The Bird Street Delivery Status September Order.xlsx');
+  check('sheet rows: a short item # (96) is not trusted — matched by its description instead; Complete = Delivered', by(b, zombie)?.status === 'DELIVERED', b);
+  check('sheet rows: a back order (3 of 8, "BO: 5 case") = Shipped, not Delivered, and says so', by(b, shot)?.status === 'SHIPPED' && /BO: 5 case, 3 of 8/.test(by(b, shot)?.note ?? ''), by(b, shot));
+  check('sheet rows: "ETA to follow" with nothing else changes nothing', !by(b, stolzle));
+
+  // For Cara Delivery Status Delilah NYC Smallwares Opening.xlsx — sections, the header repeated, an unnamed description column
+  const nyc = order({ order_number: 'OPN-0011' });
+  const spindle = line(nyc, { description: 'CHOICE - CHECK SPINDLE 6" / 1', sku: '407CS36C', qty: 4, status: 'PAID' });
+  const carafe = line(nyc, { description: 'HOSPITALITY - CARAFE GLASS PITCHER 15 OZ / 48', sku: 'FGC51530-048', qty: 19, status: 'PAID' });
+  const fork = line(nyc, { description: 'DEGRENNE - OYSTER FORK EMPIRE / 12', sku: '186517', qty: 25, status: 'PAID' });
+  const HN = ['Item No', 'Mfr', 'Model', '', 'Qty', 'Unit', 'Category', 'Sell', 'SellTotal', 'Qty Delivered', 'ETA', 'Tracking Numbers', 'Remarks'];
+  const c = sheetUpdates([['DELILAH NYC OPENING ORDERS'], ['SMALLWARES BATCH 1'], HN, ['DELIVERED'],
+    ['29', 'Custom', '407CS36C', 'CHOICE - CHECK SPINDLE 6" / 1', '4', 'ea', 'Check Spindle', '2.87', '11.48', '4', '10/15/2026', 'Fedex 547141861476', ''],
+    HN, ['IN TRANSIT'],
+    ['31', 'Hospitality Brands', 'FGC51530-048', 'HOSPITALITY - CARAFE GLASS P', '19', 'cs', 'Decanter Carafe', '275.1', '5226.9', '19', '10/21/2026', '', ''],
+    ['9', 'Custom', '186517', 'DEGRENNE - OYSTER FORK EMPIRE', '25', 'dz', 'Fork, Cocktail Oyster', '103.68', '2592', '20', '10/23/2026', 'Daylight 184555563', ''],
+  ], [spindle, carafe, fork], 'For Cara Delivery Status Delilah NYC Smallwares Opening.xlsx');
+  check('sheet sections: DELIVERED rows = Delivered (with the FedEx #), IN TRANSIT rows = Shipped even at 19 of 19, with their ETA',
+    by(c, spindle)?.status === 'DELIVERED' && by(c, carafe)?.status === 'SHIPPED' && by(c, carafe)?.eta === '2026-10-21' && by(c, fork)?.status === 'SHIPPED' && by(c, fork)?.eta === '2026-10-23'
+    && c.tracking.some(h => h.number === '547141861476' && h.carrier === 'FedEx'), c);
+  check('sheet rows that match no line of the order are left alone', sheetUpdates([HN, ['1', 'X', 'NOPE-123', 'Something else entirely', '1', 'ea', '', '', '', '1', '', 'Fedex 547141861476', 'Delivered']], [spindle], 'x.xlsx').matched === 0);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

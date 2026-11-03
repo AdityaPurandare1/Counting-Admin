@@ -1,20 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AccessEntry } from '@/lib/access';
 import { VENUES } from '@/lib/access';
-import { Btn, Card, Eyebrow, Pill, Segment } from '@/components/atoms';
+import { Card, Pill } from '@/components/atoms';
 import {
-  STATUSES, STATUS_LABEL, isLate, isoDay, lineTotal, orderState, orderVenueName, receivedForLine, statusRank, stockRows,
+  STATUSES, STATUS_LABEL, isLate, isoDay, lineTotal, orderVenueName, receivedForLine,
   type OtLine,
 } from '@/lib/orderTracker';
 import { loadTracker, type TrackerData } from '@/lib/orderTrackerData';
 import { buildReportWorkbook } from '@/lib/orderTrackerReport';
-import { NewOrderForm } from '@/components/orderTracker/NewOrderForm';
-import { OrdersView } from '@/components/orderTracker/OrdersView';
+import { attentionItems, trackerKpis, type Attention } from '@/lib/orderTrackerView';
+import { OrdersView, type OrdersPreset } from '@/components/orderTracker/OrdersView';
+import { Icon } from '@/components/orderTracker/ui';
+import '@/components/orderTracker/tracker.css';
 import { WarehouseView } from '@/components/orderTracker/WarehouseView';
 import { DocumentReview } from '@/components/orderTracker/DocumentReview';
 import { InboxView } from '@/components/orderTracker/InboxView';
 import { inboxGroups, loadInbox, redecideInbox, type InboxItem } from '@/lib/orderMail';
-import { StatusPill, download, errBox, fmtCompact, fmtMoney, headRow, linkBtn, rowBorder, shortDate, subTxt, tbl, td, tdNum, th, thR } from '@/components/orderTracker/shared';
+import { StatusPill, download, errBox, fmtMoney, fmtMoney0, headRow, linkBtn, rowBorder, shortDate, subTxt, tbl, td, tdNum, th, thR } from '@/components/orderTracker/shared';
 
 /* ───────────────────────────────────────────────────────────────────────
    Order tracker (v0.79) — Purchasing section, admin + corporate only.
@@ -27,6 +29,9 @@ import { StatusPill, download, errBox, fmtCompact, fmtMoney, headRow, linkBtn, r
    src/lib/orderTracker*.ts; tables are kount_ot_* (migration 0132).
    v0.80 Inbox: the morning mail pull (0135, src/lib/orderMail.ts) — what it
    applied by itself, and what waits for a person.
+   v0.87 the user's order-tracker.html design: one KPI strip, tabs, a bell of
+   what needs attention, the order in a side panel (OrderDrawer), each order's
+   documents viewable from the list (src/lib/orderTrackerView.ts, tracker.css).
    ─────────────────────────────────────────────────────────────────────── */
 
 type View = 'orders' | 'inbox' | 'warehouse' | 'overview';
@@ -39,7 +44,9 @@ export function OrderTracker({ today: todayProp, load = loadTracker, loadMail = 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<View>('orders');
-  const [newOpen, setNewOpen] = useState(false);
+  const [newNonce, setNewNonce] = useState(0);
+  const [preset, setPreset] = useState<OrdersPreset | null>(null);
+  const [bellOpen, setBellOpen] = useState(false);
   const [docFile, setDocFile] = useState<File | null>(null);
   const [inbox, setInbox] = useState<InboxItem[]>([]);
   const [reviewing, setReviewing] = useState<InboxItem | null>(null);
@@ -76,36 +83,63 @@ export function OrderTracker({ today: todayProp, load = loadTracker, loadMail = 
     } finally { setReportBusy(false); }
   };
 
+  const kpis = useMemo(() => (data ? trackerKpis(data, today) : null), [data, today]);
+  const attention = useMemo(() => (data ? attentionItems(data, today, waiting, fmtMoney0) : []), [data, today, waiting]);
+  const lateHot = (kpis?.late ?? 0) > 0;
+  const kpi = (key: OrdersPreset['key'] | 'warehouse') => {
+    if (key === 'warehouse') { setView('warehouse'); return; }
+    setView('orders'); setPreset(p => ({ key, n: (p?.n ?? 0) + 1 }));
+  };
+  const act = (a: Attention['act']) => {
+    setBellOpen(false);
+    if (a.kind === 'order') { setFocusOrder(null); setTimeout(() => setFocusOrder(a.id), 0); setView('orders'); } else setView(a.tab);
+  };
+  const tab = (id: View, label: string, ct: number | null, hot = false) => (
+    <button key={id} type="button" role="tab" className="ot-tab" aria-selected={view === id} onClick={() => setView(id)}>
+      {label}{ct ? <span className={`ct${hot ? ' hot' : ''}`}>{ct}</span> : null}
+    </button>
+  );
+
   return (
-    <>
-      <div className="topbar">
-        <div>
-          <Eyebrow>Purchasing</Eyebrow>
-          <h1>Order tracker</h1>
-          <div className="page-sub" style={{ marginTop: 4 }}>
-            Orders for custom and operating supplies from quote to paid, the stock they put in the warehouse, and what venues draw from it.
-          </div>
+    <div className="content ot">
+      <div className="ot-top">
+        <div className="ot-top-l">
+          <div className="ot-eyebrow">Purchasing</div>
+          <h1 className="ot-title">Order tracker</h1>
+          <p className="ot-sub">Custom and operating-supply orders from quote to paid, the stock they put in the warehouse, and what venues draw from it.</p>
         </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <Btn variant="primary" size="sm" onClick={() => { setNewOpen(o => !o); setDocFile(null); setReviewing(null); }}>{newOpen ? 'Close' : 'New order'}</Btn>
-          <Btn variant="secondary" size="sm" onClick={() => fileRef.current?.click()} title="A quote, order confirmation, invoice or shipping notice (PDF)">Add a document</Btn>
+        <div className="ot-top-r">
+          <span className={`ot-live ${error ? 'off' : data && !loading ? 'on' : ''}`} title={error ?? undefined}><i />{error ? 'Not loaded' : loading ? 'Loading…' : 'Live'}</span>
+          <div className="ot-pop-wrap">
+            <button type="button" className="ot-icon-btn" aria-label={`Needs attention: ${attention.length}`} aria-expanded={bellOpen} onClick={() => setBellOpen(o => !o)}>
+              <Icon name="bell" />{attention.length > 0 && <span className="ot-badge">{attention.length > 99 ? '99+' : attention.length}</span>}
+            </button>
+            {bellOpen && (
+              <div className="ot-pop" role="menu">
+                <h4>Needs attention</h4>
+                {attention.length ? attention.slice(0, 40).map((a, i) => (
+                  <button key={i} type="button" className="ot-att" onClick={() => act(a.act)}>
+                    <span className="sev" style={{ background: `var(--ot-${a.sev})` }} /><span><b>{a.title}</b><small>{a.sub}</small></span>
+                  </button>
+                )) : <div className="ot-pop-empty">Nothing needs you right now.</div>}
+              </div>
+            )}
+          </div>
+          <button type="button" className="ot-btn" onClick={() => void downloadReport()} disabled={!data || reportBusy} title={includeClosed ? 'Every order, completed ones too' : 'Open orders only'}>
+            <Icon name="download" />{reportBusy ? 'Building…' : 'Export to Excel'}
+          </button>
+          <label className="ot-check" title="Include completed orders in the export"><input type="checkbox" checked={includeClosed} onChange={e => setIncludeClosed(e.target.checked)} />with completed</label>
+          <button type="button" className="ot-btn" onClick={() => fileRef.current?.click()} title="A quote, order confirmation, invoice or shipping notice (PDF)"><Icon name="doc" />Add document</button>
           <input ref={fileRef} type="file" accept="application/pdf" style={{ display: 'none' }}
-                 onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) { setDocFile(f); setNewOpen(false); setReviewing(null); } }} />
-          <Btn variant="secondary" size="sm" onClick={() => void downloadReport()} disabled={!data || reportBusy}>{reportBusy ? 'Building…' : 'Download report (Excel)'}</Btn>
-          <label style={{ fontSize: 11, color: 'var(--fg-muted)', display: 'inline-flex', gap: 4, alignItems: 'center' }} title="Include completed orders in the report">
-            <input type="checkbox" checked={includeClosed} onChange={e => setIncludeClosed(e.target.checked)} /> with completed
-          </label>
+                 onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) { setDocFile(f); setReviewing(null); } }} />
+          <button type="button" className="ot-btn primary" onClick={() => { setView('orders'); setDocFile(null); setReviewing(null); setNewNonce(n => n + 1); }}><Icon name="plus" />New order</button>
         </div>
       </div>
 
-      <div className="content">
+      <div>
         {error && <div style={errBox}>{error}{/relation .*kount_ot_|does not exist/i.test(error) && <div style={{ marginTop: 4 }}>The order tracker tables (migration 0132) are not applied yet.</div>}</div>}
         {loading && !data && <Pill tone="neutral" size="sm">loading…</Pill>}
 
-        {data && newOpen && (
-          <NewOrderForm items={data.items} orders={data.orders} onCancel={() => setNewOpen(false)}
-            onSaved={o => { setNewOpen(false); setFocusOrder(o.id); setView('orders'); void reload(); }} />
-        )}
         {data && docFile && (
           <DocumentReview key={docFile.name + docFile.size + docFile.lastModified} file={docFile} data={data} today={today}
             onCancel={() => setDocFile(null)}
@@ -126,56 +160,35 @@ export function OrderTracker({ today: todayProp, load = loadTracker, loadMail = 
             }} />
         )}
 
-        {data && (
-          <div style={{ opacity: loading ? 0.6 : 1, transition: 'opacity .2s' }}>
-            <Tiles data={data} today={today} />
-            <div style={{ maxWidth: 540, margin: '16px 0 14px' }}>
-              <Segment<View> value={view} onChange={setView} options={[
-                { value: 'orders', label: 'Orders' }, { value: 'inbox', label: waiting ? `Inbox (${waiting})` : 'Inbox' },
-                { value: 'warehouse', label: 'Warehouse' }, { value: 'overview', label: 'Overview' },
-              ]} />
+        {data && kpis && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+            <div className="ot-kpis">
+              <button type="button" className="ot-kpi" onClick={() => kpi('open')}><span className="lbl">Open orders</span><span className="val">{kpis.open}</span><span className="hint">{kpis.openLines} line{kpis.openLines === 1 ? '' : 's'}</span></button>
+              <button type="button" className={`ot-kpi${kpis.late ? ' alert' : ''}`} onClick={() => kpi('late')}><span className="lbl">Late lines</span><span className="val">{kpis.late}</span>
+                <span className="hint">{kpis.late ? `oldest ${kpis.oldestLateDays} day${kpis.oldestLateDays === 1 ? '' : 's'} past ETA` : 'nothing overdue'}</span></button>
+              <button type="button" className="ot-kpi" onClick={() => kpi('onorder')}><span className="lbl">On order</span><span className="val">{fmtMoney0(kpis.onOrder$)}</span>
+                <span className="hint">{kpis.onOrderOrders} order{kpis.onOrderOrders === 1 ? '' : 's'} not delivered yet</span></button>
+              <button type="button" className={`ot-kpi${kpis.unpaid$ ? ' warn' : ''}`} onClick={() => kpi('invoiced')}><span className="lbl">Invoiced, not paid</span><span className="val">{fmtMoney0(kpis.unpaid$)}</span>
+                <span className="hint">{kpis.unpaidInvoices ? `${kpis.unpaidInvoices} invoice${kpis.unpaidInvoices === 1 ? '' : 's'} · oldest ${kpis.oldestUnpaidDays}d` : 'no invoices waiting'}</span></button>
+              <button type="button" className={`ot-kpi${kpis.reorder ? ' warn' : ' good'}`} onClick={() => kpi('warehouse')}><span className="lbl">Warehouse</span><span className="val">{kpis.reorder ? `${kpis.reorder} to reorder` : 'OK'}</span>
+                <span className="hint">{kpis.reorder ? 'at or below reorder point' : kpis.soon ? `${kpis.soon} within 30 days` : 'no reorders due'}</span></button>
             </div>
-            {view === 'orders' && <OrdersView data={data} today={today} venueName={venueName} onReload={() => void reload()} focusOrderId={focusOrder} />}
-            {view === 'inbox' && <InboxView items={inbox} orders={data.orders} lines={data.lines} onReview={i => { setReviewing(i); setDocFile(null); setNewOpen(false); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+            <div className="ot-tabs" role="tablist">
+              {tab('orders', 'Orders', kpis.open, lateHot)}
+              {tab('inbox', 'Inbox', waiting)}
+              {tab('warehouse', 'Warehouse', kpis.reorder, kpis.reorder > 0)}
+              {tab('overview', 'Overview', null)}
+            </div>
+            <div style={{ opacity: loading ? 0.7 : 1, transition: 'opacity .2s' }}>
+            {view === 'orders' && <OrdersView data={data} today={today} venueName={venueName} onReload={() => void reload()} focusOrderId={focusOrder} preset={preset} newNonce={newNonce} />}
+            {view === 'inbox' && <InboxView items={inbox} orders={data.orders} lines={data.lines} onReview={i => { setReviewing(i); setDocFile(null); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
               onOpenOrder={id => { setFocusOrder(id); setView('orders'); }} onChanged={() => void reload()} />}
             {view === 'warehouse' && <WarehouseView data={data} today={today} venueName={venueName} onReload={() => void reload()} />}
             {view === 'overview' && <Overview data={data} today={today} venueName={venueName} onOpen={id => { setFocusOrder(id); setView('orders'); }} />}
+            </div>
           </div>
         )}
       </div>
-    </>
-  );
-}
-
-function Tiles({ data, today }: { data: TrackerData; today: string }) {
-  const s = useMemo(() => {
-    const byOrder = new Map<string, OtLine[]>();
-    for (const l of data.lines) (byOrder.get(l.order_id) ?? byOrder.set(l.order_id, []).get(l.order_id)!).push(l);
-    const open = data.orders.filter(o => orderState(o, byOrder.get(o.id) ?? []) === 'open');
-    const openLines = open.flatMap(o => (byOrder.get(o.id) ?? []).filter(l => l.status !== 'CANCELLED'));
-    const late = open.flatMap(o => (byOrder.get(o.id) ?? []).filter(l => isLate(l, o, today, receivedForLine(data.moves, l.id))));
-    const onOrder$ = openLines.filter(l => statusRank(l.status) < statusRank('DELIVERED') && l.status !== 'REQUESTED').reduce((a, l) => a + lineTotal(l), 0);
-    // archived orders were never real (tests, duplicates): they leave every total
-    const live = new Set(data.orders.filter(o => !o.archived_at).map(o => o.id));
-    const unpaid$ = data.lines.filter(l => l.status === 'INVOICED' && live.has(l.order_id)).reduce((a, l) => a + lineTotal(l), 0);
-    const stock = stockRows(data.items, data.moves, data.lines, data.orders, today);
-    return { open: open.length, openLines: openLines.length, late: late.length, onOrder$, unpaid$,
-      reorder: stock.filter(r => r.state === 'reorder now').length, soon: stock.filter(r => r.state === 'reorder soon').length };
-  }, [data, today]);
-  const tile = (label: string, value: string, sub: string, tone?: 'up') => (
-    <Card padding={14}>
-      <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--fg-muted)' }}>{label}</div>
-      <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4, color: tone === 'up' ? 'var(--raspberry-300)' : 'var(--fg-primary)' }}>{value}</div>
-      <div style={{ fontSize: 12, color: 'var(--fg-secondary)', marginTop: 2 }}>{sub}</div>
-    </Card>
-  );
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12 }}>
-      {tile('Open orders', String(s.open), `${s.openLines} lines`)}
-      {tile('Late lines', String(s.late), s.late ? 'past their expected date' : 'nothing overdue', s.late ? 'up' : undefined)}
-      {tile('On order', fmtCompact(s.onOrder$), 'ordered, not delivered yet')}
-      {tile('Invoiced, not paid', fmtCompact(s.unpaid$), 'lines at Invoiced')}
-      {tile('Warehouse', s.reorder ? `${s.reorder} to reorder` : 'OK', s.soon ? `${s.soon} more within 30 days` : 'no reorders due soon', s.reorder ? 'up' : undefined)}
     </div>
   );
 }
