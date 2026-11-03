@@ -3,7 +3,7 @@ import { Btn, Card, Pill } from '@/components/atoms';
 import { DOC_KIND_LABEL, headlineStatus, STATUS_LABEL, trackingUrl, type OtLine, type OtOrder } from '@/lib/orderTracker';
 import { addTracking, documentUrl } from '@/lib/orderTrackerData';
 import {
-  disconnectMail, inboxGroups, isTrackingEmail, mailStatus, pollConnect, pullNow, setDocKinds, setInboxState, setVendorDomains, startConnect,
+  disconnectMail, inboxGroups, isTrackingEmail, mailStatus, pollConnect, pullNow, setAutoCreate, setDocKinds, setInboxState, setVendorDomains, startConnect,
   type DeviceCode, type InboxItem, type MailStatus,
 } from '@/lib/orderMail';
 import { errBox, fmtMoney, linkBtn, okBox, picker, shortDate, smallInput, subTxt } from './shared';
@@ -196,7 +196,7 @@ function MailCard({ onChanged }: { onChanged: () => void }) {
           {run && (
             <div style={{ ...subTxt, marginTop: 6 }}>
               Last pull {new Date(run.finished_at ?? run.started_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} ({run.trigger}):
-              {' '}{run.new_pdfs} new PDF{run.new_pdfs === 1 ? '' : 's'}, {run.applied} applied, {run.pending} waiting, {run.ignored} skipped
+              {' '}{run.new_pdfs} new PDF{run.new_pdfs === 1 ? '' : 's'}, {run.applied} applied, {run.tracking ? `${run.tracking} tracking, ` : ''}{run.paid ? `${run.paid} paid (R365), ` : ''}{run.pending} waiting, {run.ignored} skipped
               {run.failed ? `, ${run.failed} not read` : ''}{run.remaining ? `, ${run.remaining} still to read` : ''}.
             </div>
           )}
@@ -221,6 +221,10 @@ function MailCard({ onChanged }: { onChanged: () => void }) {
       {err && <div style={errBox}>{err}</div>}
 
       <div style={{ marginTop: 12, fontSize: 12, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+        <label style={{ display: 'inline-flex', gap: 4, alignItems: 'center', padding: '2px 8px', borderRadius: 12, background: s.auto_create ? 'var(--teal-100)' : 'var(--surface-alt)', cursor: 'pointer', marginRight: 8 }}
+               title="A quote or invoice that matches no order starts a new one; the next documents of its email thread update it">
+          <input type="checkbox" checked={s.auto_create} disabled={busy} onChange={e => void act(async () => { await setAutoCreate(e.target.checked); await refresh(); })} /> Create new orders automatically
+        </label>
         <span style={{ color: 'var(--fg-muted)' }}>Takes:</span>
         {KINDS.map(([k, label]) => (
           <label key={k} style={{ display: 'inline-flex', gap: 4, alignItems: 'center', padding: '2px 8px', borderRadius: 12, background: s.doc_kinds.includes(k) ? 'var(--teal-100)' : 'var(--surface-alt)', cursor: 'pointer' }}>

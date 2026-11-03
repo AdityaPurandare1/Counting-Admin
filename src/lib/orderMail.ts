@@ -37,6 +37,7 @@ export interface InboxItem {
 export interface MailRun {
   trigger: string; started_at: string; finished_at?: string;
   messages: number; new_pdfs: number; read: number; applied: number; pending: number; ignored: number; failed: number;
+  tracking?: number; paid?: number;
   remaining?: number; error: string | null; reconnect: boolean;
 }
 
@@ -49,6 +50,8 @@ export interface MailStatus {
   vendor_domains: string[];
   /** document types the pull takes (0136); 'invoice' includes credit memos */
   doc_kinds: string[];
+  /** a quote / invoice that matches no order starts one (0138) */
+  auto_create: boolean;
   suggested_domains: Record<string, number>;
   fetched_through: string | null;
   running: boolean;
@@ -68,6 +71,7 @@ export async function mailStatus(): Promise<MailStatus> {
     mailbox: s.mailbox ?? null, connected: !!s.connected, connected_by: s.connected_by ?? null, connected_at: s.connected_at ?? null,
     signing_in: !!s.signing_in, vendor_domains: Array.isArray(s.vendor_domains) ? s.vendor_domains : [],
     doc_kinds: Array.isArray(s.doc_kinds) ? s.doc_kinds : ['quote', 'confirmation', 'invoice', 'shipping'],
+    auto_create: s.auto_create !== false,
     suggested_domains: s.suggested_domains && typeof s.suggested_domains === 'object' ? s.suggested_domains : {},
     fetched_through: s.fetched_through ?? null, running: !!s.running, last_run: (s.last_run as MailRun | null) ?? null,
   };
@@ -103,6 +107,11 @@ export async function disconnectMail(): Promise<void> {
 export async function setVendorDomains(domains: string[]): Promise<void> {
   const { error } = await supabase.rpc('kount_ot_mail_set_domains', { p_domains: domains });
   if (error) throw new Error(`Vendor list not saved: ${error.message}`);
+}
+
+export async function setAutoCreate(on: boolean): Promise<void> {
+  const { error } = await supabase.rpc('kount_ot_mail_set_auto_create', { p_on: on });
+  if (error) throw new Error(`Not saved: ${error.message}`);
 }
 
 export async function setDocKinds(kinds: string[]): Promise<void> {

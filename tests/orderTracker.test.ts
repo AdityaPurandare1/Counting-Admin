@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import {
   statusRank, headlineStatus, orderState, isLate, statusAfterDocument, matchDocLines, matchItem, matchOrder,
   onHand, receivedForLine, stockRows, releasesByVenue, validateNewOrder, similarity, addDays, sameVendor,
-  planDocRows, planDocumentSave, documentChecks, decideMailDocument, extractTracking, trackingUrl, orderForEmail, type ReadDoc, type MailSource,
+  planDocRows, planDocumentSave, documentChecks, decideMailDocument, extractTracking, trackingUrl, orderForEmail, venueForDoc, type ReadDoc, type MailSource,
   type OtItem, type OtLine, type OtMove, type OtOrder, type OtDocument, type DocLine, type DocReview,
 } from '../src/lib/orderTracker';
 import { pricePoints, histories, priceMoves, quoteChecks, invoiceRegister, spendByMonth, isInvoiced, priceMovesCsv } from '../src/lib/orderPrices';
@@ -450,6 +450,39 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   const p = planDocumentSave({ docId: 'q', kind: 'quote', vendor: 'EE Mercantile', docNumber: 'Q-9', docDate: '', orderNumber: '', expected: '', tracking: '', order: o, orderLines: [inv],
     deliverTo: 'warehouse', venueId: '', rows, today: '2026-11-02', fileName: 'q.pdf', storagePath: 'docs/q.pdf', total: 5500, parsed: {} });
   check('late quote: records the quote #, keeps the invoiced price and status', p.updates.length === 1 && p.updates[0].quote_number === 'Q-9' && !('unit_price' in p.updates[0]) && !('status' in p.updates[0]), p.updates);
+}
+
+// ── auto-create (0138): a quote / invoice with no order starts one ────
+{
+  const venues = [{ id: 'v4', name: 'Delilah LA' }, { id: 'v5', name: 'Delilah Miami' }, { id: 'v9', name: 'The Nice Guy' }, { id: 'v14', name: 'Lady Delilah' }];
+  check('venue from Ship to / Bill to', venueForDoc({ bill_to: 'Delilah LA', ship_to: '' }, venues)?.id === 'v4' && venueForDoc({ bill_to: 'The Nice Guy LLC' }, venues)?.id === 'v9');
+  check('venue: never the wrong Delilah', venueForDoc({ bill_to: 'Delilah Dallas' }, venues) === null, venueForDoc({ bill_to: 'Delilah Dallas' }, venues));
+  const dl = (over: Partial<DocLine> = {}): DocLine => ({ line_kind: 'product', description: 'LIBBEY - CONTOUR GOBLET GLASS 16 OZ/ 12', sku: '9156', qty: 6, unit: '', unit_price: 68.84, line_total: 413.04, pack_size: 12, ...over });
+  const quote = (over: Partial<ReadDoc> = {}): ReadDoc => ({ doc_kind: 'quote', is_credit: false, vendor_name: 'EE Mercantile', doc_number: 'Q-2026-1028-9329', doc_date: '2026-10-28',
+    order_number: '', expected_date: '', tracking_numbers: [], subtotal: 413.04, total: 413.04, bill_to: 'Delilah LA', ship_to: 'Delilah LA', lines: [dl()], ...over });
+  const src = (over: Partial<MailSource> = {}): MailSource => ({ id: 'ib-1', message_id: 'M1', conversation_id: 'T1', file_name: 'Q.pdf', storage_path: 'docs/ib-1.pdf', ...over });
+  const empty = { orders: [], lines: [], items: [], documents: [] };
+  const fmt = (x: number) => '$' + x.toFixed(2);
+  const a = decideMailDocument(quote(), src(), empty, '2026-11-02', fmt, { autoCreate: true, venues });
+  check('auto-create: a quote with no order starts one at Quoted, for its venue', a.state === 'applied' && !!a.payload.new_order && a.payload.new_order.venue_id === 'v4'
+    && a.payload.new_order.deliver_to === 'venue' && a.payload.new_lines[0]?.status === 'QUOTED' && a.payload.document.source_conversation_id === 'T1', a);
+  check('auto-create off: it waits', decideMailDocument(quote(), src(), empty, '2026-11-02', fmt, {}).state === 'pending');
+  const inv = decideMailDocument(quote({ doc_kind: 'invoice', doc_number: 'INV-2026-086418' }), src(), empty, '2026-11-02', fmt, { autoCreate: true, venues });
+  check('auto-create: an invoice with no order starts one at Invoiced', inv.state === 'applied' && inv.payload.new_lines[0]?.status === 'INVOICED' && inv.payload.new_lines[0]?.invoice_number === 'INV-2026-086418', inv);
+  const ship = decideMailDocument(quote({ doc_kind: 'shipping', doc_number: 'PS-1' }), src(), empty, '2026-11-02', fmt, { autoCreate: true, venues });
+  check('auto-create: never from a shipping notice alone', ship.state === 'pending', ship);
+  const off = decideMailDocument(quote({ subtotal: 999 }), src(), empty, '2026-11-02', fmt, { autoCreate: true, venues });
+  check('auto-create: a review warning (totals off) -> waits', off.state === 'pending' && off.reason.startsWith('Not created automatically'), off);
+  // the thread already has an order with OTHER items: this is a second order, not a mismatch
+  const o = order({ vendor_name: 'EE Mercantile' });
+  const other = line(o, { description: 'MEPRA - WINE COOLER', sku: '200680', status: 'QUOTED' });
+  const d1: OtDocument = { id: 'd1', order_id: o.id, kind: 'quote', doc_number: 'Q-OTHER', doc_date: null, vendor_name: 'EE Mercantile', total: 1, file_name: null, storage_path: null, created_at: '', source_conversation_id: 'T1' };
+  const second = decideMailDocument(quote(), src(), { orders: [o], lines: [other], items: [], documents: [d1] }, '2026-11-02', fmt, { autoCreate: true, venues });
+  check('auto-create: same thread, no shared item -> its own new order', second.state === 'applied' && !!second.payload.new_order, second);
+  const same = line(o, { description: 'LIBBEY - CONTOUR GOBLET GLASS 16 OZ/ 12', sku: '9156', qty: 6, status: 'QUOTED', unit_price: 68.84, quote_number: 'Q-OTHER' });
+  const follow = decideMailDocument(quote({ doc_kind: 'invoice', doc_number: 'INV-9' }), src(), { orders: [o], lines: [same], items: [], documents: [d1] }, '2026-11-02', fmt, { autoCreate: true, venues });
+  check('auto-create: the invoice after the quote updates that order (no new one)', follow.state === 'applied' && follow.payload.order_id === o.id && !follow.payload.new_order
+    && follow.payload.updates[0]?.status === 'INVOICED', follow);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
