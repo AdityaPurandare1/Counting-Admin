@@ -9,7 +9,7 @@ import {
   statusRank, headlineStatus, orderState, isLate, statusAfterDocument, matchDocLines, matchItem, matchOrder,
   onHand, receivedForLine, stockRows, releasesByVenue, validateNewOrder, similarity, addDays, sameVendor,
   planDocRows, planDocumentSave, documentChecks, decideMailDocument, extractTracking, trackingUrl, orderForEmail, venueForDoc, filterByVenue, sortOrders, orderVenueIds,
-  planStorageLine, storageMoveRows, isStorageLine, autoOrderNumber, lineOutsideSubtotal,
+  planStorageLine, storageMoveRows, isStorageLine, autoOrderNumber, lineOutsideSubtotal, orderForReferences,
   type ReadDoc, type MailSource,
   type OtItem, type OtLine, type OtMove, type OtOrder, type OtDocument, type DocLine, type DocReview,
 } from '../src/lib/orderTracker';
@@ -638,6 +638,40 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   check('review: opened again after saving = "Already saved on …", no second save',
     /alreadySaved = data\.documents\.find\(d => d\.id === docId\)/.test(ui('src/components/orderTracker/DocumentReview.tsx')) && /saved \|\| !!alreadySaved/.test(ui('src/components/orderTracker/DocumentReview.tsx')));
   check('review: a new order saved with no number gets the next one', /new_order\.order_number = autoOrderNumber\(/.test(ui('src/components/orderTracker/DocumentReview.tsx')));
+}
+
+// ── a separate shipping-fee invoice names the invoice it is for (INV-2026-885072 -> INV-2026-368461) ──
+{
+  const o = order({ order_number: 'OSE-0030', venue_id: 'x:Multiple venues', deliver_to: 'venue' });
+  const kit = line(o, { description: 'FOOD STORAGE CONTAINER Cambro 4SFSCW135', sku: '4SFSCW135', qty: 6, unit_price: 40, status: 'INVOICED', invoice_number: 'INV-2026-368461', venue_id: 'v3' });
+  const other = order({ order_number: 'OSE-0031', vendor_name: 'EE Mercantile' });
+  const data = { orders: [o, other], lines: [kit, line(other, { invoice_number: 'INV-2026-111111' })], items: [], documents: [] as OtDocument[] };
+  check('references: the order holding the invoice it names, and that invoice\'s venue',
+    orderForReferences(['INV-2026-368461'], 'INV-2026-885072', data)?.order.id === o.id && orderForReferences(['INV-2026-368461'], 'INV-2026-885072', data)?.venueId === 'v3');
+  check('references: never its own number; nothing / unknown = none',
+    orderForReferences(['INV-2026-885072'], 'INV-2026-885072', data) === null && orderForReferences([], 'X', data) === null && orderForReferences(['INV-2026-999999'], 'X', data) === null && orderForReferences(undefined, 'X', data) === null);
+  check('references: an invoice on two orders = unsure = none',
+    orderForReferences(['INV-2026-368461'], 'X', { ...data, lines: [...data.lines, line(other, { invoice_number: 'INV-2026-368461' })] }) === null);
+  const fee: ReadDoc = { doc_kind: 'invoice', is_credit: false, vendor_name: 'EE Mercantile', doc_number: 'INV-2026-885072', doc_date: '2026-10-29', order_number: '', expected_date: '',
+    tracking_numbers: [], refers_to: ['INV-2026-368461'], subtotal: 494.4, total: 494.4, bill_to: 'h.wood Group', ship_to: '',
+    lines: [{ line_kind: 'freight', description: 'Shipping fee', sku: '', qty: 1, unit: '', unit_price: 494.4, line_total: 494.4, pack_size: 0 }] };
+  const src = { id: 'ib-fee', message_id: 'M-fee', conversation_id: 'ANOTHER-THREAD', file_name: 'Invoice-INV-2026-885072.pdf', storage_path: 'docs/ib-fee.pdf' };
+  const d = decideMailDocument(fee, src, data, '2026-11-03', x => '$' + x.toFixed(2), { autoCreate: true, venues: [{ id: 'v3', name: 'The Nice Guy' }] });
+  check('shipping-fee invoice: goes onto the order of the invoice it names (another email thread, no new order)',
+    d.state === 'applied' && d.payload.order_id === o.id && !d.payload.new_order && d.payload.new_lines.length === 1 && /it is for INV-2026-368461/.test(d.reason), d);
+  check('shipping-fee invoice: its line carries that invoice\'s venue on a several-venue order',
+    d.state === 'applied' && d.payload.new_lines[0].venue_id === 'v3' && d.payload.new_lines[0].invoice_number === 'INV-2026-885072', d.state === 'applied' && d.payload.new_lines);
+  const noRef = decideMailDocument({ ...fee, refers_to: [] }, src, data, '2026-11-03', x => '$' + x.toFixed(2), { autoCreate: true, venues: [] });
+  check('shipping-fee invoice naming nothing: starts its own order as before', noRef.state === 'applied' && !!noRef.payload.new_order, noRef);
+  const unknownRef = decideMailDocument({ ...fee, refers_to: ['INV-2026-999999'] }, src, data, '2026-11-03', x => '$' + x.toFixed(2), { autoCreate: true, venues: [] });
+  check('shipping-fee invoice naming an invoice not in the tracker: waits ("save it onto that order"), no stray order',
+    unknownRef.state === 'pending' && /INV-2026-999999, which is not on any order yet/.test(unknownRef.reason), unknownRef);
+  const otherVendor = decideMailDocument({ ...fee, vendor_name: 'Uline' }, src, data, '2026-11-03', x => '$' + x.toFixed(2), { autoCreate: false });
+  check('shipping-fee invoice from another vendor naming our invoice: not put on it', otherVendor.state === 'pending', otherVendor);
+  check('review: opens on the order of the invoice it names',
+    /fromInbox \?\? orderForReferences\(doc\.refers_to, doc\.doc_number, data\)\?\.order \?\? matchOrder\(/.test(readFileSync(join(process.cwd(), 'src/components/orderTracker/DocumentReview.tsx'), 'utf8')));
+  const reader = readFileSync(join(process.cwd(), '..', 'Counting-App', 'supabase', 'functions', '_shared', 'purchase-doc.ts'), 'utf8');
+  check('reader: asks for refers_to and requires it', /refers_to: \{ type: 'array'/.test(reader) && /'tracking_numbers', 'refers_to',/.test(reader));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

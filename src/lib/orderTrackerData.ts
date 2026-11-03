@@ -172,6 +172,8 @@ export interface ReadDocument {
   ship_to: string;
   expected_date: string;
   tracking_numbers: string[];
+  /** other invoices / quotes it says it is for ("Shipping Fee - For Items Under INV-…"); absent on older reads */
+  refers_to?: string[];
   subtotal: number;
   total: number;
   lines: DocLine[];

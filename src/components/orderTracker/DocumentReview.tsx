@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Btn, Card, Eyebrow, Pill } from '@/components/atoms';
 import { VENUES } from '@/lib/access';
 import {
-  DOC_KIND_LABEL, STATUS_LABEL, autoOrderNumber, documentChecks, matchOrder, orderVenues, planDocRows, planDocumentSave, statusAfterDocument, headlineStatus,
+  DOC_KIND_LABEL, STATUS_LABEL, autoOrderNumber, documentChecks, matchOrder, orderForReferences, orderVenues, planDocRows, planDocumentSave, statusAfterDocument, headlineStatus,
   type DocKind, type DocRowPlan, type LineStatus,
 } from '@/lib/orderTracker';
 import {
@@ -67,7 +67,7 @@ export function DocumentReview({ file, inbox = null, data, today, onDone, onCanc
     // from the Inbox: the order the pull pointed at, else an earlier document of the same email thread
     const fromInbox = live(inbox?.order_id)
       ?? (inbox?.conversation_id ? live(data.documents.find(d => d.source_conversation_id === inbox.conversation_id && d.order_id)?.order_id) : undefined);
-    const o = fromInbox ?? matchOrder(data.orders, data.lines, { order_number: doc.order_number, doc_number: doc.doc_number, kind: doc.doc_kind, vendor_name: doc.vendor_name });
+    const o = fromInbox ?? orderForReferences(doc.refers_to, doc.doc_number, data)?.order ?? matchOrder(data.orders, data.lines, { order_number: doc.order_number, doc_number: doc.doc_number, kind: doc.doc_kind, vendor_name: doc.vendor_name });
     setTarget(o?.id ?? 'new');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc]);
