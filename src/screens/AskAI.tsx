@@ -5,6 +5,10 @@ import type { AccessEntry } from '@/lib/access';
 import { Card, Btn } from '@/components/atoms';
 import { baseSystemPrompt, buildVarianceContext } from '@/lib/askAiContext';
 import { loadLatestVenueReport, type VenueReport } from '@/lib/latestVenueReport';
+import { asksVariance, buildOrdersContext, ordersBudget, ordersSystemPrompt, type AskBible } from '@/lib/askAiOrders';
+import { isoDay, orderVenues } from '@/lib/orderTracker';
+import { loadTracker, type TrackerData } from '@/lib/orderTrackerData';
+import { inboxGroups, loadInbox } from '@/lib/orderMail';
 
 /* ───────────────────────────────────────────────────────────────────────
    Ask AI (v0.75) — replaces the "port coming later" placeholder.
@@ -20,6 +24,10 @@ import { loadLatestVenueReport, type VenueReport } from '@/lib/latestVenueReport
    unpriced items), so a manager can ask "what's driving our variance?". It is
    the same report Variance and Stock on hand read, scoped by the same venue
    access rules.
+   v0.93: for admin + corporate, the Purchasing order tracker and the venue
+   bibles too (lib/askAiOrders): each question carries the overview, the
+   orders and bible rows it names, and topic lists (late, unpaid, stubs,
+   warehouse, Inbox).
    ─────────────────────────────────────────────────────────────────────── */
 
 interface Props { user: AccessEntry }
@@ -34,6 +42,11 @@ export function AskAI({ user }: Props) {
 
   const [venue, setVenue] = useState<string>('');
   const [useVenueData, setUseVenueData] = useState(true);
+  // the order tracker + bibles are admin + corporate data (their RLS says the same)
+  const canOrders = isOrgWide(user.role);
+  const [useOrders, setUseOrders] = useState(canOrders);
+  const [orders, setOrders] = useState<{ data: TrackerData; bibles: AskBible[]; inboxWaiting: number } | null>(null);
+  const [ordersNote, setOrdersNote] = useState('');
   const [context, setContext] = useState<string>('');
   const [contextNote, setContextNote] = useState<string>('');
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -76,6 +89,25 @@ export function AskAI({ user }: Props) {
     return () => { cancelled = true; };
   }, [venue, venueName]);
 
+  // the order tracker + the bibles' text, once (refreshed with New chat)
+  const loadOrders = useCallback(async () => {
+    setOrdersNote('Loading the order tracker and bibles…');
+    try {
+      const [data, bib, inbox] = await Promise.all([
+        loadTracker(),
+        supabase.from('kount_ot_bibles').select('venue_id, title, text_index').eq('is_current', true),
+        loadInbox().catch(() => []),
+      ]);
+      if (bib.error) throw new Error(bib.error.message);
+      const bibles = (bib.data ?? []) as AskBible[];
+      setOrders({ data, bibles, inboxWaiting: inboxGroups(inbox).waiting.length });
+      setOrdersNote(`${data.orders.filter(o => !o.archived_at).length} orders · ${bibles.filter(b => b.text_index).length} of ${bibles.length} bibles searchable`);
+    } catch (e) {
+      setOrders(null); setOrdersNote('Could not load the order tracker: ' + (e instanceof Error ? e.message : String(e)));
+    }
+  }, []);
+  useEffect(() => { if (canOrders && useOrders && !orders) void loadOrders(); }, [canOrders, useOrders, orders, loadOrders]);
+
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, busy]);
 
   const send = useCallback(async () => {
@@ -86,7 +118,17 @@ export function AskAI({ user }: Props) {
     setInput('');
     setError(null);
     setBusy(true);
-    const system = baseSystemPrompt() + (useVenueData && context ? '\n\n' + context : '');
+    // the order tracker: what this question (and the last two before it) names. Everything fits ask-ai's 8,000
+    // characters: with orders on, the venue's variance goes along only when the question is about variance.
+    const recent = history.filter(m => m.role === 'user').slice(-3).map(m => m.content).join('\n');
+    const withOrders = canOrders && useOrders && !!orders;
+    const variance = useVenueData && context && (!withOrders || asksVariance(recent)) ? '\n\n' + context : '';
+    const head = baseSystemPrompt() + (withOrders ? ' ' + ordersSystemPrompt() : '') + variance;
+    const ordersText = withOrders
+      ? buildOrdersContext({ question: recent, data: orders!.data, bibles: orders!.bibles, venues: orderVenues(VENUES), today: isoDay(new Date()),
+          inboxWaiting: orders!.inboxWaiting, budget: ordersBudget(head.length + 2) })
+      : '';
+    const system = head + (ordersText ? '\n\n' + ordersText : '');
     const { data, error: fnErr } = await supabase.functions.invoke('ask-ai', {
       body: { messages: history, system, max_tokens: 1024 },
     });
@@ -108,7 +150,7 @@ export function AskAI({ user }: Props) {
     }
     const text = data && typeof (data as { text?: unknown }).text === 'string' ? (data as { text: string }).text : '';
     setMessages([...history, { role: 'assistant', content: text || '(no answer)' }]);
-  }, [input, busy, messages, useVenueData, context]);
+  }, [input, busy, messages, useVenueData, context, canOrders, useOrders, orders]);
 
   const onKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); }
@@ -130,19 +172,27 @@ export function AskAI({ user }: Props) {
             <input type="checkbox" checked={useVenueData} onChange={e => setUseVenueData(e.target.checked)} />
             Use this venue's latest variance
           </label>
-          <Btn variant="secondary" size="sm" onClick={() => { setMessages([]); setError(null); }} disabled={busy || messages.length === 0}>New chat</Btn>
+          {canOrders && (
+            <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13 }}>
+              <input type="checkbox" checked={useOrders} onChange={e => setUseOrders(e.target.checked)} />
+              Orders &amp; bibles
+            </label>
+          )}
+          <Btn variant="secondary" size="sm" onClick={() => { setMessages([]); setError(null); if (canOrders && useOrders) void loadOrders(); }} disabled={busy || messages.length === 0}>New chat</Btn>
         </div>
       </div>
       <div className="content" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
-          {useVenueData ? contextNote : 'Venue data off — general questions only.'}
+          {useVenueData ? contextNote : 'Venue data off.'}
+          {canOrders && useOrders && ordersNote ? ` · Order tracker: ${ordersNote}` : ''}
           {' · '}Answers are AI-generated from that data; check figures before acting on them.
         </div>
         <Card padding={16}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10, minHeight: 280, maxHeight: '58vh', overflowY: 'auto' }}>
             {messages.length === 0 && (
               <div style={{ color: 'var(--fg-muted)', fontSize: 14 }}>
-                Ask about {useVenueData ? venueName + "'s variance, shortages or costs" : 'counting, variance or the admin'} — e.g. “What are the five biggest shortages and what might explain them?”
+                Ask about {useVenueData ? venueName + "'s variance, shortages or costs" : 'counting, variance or the admin'}{canOrders && useOrders ? ', and any order or bible' : ''} — e.g. “What are the five biggest shortages and what might explain them?”
+                {canOrders && useOrders && <div style={{ marginTop: 6 }}>Orders &amp; bibles: “Where is the Delilah Mints order?”, “Which invoices are unpaid over 2 weeks?”, “What's late and why?”, “What glassware is in the Alphabet bible and what's its status?”</div>}
               </div>
             )}
             {messages.map((m, i) => (

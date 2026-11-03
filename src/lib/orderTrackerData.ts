@@ -143,6 +143,13 @@ export async function attachStubFile(file: File, invoices: string[], orderIds: s
 export interface Bible {
   id: string; venue_id: string; title: string; file_name: string; storage_path: string; size_bytes: number | null;
   is_current: boolean; uploaded_by: string | null; created_at: string;
+  /** its cell text for Ask AI (0145); null until the bible is first opened */
+  text_index?: import('./bibleRender').BibleIndex | null;
+}
+/** A bible's text copy for Ask AI, saved the first time it is opened (0145). */
+export async function saveBibleIndex(id: string, index: import('./bibleRender').BibleIndex): Promise<void> {
+  const { error } = await supabase.from('kount_ot_bibles').update({ text_index: index }).eq('id', id);
+  if (error) fail('Bible text not saved', error);
 }
 export async function loadBibles(): Promise<Bible[]> {
   const { data, error } = await supabase.from('kount_ot_bibles').select('*').eq('is_current', true).order('title');

@@ -17,7 +17,8 @@ import {
 import { pricePoints, histories, priceMoves, quoteChecks, invoiceRegister, spendByMonth, isInvoiced, priceMovesCsv } from '../src/lib/orderPrices';
 import { buildReportRows } from '../src/lib/orderTrackerReport';
 import { parseCsv, tidyRows, cellText, sheetsFromXlsx, sheetsFromFile } from '../src/lib/sheetPreview';
-import { colWidthPx, rowHeightPx, applyTint, themePalette, excelColor, cellStyle, displayText, safeLink, richImageMap, sheetVmCells, sheetFiles, loadBible, bibleFromCsv } from '../src/lib/bibleRender';
+import { colWidthPx, rowHeightPx, applyTint, themePalette, excelColor, cellStyle, displayText, safeLink, richImageMap, sheetVmCells, sheetFiles, loadBible, bibleFromCsv, bibleTextIndex } from '../src/lib/bibleRender';
+import { questionTerms, buildOrdersContext, asksVariance, ordersBudget, shortUrl } from '../src/lib/askAiOrders';
 import {
   fulfillmentOf, fulfillmentStep, paymentOf, nextEta, orderCategory, timeAgo, lastUpdate, trackerKpis, attentionItems,
   orderDraft, lineDraft, planOrderSave, isPlanEmpty, setDraftStage, markDraft, draftStage, draftTotal, draftLineTotal,
@@ -970,6 +971,55 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   check('bible from CSV: one sheet, header row bold, links', csv.sheets.length === 1 && csv.sheets[0].rows[0].cells[0].style.fontWeight === 700 && csv.sheets[0].rows[1].cells[1].link === 'https://x.co/c' && csv.sheets[0].frozenRows === 1);
   const ot = readFileSync(join(process.cwd(), 'src/screens/OrderTracker.tsx'), 'utf8'), bv = readFileSync(join(process.cwd(), 'src/components/orderTracker/BibleView.tsx'), 'utf8');
   check('Bibles tab: venue picker, sheet tabs, never HTML from a workbook', ot.includes("tab('bibles', 'Bibles', null)") && /<BibleGrid sheet=/.test(bv) && !/dangerouslySetInnerHTML/.test(bv));
+}
+
+// ── Ask AI over the order tracker and the bibles (v0.93) ─────────────
+{
+  const qt = questionTerms('Where is the Delilah Mints order CUS-0013? Is INV-2026-244133 paid, and tracking 1Z999AA10123456784?');
+  check('ask: the question\'s codes and words', qt.codes.join() === 'CUS-0013,INV-2026-244133,1Z999AA10123456784' && qt.words.includes('delilah') && qt.words.includes('mints') && !qt.words.includes('where') && !qt.words.includes('order'), qt);
+  const V = [{ id: 'v1', name: 'Delilah LA' }, { id: 'v12', name: 'Alphabet' }, { id: 'x:Delilah Dallas', name: 'Delilah Dallas' }];
+  const mints = order({ order_number: 'CUS-0013', vendor_name: 'EE Mercantile', venue_id: 'x:Multiple venues', deliver_to: 'venue', expected_on: null, notes: 'Delilah Mints September order' });
+  const ml = [
+    line(mints, { description: 'Mints — custom', qty: 5, unit_price: 98.72, status: 'DELIVERED', invoice_number: 'INV-2026-418297', venue_id: 'v1', r365_payments: [{ number: 'ACH - 23239', date: '2026-08-27', amount: 3340.58 }] }),
+    line(mints, { description: 'Mints — custom', qty: 5, unit_price: 98.72, status: 'SHIPPED', invoice_number: 'INV-2026-244133', venue_id: 'x:Delilah Dallas', expected_on: '2026-09-28' }),
+  ];
+  const glass = order({ order_number: 'OSE-0035', vendor_name: 'EE Mercantile', venue_id: 'x:Delilah Dallas', deliver_to: 'venue' });
+  const gl = [line(glass, { description: 'STEELITE - CHAFER MILLENIUM', qty: 3, unit_price: 1308.22, status: 'INVOICED', invoice_number: 'INV-2026-418553', invoice_date: '2026-09-14' })];
+  const data = { orders: [mints, glass], lines: [...ml, ...gl], items: [], moves: [], documents: [{ id: 'd1', order_id: mints.id, kind: 'invoice', doc_number: 'INV-2026-244133', doc_date: null, vendor_name: null, total: null, file_name: 'Invoice-INV-2026-244133.pdf', storage_path: 'p', created_at: '' } as OtDocument], tracking: [] };
+  const bibles = [{ venue_id: 'v12', title: 'Alphabet Bible', text_index: { sheets: [{ name: 'Glassware', header: ['Item', 'Manufacturer', 'QTY', 'Status', 'Tracking'], rows: [['Red Wine', 'Zweisel Fortessa', '36', 'Shipped', '875267211237'], ['Coupe', 'Nude', '24', 'Ordered', '']] }] } },
+                  { venue_id: 'v1', title: 'Delilah LA Bible 2026', text_index: { sheets: [{ name: 'Glassware', header: ['Item', 'Manufacturer'], rows: [['Red Wine', 'Riedel']] }] } }];
+  const ctx = (question: string, budget?: number) => buildOrdersContext({ question, data, bibles, venues: V, today: '2026-11-03', inboxWaiting: 5, budget });
+  const a = ctx('Where is the Delilah Mints order?');
+  check('ask: the overview always, with what "late" means', /^PURCHASING/.test(a) && /A line is LATE when its ETA/.test(a) && /5 documents waiting in the Inbox/.test(a));
+  check('ask: the order it names, in full — per-venue lines, status, invoice, R365 payment, documents',
+    /ORDERS MATCHING THE QUESTION \(1\)/.test(a) && /ORDER CUS-0013/.test(a) && /\[Delilah Dallas\] Mints — custom .* SHIPPED \(LATE\) \| INV-2026-244133/.test(a)
+    && /paid in R365 ACH - 23239 on 2026-08-27/.test(a) && /documents: invoice INV-2026-244133/.test(a), a);
+  check('ask: an invoice # finds its order', /ORDER OSE-0035/.test(ctx('is INV-2026-418553 paid?')) && !/ORDER CUS-0013/.test(ctx('is INV-2026-418553 paid?')));
+  const late = ctx('what is late?');
+  check('ask: "late" → the late lines, oldest first', /LATE LINES \(2, oldest first\):\n- CUS-0013 EE Mercantile \| Mints — custom \| SHIPPED \| ETA 2026-09-28\n- OSE-0035 EE Mercantile \| STEELITE - CHAFER MILLENIUM \| INVOICED \| ETA 2026-10-15/.test(late), late);
+  check('ask: a word is found from its start ("red" is not in "ordered"; "glass" is in "glassware")', !/Coupe/.test(ctx('red wine in the Alphabet bible')) && /Red Wine/.test(ctx('glass at Alphabet')));
+  check('ask: "unpaid" → invoiced-not-paid orders with days', /INVOICED, NOT PAID \(1 orders/.test(ctx('which invoices are unpaid?')) && /OSE-0035 EE Mercantile \| \$3,924.66 \| INV-2026-418553 \| 50 days/.test(ctx('which invoices are unpaid?')));
+  const bib = ctx('what red wine glasses are in the Alphabet bible and their status?');
+  check('ask: bible rows that match, only the venue it names, with their column names',
+    /BIBLE ROWS MATCHING THE QUESTION \(1\)/.test(bib) && /\[Alphabet Bible · Glassware\] Item: Red Wine \| Manufacturer: Zweisel Fortessa \| QTY: 36 \| Status: Shipped \| Tracking: 875267211237/.test(bib) && !/Riedel/.test(bib), bib);
+  check('ask: every order on one line in the room left', /ALL ORDERS \(2;/.test(a) && /- OSE-0035 · EE Mercantile · Delilah Dallas · In production · Invoiced, not paid · \$3,924.66/.test(a));
+  check('ask: a product link is shortened to its site so the row\'s status / tracking fit', shortUrl('https://www.webstaurantstore.com/schott-zwiesel-cinco-17-9-oz/549111123777.html') === 'webstaurantstore.com link');
+  const small = ctx('what is late?', 900);
+  check('ask: never over the budget (sections drop, lines are never cut)', small.length <= 900 && /^PURCHASING/.test(small) && !/\n$/.test(small), small.length);
+  check('ask: bibles with no text copy yet say so', /none has a searchable text copy yet/.test(buildOrdersContext({ question: 'bible', data, bibles: [{ venue_id: 'v1', title: 'x', text_index: null }], venues: V, today: '2026-11-03', inboxWaiting: 0 })));
+  const ai = readFileSync(join(process.cwd(), 'src/screens/AskAI.tsx'), 'utf8');
+  check('Ask AI: orders & bibles only for admin / corporate, built from the last questions', /const canOrders = isOrgWide\(user\.role\)/.test(ai) && /const recent = history\.filter\(m => m\.role === 'user'\)\.slice\(-3\)/.test(ai) && /buildOrdersContext\(\{ question: recent/.test(ai));
+  check('Ask AI fits ask-ai\'s 8,000 characters: variance only when asked about, orders get the rest',
+    /const variance = useVenueData && context && \(!withOrders \|\| asksVariance\(recent\)\)/.test(ai) && /budget: ordersBudget\(head\.length \+ 2\)/.test(ai)
+    && asksVariance('what are our biggest shortages?') && !asksVariance('where is the mints order?') && ordersBudget(1200) === 6760 && ordersBudget(9000) === 0);
+  const fitted = ctx('Where is the Delilah Mints order?', ordersBudget(1500));
+  check('Ask AI: the orders text for a question stays inside its room', fitted.length <= ordersBudget(1500) && /ORDER CUS-0013/.test(fitted));
+  const bt = bibleTextIndex({ media: new Map(), sheets: [{ name: 'Glassware', colWidths: [64, 64, 64, 64], floats: [], frozenRows: 0, frozenCols: 0, truncated: false, rows: [
+    { height: 20, cells: ['Glass', '', 'Alphabet', ''].map(t => ({ text: t, style: {}, link: null, image: null, rowSpan: 1, colSpan: 1, covered: false })) },
+    { height: 20, cells: ['Image', 'Item', 'Link', ''].map(t => ({ text: t, style: {}, link: null, image: null, rowSpan: 1, colSpan: 1, covered: false })) },
+    { height: 20, cells: [{ text: '', image: 'xl/media/image1.png' }, { text: 'Red Wine' }, { text: 'Webstaurant', link: 'https://w.co' }, { text: '' }].map(c => ({ style: {}, link: null, image: null, rowSpan: 1, colSpan: 1, covered: false, ...c })) },
+  ] }] });
+  check('bible text copy: header row found, title row left out, empty columns dropped', JSON.stringify(bt.sheets[0]) === JSON.stringify({ name: 'Glassware', header: ['Image', 'Item', 'Link'], rows: [['', 'Red Wine', 'Webstaurant']] }), bt.sheets[0]);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

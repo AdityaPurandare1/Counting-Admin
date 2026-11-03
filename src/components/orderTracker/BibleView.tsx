@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { VENUES } from '@/lib/access';
 import { orderVenues } from '@/lib/orderTracker';
-import { bibleFromCsv, loadBible, type BibleBook, type BibleSheet } from '@/lib/bibleRender';
+import { bibleFromCsv, bibleTextIndex, loadBible, type BibleBook, type BibleSheet } from '@/lib/bibleRender';
 import { parseCsv } from '@/lib/sheetPreview';
-import { documentUrl, loadBibles, uploadBible, type Bible } from '@/lib/orderTrackerData';
+import { documentUrl, loadBibles, saveBibleIndex, uploadBible, type Bible } from '@/lib/orderTrackerData';
 import { shortDate } from './shared';
 import { Icon } from './ui';
 
@@ -92,9 +92,11 @@ function BibleDoc({ bible, onReplaced }: { bible: Bible; onReplaced: () => void 
       const m = new Map<string, string>();
       for (const [k, v] of b.media) m.set(k, URL.createObjectURL(new Blob([v.bytes as Uint8Array<ArrayBuffer>], { type: v.mime })));
       setUrls(m); setBook(b); setSheet(0);
+      // the first time it is opened, its text is kept for Ask AI (0145)
+      if (!bible.text_index) void saveBibleIndex(bible.id, bibleTextIndex(b)).catch(() => undefined);
     }).catch(e => { cache.delete(bible.storage_path); if (live) setErr(e instanceof Error ? e.message : String(e)); });
     return () => { live = false; };
-  }, [bible.storage_path, bible.title]);
+  }, [bible.storage_path, bible.title, bible.id, bible.text_index]);
   useEffect(() => () => { for (const u of urls.values()) URL.revokeObjectURL(u); }, [urls]);
 
   const download = async () => { try { window.open(await documentUrl(bible.storage_path), '_blank', 'noopener'); } catch (e) { setErr(e instanceof Error ? e.message : String(e)); } };

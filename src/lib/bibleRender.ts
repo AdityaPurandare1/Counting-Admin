@@ -275,3 +275,27 @@ export function bibleFromCsv(rows: string[][], name: string): BibleBook {
     }],
   };
 }
+
+/* ── the bible's text, for Ask AI (0145) ── */
+
+export interface BibleIndexSheet { name: string; header: string[]; rows: string[][] }
+export interface BibleIndex { sheets: BibleIndexSheet[] }
+const HEADER_WORD = /\b(item|description|manufacturer|vendor|qty|quantity|sku|size|status|link)\b/i;
+
+/** A bible's cell text by sheet (no pictures, no styling): its header row (the first of the top rows that
+ *  names columns like Item / Manufacturer / QTY), then every row with at least two filled cells. Empty
+ *  columns are dropped and long cells cut, so all the bibles stay small enough to search per question. */
+export function bibleTextIndex(book: BibleBook): BibleIndex {
+  return {
+    sheets: book.sheets.map(s => {
+      const texts = s.rows.map(r => r.cells.map(c => (c.covered ? '' : (c.text || (c.link ?? '')).replace(/\s+/g, ' ').trim().slice(0, 160))));
+      const h = texts.slice(0, 8).findIndex(r => r.filter(Boolean).length >= 3 && r.some(x => HEADER_WORD.test(x)));
+      const headerAt = h >= 0 ? h : texts.findIndex(r => r.filter(Boolean).length >= 3);
+      const body = texts.slice(headerAt + 1).filter(r => r.filter(Boolean).length >= 2 && !(headerAt >= 0 && r.join('|') === texts[headerAt].join('|')));
+      const used = (texts[headerAt] ?? []).map((_, i) => i).filter(i => (texts[headerAt]?.[i] ?? '') || body.some(r => r[i]));
+      const width = Math.max(used.length ? used[used.length - 1] + 1 : 0, ...body.map(r => r.length));
+      const keep = Array.from({ length: width }, (_, i) => i).filter(i => (texts[headerAt]?.[i] ?? '') || body.some(r => r[i]));
+      return { name: s.name, header: keep.map(i => texts[headerAt]?.[i] ?? ''), rows: body.map(r => keep.map(i => r[i] ?? '')) };
+    }).filter(s => s.rows.length),
+  };
+}
