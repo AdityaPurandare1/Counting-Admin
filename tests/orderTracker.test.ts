@@ -481,6 +481,12 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   check('auto-create: same thread, no shared item -> its own new order', second.state === 'applied' && !!second.payload.new_order, second);
   const same = line(o, { description: 'LIBBEY - CONTOUR GOBLET GLASS 16 OZ/ 12', sku: '9156', qty: 6, status: 'QUOTED', unit_price: 68.84, quote_number: 'Q-OTHER' });
   const follow = decideMailDocument(quote({ doc_kind: 'invoice', doc_number: 'INV-9' }), src(), { orders: [o], lines: [same], items: [], documents: [d1] }, '2026-11-02', fmt, { autoCreate: true, venues });
+  const feeOnly = decideMailDocument(quote({ doc_kind: 'invoice', doc_number: 'INV-2026-885072', subtotal: 494.4, total: 494.4,
+    lines: [dl({ line_kind: 'freight', description: 'Shipping fee', sku: '', qty: 1, unit_price: 494.4, line_total: 494.4, pack_size: 0 })] }), src({ conversation_id: 'T9' }), empty, '2026-11-02', fmt, { autoCreate: true, venues });
+  check('auto-create: a shipping-fee-only invoice starts an order too', feeOnly.state === 'applied' && feeOnly.payload.new_lines.length === 1, feeOnly);
+  const invoiced = line(o, { description: 'LIBBEY - CONTOUR GOBLET GLASS 16 OZ/ 12', sku: '9156', qty: 6, status: 'INVOICED', unit_price: 68.84, invoice_number: 'INV-A' });
+  const perVenue = decideMailDocument(quote({ doc_kind: 'invoice', doc_number: 'INV-B' }), src(), { orders: [o], lines: [invoiced], items: [], documents: [d1] }, '2026-11-02', fmt, { autoCreate: true, venues });
+  check('auto-create: same item already on ANOTHER invoice in the thread -> its own order (per-venue invoices)', perVenue.state === 'applied' && !!perVenue.payload.new_order, perVenue);
   check('auto-create: the invoice after the quote updates that order (no new one)', follow.state === 'applied' && follow.payload.order_id === o.id && !follow.payload.new_order
     && follow.payload.updates[0]?.status === 'INVOICED', follow);
 }
