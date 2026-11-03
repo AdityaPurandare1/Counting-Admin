@@ -224,3 +224,14 @@ select.ot-inp { appearance: none; -webkit-appearance: none; padding-right: 28px;
 @media (max-width: 1000px) { .ot-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } .ot-kpi:nth-child(4) { border-left: 0; } .ot-kpi:nth-child(n+4) { border-top: 1px solid var(--ot-line); } }
 @media (max-width: 760px) { .ot-grid3 { grid-template-columns: repeat(2, minmax(0, 1fr)); } .ot-count { margin-left: 0; width: 100%; } .ot-search { max-width: none; } .ot-stepper { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 @media (max-width: 560px) { .ot h1.ot-title { font-size: 26px; } .ot-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .ot-grid2, .ot-grid3 { grid-template-columns: 1fr; } }
+
+/* venue bibles (v0.92): a sheet drawn as Excel does — fixed widths and heights, light gridlines, headers */
+.ot-bible-scroll { overflow: auto; max-height: calc(100vh - 230px); min-height: 320px; background: #FFFFFF; position: relative; }
+.ot-bible { table-layout: fixed; border-collapse: collapse; font: 13px Arial, "Helvetica Neue", Helvetica, sans-serif; color: #000; background: #FFFFFF; }
+.ot-bible td { border: 1px solid #E2E2E2; padding: 1px 4px; overflow: hidden; white-space: nowrap; vertical-align: bottom; line-height: 1.25; box-sizing: border-box; }
+.ot-bible td a { color: #1155CC; text-decoration: underline; }
+.ot-bible th.ch, .ot-bible th.corner { position: sticky; top: 0; z-index: 5; background: #F8F9FA; color: #5F6368; font: 500 11px Arial, sans-serif; border: 1px solid #DADCE0; text-align: center; }
+.ot-bible th.corner { left: 0; z-index: 6; }
+.ot-bible th.rh { position: sticky; left: 0; z-index: 4; background: #F8F9FA; color: #5F6368; font: 500 11px Arial, sans-serif; border: 1px solid #DADCE0; text-align: center; padding: 0; }
+.ot-bible img.cellimg { display: block; max-width: 100%; margin: auto; object-fit: contain; }
+.ot-bible img.float { position: absolute; z-index: 1; object-fit: contain; pointer-events: none; }

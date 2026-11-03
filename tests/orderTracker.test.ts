@@ -17,6 +17,7 @@ import {
 import { pricePoints, histories, priceMoves, quoteChecks, invoiceRegister, spendByMonth, isInvoiced, priceMovesCsv } from '../src/lib/orderPrices';
 import { buildReportRows } from '../src/lib/orderTrackerReport';
 import { parseCsv, tidyRows, cellText, sheetsFromXlsx, sheetsFromFile } from '../src/lib/sheetPreview';
+import { colWidthPx, rowHeightPx, applyTint, themePalette, excelColor, cellStyle, displayText, safeLink, richImageMap, sheetVmCells, sheetFiles, loadBible, bibleFromCsv } from '../src/lib/bibleRender';
 import {
   fulfillmentOf, fulfillmentStep, paymentOf, nextEta, orderCategory, timeAgo, lastUpdate, trackerKpis, attentionItems,
   orderDraft, lineDraft, planOrderSave, isPlanEmpty, setDraftStage, markDraft, draftStage, draftTotal, draftLineTotal,
@@ -912,6 +913,63 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
     again.state === 'applied' && !again.payload.updates.length && /^Attached to CUS-0013/.test(again.reason), again.state === 'applied' ? JSON.stringify(again.payload.updates) : again);
   const dd = decideMailDocument(inv('INV-2026-244133', 'Delilah Dallas'), { ...src, id: 'ib-dal' }, data, '2026-11-03', x => '$' + x.toFixed(2), { autoCreate: true, venues });
   check('known invoice: never moves a delivered line back to Invoiced', dd.state === 'applied' && !dd.payload.updates.some(u => 'status' in u), dd);
+}
+
+// ── venue bibles drawn as in Excel (v0.92) ───────────────────────────
+{
+  check('bible sizes: Excel column widths and row heights in pixels', colWidthPx(8.43) === 64 && colWidthPx(undefined) === 64 && colWidthPx(17) === 124 && rowHeightPx(15) === 20 && rowHeightPx(68.1) === 91 && rowHeightPx(null) === 20);
+  check('bible colours: Excel tint darkens / lightens, none = the colour', applyTint('#8E7CC3', 0) === '#8E7CC3' && applyTint('#FFFFFF', -0.5) === '#808080' && applyTint('#000000', 0.5) === '#808080');
+  const theme = '<a:clrScheme name="Office"><a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1><a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="0E2841"/></a:dk2><a:lt2><a:srgbClr val="E8E8E8"/></a:lt2><a:accent1><a:srgbClr val="156082"/></a:accent1><a:accent2><a:srgbClr val="E97132"/></a:accent2><a:accent3><a:srgbClr val="196B24"/></a:accent3><a:accent4><a:srgbClr val="0F9ED5"/></a:accent4><a:accent5><a:srgbClr val="A02B93"/></a:accent5><a:accent6><a:srgbClr val="4EA72E"/></a:accent6><a:hlink><a:srgbClr val="467886"/></a:hlink><a:folHlink><a:srgbClr val="96607D"/></a:folHlink></a:clrScheme>';
+  const pal = themePalette(theme);
+  check('bible theme: Excel index order lt1, dk1, lt2, dk2, accents', pal.slice(0, 5).join() === '#FFFFFF,#000000,#E8E8E8,#0E2841,#156082' && pal[9] === '#4EA72E');
+  check('bible colours: argb / theme + tint / legacy index / automatic', excelColor({ argb: 'FF38761D' }, pal) === '#38761D' && excelColor({ theme: 4 }, pal) === '#156082'
+    && excelColor({ theme: 0, tint: -0.5 }, pal) === '#808080' && excelColor({ indexed: 10 }, pal) === '#FF0000' && excelColor({ indexed: 64 }, pal) === null && excelColor(undefined, pal) === null);
+  const st = cellStyle({ fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF8E7CC3' } }, font: { bold: true, size: 12, color: { argb: 'FFFFFFFF' } },
+    alignment: { horizontal: 'center', vertical: 'middle', wrapText: true }, border: { top: { style: 'thin', color: { argb: 'FF000000' } }, bottom: { style: 'medium' } } } as never, pal);
+  check('bible cell look: fill, bold white 16px, centred, wrapped, borders', st.background === '#8E7CC3' && st.fontWeight === 700 && st.fontSize === 16 && st.color === '#FFFFFF'
+    && st.textAlign === 'center' && st.verticalAlign === 'middle' && st.whiteSpace === 'pre-wrap' && st.borderTop === '1px solid #000000' && st.borderBottom === '2px solid #000', st);
+  check('bible text: currency / percent / thousands formats, the #VALUE! of a picture cell blank', displayText(1234.5, '"$"#,##0.00') === '$1,234.50' && displayText(0.25, '0%') === '25%'
+    && displayText(1234567, '#,##0') === '1,234,567' && displayText({ error: '#VALUE!' }, undefined) === '' && displayText('Red Wine', undefined) === 'Red Wine');
+  check('bible links: only web and mail open', safeLink('https://www.webstaurantstore.com/x') !== null && safeLink('mailto:a@b.co') !== null && safeLink('javascript:alert(1)') === null && safeLink('file:///c:/x') === null && safeLink('Link') === null);
+  // Excel's "picture in cell": vm → metadata → rich value → richValueRel → media (from the Alphabet bible's parts)
+  const map = richImageMap({
+    metadata: '<metadata><futureMetadata name="XLRICHVALUE" count="2"><bk><extLst><ext><xlrd:rvb i="0"/></ext></extLst></bk><bk><extLst><ext><xlrd:rvb i="1"/></ext></extLst></bk></futureMetadata><valueMetadata count="2"><bk><rc t="1" v="0"/></bk><bk><rc t="1" v="1"/></bk></valueMetadata></metadata>',
+    richValues: '<rvData count="2"><rv s="0"><v>1</v><v>5</v></rv><rv s="0"><v>0</v><v>5</v></rv></rvData>',
+    structures: '<rvStructures count="1"><s t="_localImage"><k n="_rvRel:LocalImageIdentifier" t="i"/><k n="CalcOrigin" t="i"/></s></rvStructures>',
+    valueRels: '<richValueRels><rel r:id="rId7"/><rel r:id="rId3"/></richValueRels>',
+    valueRelsRels: '<Relationships><Relationship Id="rId3" Type="x/image" Target="../media/image21.png"/><Relationship Id="rId7" Type="x/image" Target="../media/image1.png"/></Relationships>',
+  });
+  check('bible in-cell pictures: each vm to its media file', JSON.stringify(map) === JSON.stringify(['xl/media/image21.png', 'xl/media/image1.png']), map);
+  check('bible in-cell pictures: no rich data = none', richImageMap({ metadata: null, richValues: null, structures: null, valueRels: null, valueRelsRels: null }).length === 0);
+  check('bible: picture cells by address, sheet names to their files', sheetVmCells('<c r="A3" s="51" t="e" vm="1"><v>#VALUE!</v></c><c r="B3" s="2"><v>1</v></c><c r="A4" t="e" vm="2">').get('A4') === 2
+    && sheetVmCells('<c r="B3" s="2">').size === 0
+    && sheetFiles('<sheets><sheet name="Glassware" sheetId="1" r:id="rId1"/><sheet name="Bird Street&apos;s" sheetId="2" r:id="rId2"/></sheets>',
+      '<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Target="/xl/worksheets/sheet9.xml"/></Relationships>').get("Bird Street's") === 'xl/worksheets/sheet9.xml');
+
+  // a whole workbook: merges, a link, a frozen header, a floating picture in its cell
+  const ExcelJS = ((await import('exceljs')) as unknown as { default: typeof import('exceljs') }).default;
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Glassware', { views: [{ state: 'frozen', ySplit: 2, xSplit: 0 }] });
+  ws.columns = [{ width: 17 }, { width: 28 }, { width: 12 }];
+  ws.addRow(['Glass', '', 'Alphabet']); ws.mergeCells('A1:B1');
+  ws.addRow(['Image', 'Item', 'Link']);
+  ws.addRow(['', 'Red Wine', { text: 'Webstaurant', hyperlink: 'https://www.webstaurantstore.com/x' }]);
+  ws.getRow(3).height = 68.1;
+  ws.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF8E7CC3' } };
+  const png = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='), ch => ch.charCodeAt(0));
+  const imageId = wb.addImage({ buffer: png.buffer as never, extension: 'png' });
+  ws.addImage(imageId, { tl: { col: 0.25, row: 2.1 }, ext: { width: 52, height: 67 } });
+  const book = await loadBible(await wb.xlsx.writeBuffer() as ArrayBuffer);
+  const sh = book.sheets[0];
+  check('bible workbook: columns / row heights as Excel, merged title spans two columns, the link, frozen header',
+    sh.colWidths.join() === '124,201,89' && sh.rows[2].height === 91 && sh.rows[0].cells[0].colSpan === 2 && sh.rows[0].cells[1].covered
+    && sh.rows[0].cells[0].style.background === '#8E7CC3' && sh.rows[2].cells[2].link === 'https://www.webstaurantstore.com/x' && sh.rows[2].cells[2].text === 'Webstaurant' && sh.frozenRows === 2, sh);
+  check('bible workbook: a floating picture rides in its anchor cell (A3) with its size', sh.floats.length === 1 && sh.floats[0].row === 2 && sh.floats[0].col === 0
+    && sh.floats[0].width === 52 && sh.floats[0].height === 67 && book.media.has(sh.floats[0].media), sh.floats);
+  const csv = bibleFromCsv([['Item', 'Link'], ['Coupe', 'https://x.co/c']], 'TNG bible (all items)');
+  check('bible from CSV: one sheet, header row bold, links', csv.sheets.length === 1 && csv.sheets[0].rows[0].cells[0].style.fontWeight === 700 && csv.sheets[0].rows[1].cells[1].link === 'https://x.co/c' && csv.sheets[0].frozenRows === 1);
+  const ot = readFileSync(join(process.cwd(), 'src/screens/OrderTracker.tsx'), 'utf8'), bv = readFileSync(join(process.cwd(), 'src/components/orderTracker/BibleView.tsx'), 'utf8');
+  check('Bibles tab: venue picker, sheet tabs, never HTML from a workbook', ot.includes("tab('bibles', 'Bibles', null)") && /<BibleGrid sheet=/.test(bv) && !/dangerouslySetInnerHTML/.test(bv));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

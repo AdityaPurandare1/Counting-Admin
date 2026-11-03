@@ -13,6 +13,7 @@ import { OrdersView, type OrdersPreset } from '@/components/orderTracker/OrdersV
 import { AttachStubButton, Icon } from '@/components/orderTracker/ui';
 import '@/components/orderTracker/tracker.css';
 import { WarehouseView } from '@/components/orderTracker/WarehouseView';
+import { BibleView } from '@/components/orderTracker/BibleView';
 import { DocumentReview } from '@/components/orderTracker/DocumentReview';
 import { InboxView } from '@/components/orderTracker/InboxView';
 import { inboxGroups, loadInbox, redecideInbox, type InboxItem } from '@/lib/orderMail';
@@ -34,7 +35,7 @@ import { StatusPill, download, errBox, fmtMoney, fmtMoney0, headRow, linkBtn, ro
    documents viewable from the list (src/lib/orderTrackerView.ts, tracker.css).
    ─────────────────────────────────────────────────────────────────────── */
 
-type View = 'orders' | 'inbox' | 'warehouse' | 'overview';
+type View = 'orders' | 'inbox' | 'warehouse' | 'overview' | 'bibles';
 
 export function OrderTracker({ today: todayProp, load = loadTracker, loadMail = loadInbox }: {
   user: AccessEntry; today?: Date; load?: () => Promise<TrackerData>; loadMail?: () => Promise<InboxItem[]>;
@@ -178,12 +179,14 @@ export function OrderTracker({ today: todayProp, load = loadTracker, loadMail = 
               {tab('inbox', 'Inbox', waiting)}
               {tab('warehouse', 'Warehouse', kpis.reorder, kpis.reorder > 0)}
               {tab('overview', 'Overview', null)}
+              {tab('bibles', 'Bibles', null)}
             </div>
             <div style={{ opacity: loading ? 0.7 : 1, transition: 'opacity .2s' }}>
             {view === 'orders' && <OrdersView data={data} today={today} venueName={venueName} onReload={() => void reload()} focusOrderId={focusOrder} preset={preset} newNonce={newNonce} />}
             {view === 'inbox' && <InboxView items={inbox} orders={data.orders} lines={data.lines} onReview={i => { setReviewing(i); setDocFile(null); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
               onOpenOrder={id => { setFocusOrder(id); setView('orders'); }} onChanged={() => void reload()} />}
             {view === 'warehouse' && <WarehouseView data={data} today={today} venueName={venueName} onReload={() => void reload()} />}
+            {view === 'bibles' && <BibleView />}
             {view === 'overview' && <Overview data={data} today={today} venueName={venueName} onOpen={id => { setFocusOrder(id); setView('orders'); }} onReload={() => void reload()} />}
             </div>
           </div>

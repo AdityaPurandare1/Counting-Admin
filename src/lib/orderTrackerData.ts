@@ -138,6 +138,33 @@ export async function attachStubFile(file: File, invoices: string[], orderIds: s
   }
 }
 
+/* ── venue bibles (0144) ── */
+
+export interface Bible {
+  id: string; venue_id: string; title: string; file_name: string; storage_path: string; size_bytes: number | null;
+  is_current: boolean; uploaded_by: string | null; created_at: string;
+}
+export async function loadBibles(): Promise<Bible[]> {
+  const { data, error } = await supabase.from('kount_ot_bibles').select('*').eq('is_current', true).order('title');
+  if (error) fail('Bibles not loaded', error);
+  return (data ?? []) as Bible[];
+}
+/** A venue's bible (.xlsx / .csv): a new one, or a new version of `replaces` (kept, no longer current). */
+export async function uploadBible(venueId: string, title: string, file: File, replaces: string | null): Promise<void> {
+  const ext = file.name.toLowerCase().endsWith('.csv') ? 'csv' : 'xlsx';
+  const path = `bibles/${crypto.randomUUID()}.${ext}`;
+  const up = await supabase.storage.from(DOC_BUCKET).upload(path, file, {
+    contentType: ext === 'csv' ? 'text/csv' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', upsert: false,
+  });
+  if (up.error) fail('Bible not uploaded', up.error);
+  const { error } = await supabase.from('kount_ot_bibles').insert({ venue_id: venueId, title: title.trim() || file.name, file_name: file.name, storage_path: path, size_bytes: file.size });
+  if (error) { await supabase.storage.from(DOC_BUCKET).remove([path]); fail('Bible not saved', error); }
+  if (replaces) {
+    const { error: e2 } = await supabase.from('kount_ot_bibles').update({ is_current: false }).eq('id', replaces);
+    if (e2) fail('Earlier version not retired', e2);
+  }
+}
+
 export async function updateLine(id: string, patch: Partial<OtLine>, how: { source: 'manual' | 'document'; note?: string | null } = { source: 'manual' }): Promise<void> {
   const body: Record<string, unknown> = { ...patch };
   if ('status' in patch) { body.status_source = how.source; body.status_note = how.note ?? null; }
