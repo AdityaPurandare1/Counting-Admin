@@ -209,6 +209,16 @@ select.ot-inp { appearance: none; -webkit-appearance: none; padding-right: 28px;
 .ot-viewer iframe, .ot-viewer .img { flex: 1; border: 0; width: 100%; background: var(--ot-sunken); }
 .ot-viewer .img { display: grid; place-items: center; overflow: auto; }
 .ot-viewer .img img { max-width: 100%; max-height: 100%; }
+.ot-sheet { flex: 1; display: flex; flex-direction: column; min-height: 0; background: var(--ot-sunken); }
+.ot-sheet-tabs { display: flex; gap: 2px; padding: 6px 10px 0; border-bottom: 1px solid var(--ot-line); overflow-x: auto; background: var(--ot-surface); }
+.ot-sheet-tabs button { all: unset; cursor: pointer; padding: 6px 12px; font-size: 12.5px; font-weight: 500; color: var(--ot-ink-2); border: 1px solid transparent; border-bottom: 0; border-radius: 7px 7px 0 0; white-space: nowrap; }
+.ot-sheet-tabs button[aria-selected="true"] { background: var(--ot-sunken); border-color: var(--ot-line); color: var(--ot-ink); }
+.ot-sheet-scroll { flex: 1; overflow: auto; }
+.ot-sheet table { border-collapse: collapse; font-size: 12.5px; background: var(--ot-surface); }
+.ot-sheet th, .ot-sheet td { border: 1px solid var(--ot-line); padding: 4px 8px; white-space: nowrap; max-width: 360px; overflow: hidden; text-overflow: ellipsis; text-align: left; vertical-align: top; }
+.ot-sheet thead th { position: sticky; top: 0; z-index: 2; background: var(--ot-sunken); color: var(--ot-ink-3); font-weight: 500; text-align: center; }
+.ot-sheet tbody th { position: sticky; left: 0; z-index: 1; background: var(--ot-sunken); color: var(--ot-ink-3); font-weight: 500; text-align: right; }
+.ot-sheet td.n { text-align: right; font-variant-numeric: tabular-nums; }
 .ot-viewer-scrim { position: fixed; inset: 0; background: var(--ot-overlay); z-index: 59; }
 
 @media (max-width: 1000px) { .ot-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } .ot-kpi:nth-child(4) { border-left: 0; } .ot-kpi:nth-child(n+4) { border-top: 1px solid var(--ot-line); } }

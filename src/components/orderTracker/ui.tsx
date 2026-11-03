@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { OtDocument } from '@/lib/orderTracker';
 import { documentUrl } from '@/lib/orderTrackerData';
+import { sheetsFromFile, MAX_PREVIEW_ROWS, type SheetPreview } from '@/lib/sheetPreview';
 
 /* Small pieces of the v0.87 order tracker design: icons, document chips, the document viewer. */
 
@@ -66,7 +67,36 @@ export function DocChips({ docs, onOpen, max = 3 }: { docs: OtDocument[]; onOpen
   );
 }
 
-/** The document on this page: a PDF or picture shown, anything else (Excel, Word) to download. */
+const colName = (i: number): string => (i < 26 ? String.fromCharCode(65 + i) : colName(Math.floor(i / 26) - 1) + String.fromCharCode(65 + (i % 26)));
+
+/** A workbook's sheets as tables, like Excel: a tab per sheet, column letters, row numbers. */
+function SheetTables({ sheets, tab, onTab }: { sheets: SheetPreview[]; tab: number; onTab: (i: number) => void }) {
+  if (!sheets.length) return <div className="ot-empty"><p>The workbook has no sheets to show.</p></div>;
+  const sh = sheets[tab];
+  const width = sh.rows.reduce((w, r) => Math.max(w, r.length), 0);
+  return (
+    <div className="ot-sheet">
+      {sheets.length > 1 && (
+        <div className="ot-sheet-tabs" role="tablist">
+          {sheets.map((x, i) => <button key={x.name + i} type="button" role="tab" aria-selected={i === tab} onClick={() => onTab(i)}>{x.name}</button>)}
+        </div>
+      )}
+      <div className="ot-sheet-scroll">
+        {!sh.rows.length ? <div className="ot-empty"><p>This sheet is empty.</p></div> : (
+          <table>
+            <thead><tr><th />{Array.from({ length: width }, (_, i) => <th key={i}>{colName(i)}</th>)}</tr></thead>
+            <tbody>{sh.rows.map((r, ri) => (
+              <tr key={ri}><th>{ri + 1}</th>{Array.from({ length: width }, (_, ci) => <td key={ci} className={/^-?[\d,.$%]+$/.test(r[ci] ?? '') ? 'n' : undefined}>{r[ci] ?? ''}</td>)}</tr>
+            ))}</tbody>
+          </table>
+        )}
+      </div>
+      {sh.truncated && <div className="ot-note warn" style={{ margin: 8 }}>Showing the first {MAX_PREVIEW_ROWS} rows / 60 columns — download it for the rest.</div>}
+    </div>
+  );
+}
+
+/** The document on this page: a PDF, picture or spreadsheet (.xlsx / .csv) shown; anything else (Word, old .xls) to download. */
 export function DocViewer({ doc, onClose }: { doc: OtDocument; onClose: () => void }) {
   const [url, setUrl] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -84,6 +114,19 @@ export function DocViewer({ doc, onClose }: { doc: OtDocument; onClose: () => vo
   const path = (doc.storage_path ?? '').toLowerCase();
   const pdf = path.endsWith('.pdf');
   const img = /\.(png|jpe?g|gif|webp)$/.test(path);
+  const sheet = /\.(xlsx|csv)$/.test(path);
+  // a spreadsheet is read in the browser and shown as tables (ExcelJS / CSV), one per sheet
+  const [sheets, setSheets] = useState<SheetPreview[] | null>(null);
+  const [tab, setTab] = useState(0);
+  useEffect(() => {
+    if (!url || !sheet) return;
+    let live = true;
+    fetch(url).then(r => { if (!r.ok) throw new Error(`Could not load the file (${r.status}).`); return r.arrayBuffer(); })
+      .then(buf => sheetsFromFile(doc.storage_path ?? '', buf))
+      .then(sh => { if (live) setSheets(sh ?? []); })
+      .catch(e => { if (live) setErr(`This spreadsheet could not be read here (${e instanceof Error ? e.message : String(e)}) — download it instead.`); });
+    return () => { live = false; };
+  }, [url, sheet, doc.storage_path]);
   return (
     <>
       <div className="ot-viewer-scrim" onClick={onClose} />
@@ -91,13 +134,14 @@ export function DocViewer({ doc, onClose }: { doc: OtDocument; onClose: () => vo
         <div className="ot-viewer-head">
           <div style={{ minWidth: 0 }}><b>{docTitle(doc)}</b> <span className="faint" style={{ fontSize: 12.5 }}>{[doc.file_name, doc.doc_date].filter(Boolean).join(' · ')}</span></div>
           <div style={{ display: 'flex', gap: 6 }}>
-            {url && <a className="ot-btn sm" href={url} target="_blank" rel="noopener noreferrer"><Icon name="open" />Open in a tab</a>}
+            {url && <a className="ot-btn sm" href={url} target="_blank" rel="noopener noreferrer"><Icon name={pdf || img ? 'open' : 'download'} />{pdf || img ? 'Open in a tab' : 'Download'}</a>}
             <button type="button" className="ot-x" onClick={onClose} aria-label="Close"><Icon name="x" /></button>
           </div>
         </div>
-        {err ? <div className="ot-empty"><p>{err}</p></div>
-          : !url ? <div className="ot-empty"><p>Opening…</p></div>
+        {err ? <div className="ot-empty"><p>{err}</p>{url && <a className="ot-btn primary" href={url} target="_blank" rel="noopener noreferrer"><Icon name="download" />Download</a>}</div>
+          : !url || (sheet && !sheets) ? <div className="ot-empty"><p>Opening…</p></div>
           : pdf ? <iframe src={url} title={docTitle(doc)} />
+          : sheet ? <SheetTables sheets={sheets!} tab={Math.min(tab, Math.max(0, sheets!.length - 1))} onTab={setTab} />
           : img ? <div className="img"><img src={url} alt={docTitle(doc)} /></div>
           : <div className="ot-empty"><h3>{doc.file_name}</h3><p>This file type can't be shown in the page.</p><a className="ot-btn primary" href={url} target="_blank" rel="noopener noreferrer"><Icon name="download" />Download</a></div>}
       </div>

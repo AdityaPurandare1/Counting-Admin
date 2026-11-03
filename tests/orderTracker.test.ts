@@ -16,6 +16,7 @@ import {
 } from '../src/lib/orderTracker';
 import { pricePoints, histories, priceMoves, quoteChecks, invoiceRegister, spendByMonth, isInvoiced, priceMovesCsv } from '../src/lib/orderPrices';
 import { buildReportRows } from '../src/lib/orderTrackerReport';
+import { parseCsv, tidyRows, cellText, sheetsFromXlsx, sheetsFromFile } from '../src/lib/sheetPreview';
 import {
   fulfillmentOf, fulfillmentStep, paymentOf, nextEta, orderCategory, timeAgo, lastUpdate, trackerKpis, attentionItems,
   orderDraft, lineDraft, planOrderSave, isPlanEmpty, setDraftStage, markDraft, draftStage, draftTotal, draftLineTotal,
@@ -820,6 +821,37 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
     by(c, spindle)?.status === 'DELIVERED' && by(c, carafe)?.status === 'SHIPPED' && by(c, carafe)?.eta === '2026-10-21' && by(c, fork)?.status === 'SHIPPED' && by(c, fork)?.eta === '2026-10-23'
     && c.tracking.some(h => h.number === '547141861476' && h.carrier === 'FedEx'), c);
   check('sheet rows that match no line of the order are left alone', sheetUpdates([HN, ['1', 'X', 'NOPE-123', 'Something else entirely', '1', 'ea', '', '', '', '1', '', 'Fedex 547141861476', 'Delivered']], [spindle], 'x.xlsx').matched === 0);
+}
+
+// ── a spreadsheet shown in the page (v0.89 document viewer) ──────────
+{
+  check('csv: quoted commas, doubled quotes, a line break inside quotes, CRLF rows, a byte-order mark',
+    JSON.stringify(parseCsv(String.fromCharCode(0xfeff) + 'Item,Qty,Tracking #\r\n"Tray, oval",16,"Fedex ""878681470371"""\r\n"two\nlines",1,\r\n'))
+      === JSON.stringify([['Item', 'Qty', 'Tracking #'], ['Tray, oval', '16', 'Fedex "878681470371"'], ['two\nlines', '1', '']]));
+  const tidy = tidyRows([['a', '', ''], ['', 'b', ''], ['', '', ''], ['', '', '']]);
+  check('tidy: trailing empty rows and columns off, rows made even', JSON.stringify(tidy.rows) === JSON.stringify([['a', ''], ['', 'b']]) && !tidy.truncated);
+  check('tidy: more rows than the preview shows = truncated', tidyRows(Array.from({ length: 2005 }, () => ['x'])).truncated && tidyRows(Array.from({ length: 2005 }, () => ['x'])).rows.length === 2000);
+  check('cell text: a date as its calendar day, a formula by its result, rich text, a link, a whole number, a long decimal',
+    cellText(new Date(Date.UTC(2026, 9, 15))) === '10/15/2026' && cellText({ formula: 'B2*C2', result: 11.48 }) === '11.48'
+    && cellText({ richText: [{ text: 'Fedex ' }, { text: '547141861476' }] }) === 'Fedex 547141861476' && cellText({ text: 'UPS', hyperlink: 'https://ups.com' }) === 'UPS'
+    && cellText(547141861476) === '547141861476' && cellText(2.87) === '2.87' && cellText(1 / 3) === '0.333333' && cellText(null) === '');
+
+  const ExcelJS = ((await import('exceljs')) as unknown as { default: typeof import('exceljs') }).default;
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Smallwares Batch 1');
+  ws.addRow(['Item No', 'Model', '', 'Qty', 'Sell', 'SellTotal', 'ETA', 'Tracking Numbers']);
+  ws.addRow([29, '407CS36C', 'CHOICE - CHECK SPINDLE 6"', 4, 2.87, { formula: 'D2*E2', result: 11.48 }, new Date(Date.UTC(2026, 9, 15)), 'Fedex 547141861476']);
+  ws.addRow(['DELIVERED']); ws.mergeCells('A3:H3');
+  wb.addWorksheet('Batch 2').addRow(['IN TRANSIT']);
+  wb.addWorksheet('hidden notes', { state: 'hidden' }).addRow(['secret']);
+  const sheets = await sheetsFromXlsx(await wb.xlsx.writeBuffer() as ArrayBuffer);
+  check('xlsx: every visible sheet, as the cells read (formula result, date), a merged block once', sheets.map(s => s.name).join('|') === 'Smallwares Batch 1|Batch 2'
+    && JSON.stringify(sheets[0].rows[1]) === JSON.stringify(['29', '407CS36C', 'CHOICE - CHECK SPINDLE 6"', '4', '2.87', '11.48', '10/15/2026', 'Fedex 547141861476'])
+    && JSON.stringify(sheets[0].rows[2]) === JSON.stringify(['DELIVERED', '', '', '', '', '', '', '']), sheets);
+  check('file type: .xlsx / .csv shown, anything else (Word, old .xls) not', (await sheetsFromFile('a.docx', new ArrayBuffer(0))) === null
+    && (await sheetsFromFile('Ship.CSV', new TextEncoder().encode('a,b\n1,2').buffer as ArrayBuffer))?.[0].rows.length === 2);
+  const ui = readFileSync(join(process.cwd(), 'src/components/orderTracker/ui.tsx'), 'utf8');
+  check('viewer: a spreadsheet opens as tables (never as HTML from the file), with Download kept', /sheetsFromFile\(doc\.storage_path/.test(ui) && /<SheetTables/.test(ui) && !/dangerouslySetInnerHTML/.test(ui));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
