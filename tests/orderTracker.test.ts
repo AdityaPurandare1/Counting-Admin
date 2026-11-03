@@ -15,7 +15,7 @@ import {
 } from '../src/lib/orderTracker';
 import { pricePoints, histories, priceMoves, quoteChecks, invoiceRegister, spendByMonth, isInvoiced, priceMovesCsv } from '../src/lib/orderPrices';
 import { buildReportRows } from '../src/lib/orderTrackerReport';
-import { inboxGroups, type InboxItem } from '../src/lib/orderMail';
+import { inboxGroups, findSummary, type InboxItem } from '../src/lib/orderMail';
 import { existsSync } from 'node:fs';
 
 let passed = 0;
@@ -672,6 +672,20 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
     /fromInbox \?\? orderForReferences\(doc\.refers_to, doc\.doc_number, data\)\?\.order \?\? matchOrder\(/.test(readFileSync(join(process.cwd(), 'src/components/orderTracker/DocumentReview.tsx'), 'utf8')));
   const reader = readFileSync(join(process.cwd(), '..', 'Counting-App', 'supabase', 'functions', '_shared', 'purchase-doc.ts'), 'utf8');
   check('reader: asks for refers_to and requires it', /refers_to: \{ type: 'array'/.test(reader) && /'tracking_numbers', 'refers_to',/.test(reader));
+}
+
+// ── Find in Outlook: one older invoice / quote by its number ─────────
+{
+  check('find: nothing found / already pulled / pulled and decided, in a sentence',
+    findSummary('INV-2026-418553', { found: 0 }).startsWith('No e-mail from a listed vendor')
+    && /already pulled/.test(findSummary('INV-2026-418553', { found: 2, new_pdfs: 0 }))
+    && findSummary('INV-2026-418553', { found: 1, new_pdfs: 1, applied: 1, paid: 1 }) === 'INV-2026-418553: 1 PDF pulled — 1 saved to an order, 1 marked paid from R365.'
+    && findSummary('X', { found: 0, reason: 'A pull is running — try again in a minute.' }).startsWith('A pull is running'));
+  const fn = readFileSync(join(process.cwd(), '..', 'Counting-App', 'supabase', 'functions', 'kount-order-mail', 'index.ts'), 'utf8');
+  check('find: corporate-only action, holds the run lock and always lets it go, vendor senders only, PDFs read + paid check',
+    /if \(action === 'find'\)/.test(fn) && fn.indexOf("if (action === 'find')") > fn.indexOf('const caller = await corporateCaller')
+    && /kount_ot_mail_begin_run[\s\S]{0,400}findPhase\(sb, number, stats\)[\s\S]{0,400}readPhase[\s\S]{0,200}r365PaidPhase[\s\S]{0,400}finally \{\s*await sb\.from\('kount_ot_mail_account'\)\.update\(\{ running_since: null/.test(fn)
+    && /!m\.hasAttachments \|\| !domain \|\| !onList\(domain, domains\)/.test(fn));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

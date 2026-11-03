@@ -94,6 +94,18 @@ export interface DeviceCode { user_code: string; verification_uri: string; expir
 export const startConnect = () => invokeMail<DeviceCode>({ action: 'connect_start' });
 export const pollConnect = () => invokeMail<{ state: 'waiting' | 'connected' | 'failed' | 'expired'; mailbox?: string; reason?: string }>({ action: 'connect_poll' });
 export const pullNow = () => invokeMail<{ started: boolean; reason?: string }>({ action: 'pull' });
+/** One invoice / quote by its number, however old (the pull reads only recent mail): its PDF from the vendor's e-mail is read and decided. */
+export interface FindResult { found: number; new_pdfs?: number; applied?: number; pending?: number; ignored?: number; failed?: number; paid?: number; reason?: string }
+export const findInMail = (number: string) => invokeMail<FindResult>({ action: 'find', number });
+/** What a find did, in a sentence. */
+export function findSummary(number: string, r: FindResult): string {
+  if (r.reason) return r.reason;
+  if (!r.found) return `No e-mail from a listed vendor with a PDF mentions ${number}.`;
+  if (!r.new_pdfs) return `${number}: its PDF${r.found > 1 ? 's were' : ' was'} already pulled — see the Inbox or the order.`;
+  const parts = [r.applied && `${r.applied} saved to an order`, r.pending && `${r.pending} waiting for you below`, r.ignored && `${r.ignored} set aside`,
+    r.failed && `${r.failed} could not be read`, r.paid && `${r.paid} marked paid from R365`].filter(Boolean);
+  return `${number}: ${r.new_pdfs} PDF${r.new_pdfs > 1 ? 's' : ''} pulled${parts.length ? ` — ${parts.join(', ')}` : ''}.`;
+}
 /** After a save: waiting items that now match an order (the invoice in the quote's thread, a tracking email) are applied. */
 export const redecideInbox = () => invokeMail<{ applied: number }>({ action: 'redecide' });
 

@@ -3,7 +3,7 @@ import { Btn, Card, Pill } from '@/components/atoms';
 import { DOC_KIND_LABEL, headlineStatus, STATUS_LABEL, trackingUrl, type OtLine, type OtOrder } from '@/lib/orderTracker';
 import { addTracking, documentUrl } from '@/lib/orderTrackerData';
 import {
-  disconnectMail, inboxGroups, isPaymentStub, isTrackingEmail, mailStatus, pollConnect, pullNow, setAutoCreate, setDocKinds, setInboxState, setVendorDomains, startConnect,
+  disconnectMail, findInMail, findSummary, inboxGroups, isPaymentStub, isTrackingEmail, mailStatus, pollConnect, pullNow, setAutoCreate, setDocKinds, setInboxState, setVendorDomains, startConnect,
   type DeviceCode, type InboxItem, type MailStatus,
 } from '@/lib/orderMail';
 import { errBox, fmtMoney, linkBtn, okBox, picker, shortDate, smallInput, subTxt } from './shared';
@@ -142,6 +142,8 @@ function MailCard({ onChanged }: { onChanged: () => void }) {
   const [code, setCode] = useState<DeviceCode | null>(null);
   const [busy, setBusy] = useState(false);
   const [newDomain, setNewDomain] = useState('');
+  const [findNo, setFindNo] = useState('');
+  const [found, setFound] = useState<string | null>(null);
   const wasRunning = useRef(false);
 
   const refresh = useCallback(async () => {
@@ -220,6 +222,15 @@ function MailCard({ onChanged }: { onChanged: () => void }) {
           {s.connected && <Btn variant="ghost" size="sm" disabled={busy} onClick={() => { if (confirm('Disconnect Outlook? The morning pull stops until someone connects again.')) void act(async () => { await disconnectMail(); await refresh(); }); }}>Disconnect</Btn>}
         </div>
       </div>
+      {s.connected && (
+        <form style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 10, fontSize: 12 }}
+          onSubmit={e => { e.preventDefault(); const no = findNo.trim(); if (no) void act(async () => { setFound('Searching Outlook…'); const r = await findInMail(no); setFound(findSummary(no, r)); await refresh(); onChanged(); }); }}>
+          <span style={{ color: 'var(--fg-muted)' }}>An older invoice or quote missing? The pull reads only recent mail.</span>
+          <input style={{ ...smallInput, width: 170 }} placeholder="INV-2026-418553" value={findNo} onChange={e => setFindNo(e.target.value)} aria-label="Invoice or quote number" />
+          <Btn variant="secondary" size="sm" type="submit" disabled={busy || s.running || !findNo.trim()}>Find in Outlook</Btn>
+          {found && <span>{found}</span>}
+        </form>
+      )}
 
       {code && (
         <div style={okBox}>
