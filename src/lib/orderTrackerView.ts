@@ -168,6 +168,11 @@ export interface LineDraft {
 export interface OrderDraft {
   vendor_name: string; order_number: string; venue_id: string; deliver_to: 'warehouse' | 'venue';
   ordered_on: string; expected_on: string; notes: string;
+  /** the day it went to the vendor (0147); a change is saved as typed in ('manual') */
+  sent_on: string;
+  /** the day the lines marked Delivered / Received in this edit came (0147) — today unless changed: marking
+   *  old shipments delivered today would make their lead times weeks too long */
+  delivered_on: string; today: string;
   lines: LineDraft[];
 }
 
@@ -184,7 +189,8 @@ export function lineDraft(l: OtLine | null, status: LineStatus = 'REQUESTED'): L
 export function orderDraft(o: OtOrder | null, lines: OtLine[], today: string): OrderDraft {
   return {
     vendor_name: o?.vendor_name ?? '', order_number: o?.order_number ?? '', venue_id: o?.venue_id ?? '', deliver_to: o?.deliver_to ?? 'venue',
-    ordered_on: o ? o.ordered_on ?? '' : today, expected_on: o?.expected_on ?? '', notes: o?.notes ?? '',
+    ordered_on: o ? o.ordered_on ?? '' : today, expected_on: o?.expected_on ?? '', notes: o?.notes ?? '', sent_on: o?.sent_on ?? '',
+    delivered_on: today, today,
     lines: o ? [...lines].sort((a, b) => a.sort - b.sort).map(l => lineDraft(l)) : [lineDraft(null)],
   };
 }
@@ -235,6 +241,8 @@ export function planOrderSave(o: OtOrder | null, lines: OtLine[], d: OrderDraft,
     ordered_on: d.ordered_on || null, expected_on: d.expected_on || null, notes: txt(d.notes),
   };
   for (const [k, v] of Object.entries(fields) as Array<[keyof OtOrder, unknown]>) if (!o || (o[k] ?? null) !== v) (plan.order as Record<string, unknown>)[k] = v;
+  // the sent day typed in: kept from then on (the morning pull never overwrites a 'manual' day)
+  if ((o?.sent_on ?? null) !== (d.sent_on || null)) { plan.order.sent_on = d.sent_on || null; plan.order.sent_source = d.sent_on ? 'manual' : null; }
   const byName = new Map(ctx.items.filter(i => i.is_active).map(i => [i.name.trim().toLowerCase(), i]));
   const kept = d.lines.filter(l => !l.removed);
   if (!kept.some(l => l.description.trim())) plan.problems.push('Add at least one line.');
@@ -265,6 +273,10 @@ export function planOrderSave(o: OtOrder | null, lines: OtLine[], d: OrderDraft,
       if (before !== v) (patch as Record<string, unknown>)[k] = v;
     }
     if (patch.status && patch.status !== 'CANCELLED' && was.status !== 'CANCELLED' && statusRank(patch.status) < statusRank(was.status)) plan.backward++;
+    // into Delivered / Received now: on the day given (the database stamps today when none is sent)
+    if (patch.status && arrivesNow(was.status, patch.status) && d.delivered_on && d.delivered_on !== d.today) {
+      patch.delivered_on = d.delivered_on; patch.delivered_source = 'manual';
+    }
     // ticked received: what is still to come of a stocked item goes into the warehouse
     if (patch.status === 'RECEIVED' && item_id && (o?.deliver_to ?? d.deliver_to) === 'warehouse' && ctx.items.find(i => i.id === item_id)?.track_stock) {
       const left = Math.max(0, row.qty - ctx.received(was.id));
@@ -274,6 +286,10 @@ export function planOrderSave(o: OtOrder | null, lines: OtLine[], d: OrderDraft,
   }
   return plan;
 }
+
+const DELIVERED_NOW = new Set<LineStatus>(['DELIVERED', 'RECEIVED']);
+/** A line stepping into Delivered / Received (not Delivered -> Received: it came already). */
+export const arrivesNow = (from: LineStatus, to: LineStatus) => DELIVERED_NOW.has(to) && !DELIVERED_NOW.has(from);
 
 export const isPlanEmpty = (p: OrderSavePlan) => !Object.keys(p.order).length && !p.updates.length && !p.adds.length && !p.removes.length;
 

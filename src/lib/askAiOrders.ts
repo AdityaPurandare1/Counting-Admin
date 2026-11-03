@@ -16,6 +16,7 @@ import {
 } from './orderTracker';
 import { fulfillmentOf, nextEta, paymentOf, stubsToGet, trackerKpis } from './orderTrackerView';
 import type { BibleIndex } from './bibleRender';
+import { SENT_SOURCE, leadForItem, leadText, median, orderTiming, productLeadIndex, spanText, timingText, vendorLeadTimes } from './leadTime';
 
 export interface AskOrdersData { orders: OtOrder[]; lines: OtLine[]; items: OtItem[]; moves: OtMove[]; documents: OtDocument[]; tracking: OtTracking[] }
 export interface AskBible { venue_id: string; title: string; text_index: BibleIndex | null }
@@ -67,7 +68,9 @@ const note = (l: OtLine) => String((l as OtLine & { status_note?: string | null 
 /** Everything about one order: its lines (status, invoice, payment, tracking, ETA), documents, tracking, notes. */
 export function orderDetail(o: OtOrder, ls: OtLine[], docs: OtDocument[], tracking: OtTracking[], moves: OtMove[], venueName: (id: string | null) => string, today: string): string {
   const out = [`ORDER ${orderIndexLine(o, ls, venueName, today)}`];
-  out.push(`  ordered ${o.ordered_on ?? '?'} · delivers to the ${o.deliver_to}${o.expected_on ? ` · expected ${o.expected_on}` : ''}`);
+  const t = orderTiming(o, ls, today);
+  out.push(`  ordered ${o.ordered_on ?? '?'} · delivers to the ${o.deliver_to}${o.expected_on ? ` · expected ${o.expected_on}` : ''}`
+    + (t.sentOn ? ` · sent to the vendor ${t.sentOn} (${SENT_SOURCE[o.sent_source ?? ''] ?? 'source not known'}) · ${timingText(t)}` : ' · sent day not known'));
   for (const l of [...ls].sort((a, b) => a.sort - b.sort)) {
     const late = isLate(l, o, today, receivedForLine(moves, l.id));
     const paid = (l.r365_payments ?? []).map(p => `${p.number} on ${p.date}`).join(', ');
@@ -88,6 +91,7 @@ const TOPIC = {
   stubs: /\b(stub|stubs|remittance|check|cheque|proof)/i,
   stock: /\b(warehouse|stock|on hand|reorder|storage|e&e|draw|release|corporate|inventory|how many cases)/i,
   inbox: /\b(inbox|waiting|review|unread)/i,
+  lead: /\b(lead ?times?|how long|takes?|took|turnaround|weeks?|months?|sent|since)\b/i,
 };
 
 export interface OrdersContextInput {
@@ -164,6 +168,13 @@ export function buildOrdersContext(p: OrdersContextInput): string {
     add(rows.map(r => `- [${r.item.location?.trim() || 'E&E warehouse'}] ${r.item.name}${r.item.sku ? ` (${r.item.sku})` : ''}: ${r.onHand} ${r.item.unit}, ${Math.round(r.monthlyUse * 10) / 10}/month, ${r.state}${r.incoming ? `, ${r.incoming} incoming` : ''}`));
   }
   if (TOPIC.inbox.test(q)) add([`INBOX: ${p.inboxWaiting} documents wait for a person (Order tracker → Inbox).`]);
+  if (TOPIC.lead.test(q)) {
+    // 0147: sent to the vendor -> delivered; ~ = estimated (a delivery day from the ETA, or the PO date for the sent day)
+    const vl = vendorLeadTimes(live, data.lines, today);
+    add(['LEAD TIMES (the day an order went to the vendor to the day it was delivered; ~ = estimated):']);
+    add(vl.map(v => `- ${v.vendor}: ${v.took.length ? `${v.approx === v.took.length ? '~' : ''}${spanText(median(v.took))} typical over ${v.took.length} delivered orders (${spanText(Math.min(...v.took))} to ${spanText(Math.max(...v.took))})` : 'no delivered orders with dates'}`
+      + (v.open.length ? ` · open: ${v.open.slice(0, 6).map(x => `${x.order.order_number ?? '(no #)'} sent ${x.order.sent_on} (${spanText(x.days)})`).join(', ')}` : '')));
+  }
 
   // 4. the bibles' matching rows
   const named = p.venues.filter(v => p.question.toLowerCase().includes(v.name.toLowerCase()) || (v.name === 'The Nice Guy' && /\btng\b/i.test(p.question))
@@ -174,12 +185,18 @@ export function buildOrdersContext(p: OrdersContextInput): string {
     const wantBible = /\bbible/i.test(q) || named.length > 0 || terms.words.length > 0;
     if (wantBible) {
       const hits: Array<{ s: number; line: string }> = [];
+      const leads = productLeadIndex(data.orders, data.lines, today);
       for (const b of withText) for (const sh of b.text_index!.sheets) for (const r of sh.rows) {
         const text = wordText(r.join(' ')), sheetName = wordText(sh.name);
         const s = terms.codes.filter(c => text.includes(c.toLowerCase())).length * 10 + terms.words.filter(w => hasWord(text, w) || hasWord(sheetName, w)).length;
         const venueHit = named.length && named.includes(b.venue_id);
         if (s > 0 && (!named.length || venueHit)) {
-          hits.push({ s: s + (venueHit ? 1 : 0), line: `- [${b.title} · ${sh.name}] ` + r.map((v, i) => (v ? `${sh.header[i] || `col ${i + 1}`}: ${shortUrl(v)}` : '')).filter(Boolean).join(' | ') });
+          // the product's lead time from the orders, by its item number (0147)
+          const numAt = sh.header.findIndex(h => /item\s*(#|no\b|number)|\bsku\b|mfr\.?\s*#/i.test(h));
+          const lead = numAt >= 0 && r[numAt] ? leadForItem(leads, r[numAt]) : null;
+          const lt = lead ? leadText(lead) : null;
+          hits.push({ s: s + (venueHit ? 1 : 0), line: `- [${b.title} · ${sh.name}] ` + r.map((v, i) => (v ? `${sh.header[i] || `col ${i + 1}`}: ${shortUrl(v)}` : '')).filter(Boolean).join(' | ')
+            + (lt ? ` | lead time from orders: ${[lt.took, lt.open].filter(Boolean).join(', ')}` : '') });
         }
       }
       hits.sort((a, b) => b.s - a.s);

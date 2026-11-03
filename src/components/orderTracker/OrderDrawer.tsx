@@ -5,13 +5,14 @@ import {
   type LineStatus, type OtDocument, type OtLine, type OtOrder,
 } from '@/lib/orderTracker';
 import {
-  draftLineTotal, draftStage, draftTotal, invoiceToken, isPlanEmpty, lastUpdate, stubInvoices, lineDraft, markDraft, orderCategory, orderDraft, paymentOf, planOrderSave, setDraftStage, timeAgo,
+  arrivesNow, draftLineTotal, draftStage, draftTotal, invoiceToken, isPlanEmpty, lastUpdate, stubInvoices, lineDraft, markDraft, orderCategory, orderDraft, paymentOf, planOrderSave, setDraftStage, timeAgo,
   type LineDraft, type OrderDraft,
 } from '@/lib/orderTrackerView';
 import {
   addLines, addMove, addTracking, attachFile, createOrder, deleteLine, deleteOrder, loadEvents, removeTracking, updateLine, updateOrder,
   type EventRow, type TrackerData,
 } from '@/lib/orderTrackerData';
+import { SENT_SOURCE, orderTiming, timingText } from '@/lib/leadTime';
 import { fmtMoney, shortDate } from './shared';
 import { AttachStubButton, DocChip, Icon, isOtherDoc } from './ui';
 
@@ -97,6 +98,11 @@ export function OrderDrawer({ order, lines, docs, data, today, venueName, onClos
   const original = new Map(lines.map(l => [l.id, l]));
   const pdfs = docs.filter(d => !isOtherDoc(d));
   const others = docs.filter(isOtherDoc);
+  // sent to the vendor -> delivered (0147): open for how long, or how long it took
+  const sentSource = order && draft.sent_on === (order.sent_on ?? '') ? order.sent_source ?? null : draft.sent_on ? 'manual' : null;
+  const timing = order ? orderTiming({ sent_on: draft.sent_on || null, sent_source: sentSource }, lines, today) : null;
+  // lines marked delivered in this edit: on which day they came (lead times)
+  const arriving = draft.lines.filter(l => !l.removed && l.id && original.get(l.id) && arrivesNow(original.get(l.id)!.status, l.status)).length;
 
   return (
     <>
@@ -131,6 +137,12 @@ export function OrderDrawer({ order, lines, docs, data, today, venueName, onClos
             </Fld>
             <Fld label="PO date"><input className="ot-inp" type="date" value={draft.ordered_on} onChange={e => set({ ordered_on: e.target.value })} /></Fld>
             <Fld label="Expected"><input className="ot-inp" type="date" value={draft.expected_on} onChange={e => set({ expected_on: e.target.value })} /></Fld>
+            <Fld label="Sent to vendor"><input className="ot-inp" type="date" value={draft.sent_on} onChange={e => set({ sent_on: e.target.value })} /></Fld>
+            <div className="ot-fld" style={{ justifyContent: 'flex-end' }}>
+              {timing && timing.state !== 'unsent'
+                ? <span title={sentSource ? SENT_SOURCE[sentSource] : undefined}><b>{timingText(timing)}</b><span className="faint" style={{ fontSize: 12.5 }}> · {sentSource ? SENT_SOURCE[sentSource] : ''}</span></span>
+                : <span className="faint" style={{ fontSize: 12.5 }}>{order ? 'Not known when it was sent — the morning pull reads it from the e-mail to the vendor, or type it.' : 'The day it went to the vendor (for lead times).'}</span>}
+            </div>
           </div></section>
 
           <section className="ot-sec"><h3>Status <span className="faint">every line moves to the step you pick</span></h3>
@@ -141,6 +153,13 @@ export function OrderDrawer({ order, lines, docs, data, today, venueName, onClos
                   onClick={() => { const r = setDraftStage(draft, s); if (r.backward && !confirm(`Move ${r.backward} line${r.backward > 1 ? 's' : ''} back to ${STATUS_LABEL[s]}?`)) return; set({ lines: r.draft.lines }); }}>{STATUS_LABEL[s]}</button>;
               })}
             </div>
+            {arriving > 0 && (
+              <div className="ot-note" style={{ marginTop: 8, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span>{arriving} line{arriving > 1 ? 's' : ''} marked delivered — on</span>
+                <input className="ot-inp" type="date" style={{ width: 160 }} value={draft.delivered_on} max={today} onChange={e => set({ delivered_on: e.target.value || today })} aria-label="Delivered on" />
+                <span className="faint" style={{ fontSize: 12.5 }}>the day {arriving > 1 ? 'they' : 'it'} came, for lead times (today unless changed)</span>
+              </div>
+            )}
           </section>
 
           <section className="ot-sec"><h3>Lines <span className="faint">{liveDraft.length} line{liveDraft.length === 1 ? '' : 's'}</span></h3>

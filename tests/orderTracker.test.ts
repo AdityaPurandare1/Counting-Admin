@@ -17,12 +17,13 @@ import {
 import { pricePoints, histories, priceMoves, quoteChecks, invoiceRegister, spendByMonth, isInvoiced, priceMovesCsv } from '../src/lib/orderPrices';
 import { buildReportRows } from '../src/lib/orderTrackerReport';
 import { parseCsv, tidyRows, cellText, sheetsFromXlsx, sheetsFromFile } from '../src/lib/sheetPreview';
-import { colWidthPx, rowHeightPx, applyTint, themePalette, excelColor, cellStyle, displayText, safeLink, richImageMap, sheetVmCells, sheetFiles, loadBible, bibleFromCsv, bibleTextIndex } from '../src/lib/bibleRender';
+import { colWidthPx, rowHeightPx, applyTint, themePalette, excelColor, cellStyle, displayText, safeLink, richImageMap, sheetVmCells, sheetFiles, loadBible, bibleFromCsv, bibleTextIndex, bibleItemColumn } from '../src/lib/bibleRender';
 import { questionTerms, buildOrdersContext, asksVariance, ordersBudget, shortUrl } from '../src/lib/askAiOrders';
+import { spanText, orderTiming, timingText, lineItemKeys, isItemKey, productLeadIndex, leadForItem, leadText, median, vendorLeadTimes } from '../src/lib/leadTime';
 import {
   fulfillmentOf, fulfillmentStep, paymentOf, nextEta, orderCategory, timeAgo, lastUpdate, trackerKpis, attentionItems,
   orderDraft, lineDraft, planOrderSave, isPlanEmpty, setDraftStage, markDraft, draftStage, draftTotal, draftLineTotal,
-  stubsToGet, invoiceToken, stubInvoices,
+  stubsToGet, invoiceToken, stubInvoices, arrivesNow,
 } from '../src/lib/orderTrackerView';
 import { inboxGroups, findSummary, type InboxItem } from '../src/lib/orderMail';
 import { existsSync } from 'node:fs';
@@ -1038,6 +1039,105 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   const wv = readFileSync(join(process.cwd(), 'src/components/orderTracker/WarehouseView.tsx'), 'utf8');
   check('Warehouse: stock grouped by where it is kept, E&E first; the item form has Kept at',
     /placeRank\(itemLocation\(a\.item\)\) - placeRank\(itemLocation\(b\.item\)\)/.test(wv) && /itemLocation\(rows\[ri - 1\]\.item\) !== itemLocation\(r\.item\)/.test(wv) && /Kept at<input/.test(wv));
+}
+
+// ── lead times (0147): sent to the vendor -> delivered, by item number in the bibles ─────────
+{
+  check('lead: days under two weeks, weeks under nine, then months',
+    spanText(1) === '1 day' && spanText(13) === '13 days' && spanText(14) === '2 wks' && spanText(41) === '6 wks' && spanText(63) === '2 mo' && spanText(100) === '3 mo' && spanText(-3) === '0 days');
+  const o = order({ sent_on: '2026-09-01', sent_source: 'email' });
+  const a = line(o, { status: 'DELIVERED', delivered_on: '2026-09-29', delivered_source: 'app' });
+  const b = line(o, { status: 'SHIPPED' });
+  const c = line(o, { status: 'CANCELLED' });
+  const open = orderTiming(o, [a, b, c], '2026-11-03');
+  check('lead: an order with a line not delivered is open since it was sent', open.state === 'open' && open.days === 63 && !open.approx && timingText(open) === 'open 2 mo', open);
+  const took = orderTiming(o, [a, { ...b, status: 'RECEIVED', delivered_on: '2026-10-13' }, c], '2026-11-03');
+  check('lead: all delivered = it took until the last line (a cancelled line does not count)', took.state === 'took' && took.days === 42 && timingText(took) === 'took 6 wks', took);
+  const est = orderTiming({ sent_on: '2026-09-01', sent_source: 'po_date' }, [{ ...a, delivered_source: 'eta' }], '2026-11-03');
+  check('lead: the PO date or an ETA makes it an estimate (~)', est.approx && timingText(est) === 'took ~4 wks', est);
+  check('lead: no sent day = nothing to say; delivered on days not known = "delivered"',
+    orderTiming(order({ sent_on: null }), [a], '2026-11-03').state === 'unsent'
+    && orderTiming(o, [{ ...a, delivered_on: null }], '2026-11-03').state === 'delivered');
+
+  // item numbers: the SKU and the description's tokens, never a size / pack count / year
+  check('lead: item numbers from the description, punctuation aside',
+    JSON.stringify(lineItemKeys({ sku: null, description: 'STOLZLE - CARAFE 6.25 OZ / 6 (#Z3470070)' })) === JSON.stringify(['Z3470070'])
+    && lineItemKeys({ sku: null, description: 'Carafe Legend Perfect Pour 2.5 oz (FGC51530-048)' }).includes('FGC51530048')
+    && lineItemKeys({ sku: '06.7540.6040', description: 'WMF - OVAL SERVING TRAY 8.75" / 1' }).includes('0675406040'));
+  check('lead: a size, a pack count or a year is not an item number',
+    lineItemKeys({ sku: null, description: 'TNG Custom Napkin /1000 delivery 10/07/2026 12x18' }).length === 0 && isItemKey('E849') && !isItemKey('4509') && isItemKey('853817'));
+
+  // across orders: one value per order, open orders listed, E&E's SP prefix found
+  const o1 = order({ order_number: 'OSE-0001', sent_on: '2026-07-01', sent_source: 'sheet' });
+  const o2 = order({ order_number: 'OSE-0002', sent_on: '2026-08-01', sent_source: 'email' });
+  const o3 = order({ order_number: 'OSE-0003', sent_on: '2026-10-06', sent_source: 'email' });
+  const ls = [
+    line(o1, { description: 'Coupe Glass Nude Pasabahce 7.5 oz (P67296)', sku: null, status: 'DELIVERED', delivered_on: '2026-07-29', delivered_source: 'eta' }),
+    line(o1, { description: 'STEELITE - COUPE GLASS NUDE 7.5 OZ/ 24 (P67296)', sku: null, venue_id: 'v2', status: 'DELIVERED', delivered_on: '2026-08-05', delivered_source: 'eta' }),
+    line(o2, { description: 'Coupe glass (P67296)', sku: null, status: 'RECEIVED', delivered_on: '2026-08-29', delivered_source: 'app' }),
+    line(o3, { description: 'Coupe glass (P67296)', sku: null, status: 'SHIPPED' }),
+    line(o3, { description: 'Oyster fork', sku: 'SPLM40Z025', status: 'SHIPPED' }),
+  ];
+  const idx = productLeadIndex([o1, o2, o3], ls, '2026-11-03');
+  const coupe = leadForItem(idx, 'P67296');
+  check('lead: one value per order (its last line), open orders kept apart',
+    !!coupe && coupe.took.length === 2 && coupe.took.find(t => t.orderId === o1.id)?.days === 35 && coupe.took.find(t => t.orderId === o2.id)?.days === 28
+    && coupe.open.length === 1 && coupe.open[0].days === 28 && coupe.open[0].orderNumber === 'OSE-0003', coupe);
+  const txt = coupe ? leadText(coupe) : null;
+  check('lead: a bible row reads "4 wks (2 orders) · on order 4 wks" (not all estimated, so no ~)',
+    txt?.took === '5 wks (2 orders)' && txt?.open === 'on order 4 wks' && /28 days|4 wks/.test(txt.title) && /OSE-0003 sent 4 wks ago/.test(txt.title), txt);
+  check('lead: a bible number E&E carries with its SP prefix is found; one that matches nothing is not',
+    !!leadForItem(idx, 'LM40Z025') && leadForItem(idx, 'LM40-Z025')?.open.length === 1 && leadForItem(idx, 'NOPE12345') === null && leadForItem(idx, '24') === null);
+  check('lead: median of an even list rounds the middle two', median([28, 35]) === 32 && median([5]) === 5 && median([]) === 0);
+
+  // per vendor: storage-fee orders are not purchases
+  const fee = order({ vendor_name: 'EE Mercantile', order_number: 'WHS-0001', sent_on: '2026-10-01', sent_source: 'po_date' });
+  const vl = vendorLeadTimes([o1, o2, o3, fee], [...ls, line(fee, { description: 'TNG delivery - 10/07 - 3 CASES TNG-NAPKIN', sku: null, status: 'INVOICED' })], '2026-11-03');
+  check('lead: by vendor — delivered orders, open ones oldest first, fee-only orders left out',
+    vl.length === 1 && vl[0].took.length === 2 && vl[0].approx === 1 && vl[0].open.length === 1 && vl[0].open[0].order.id === o3.id, vl);
+
+  // the order panel: a sent day typed in is kept from then on
+  const d = orderDraft(o2, [], '2026-11-03');
+  const same = planOrderSave(o2, [], { ...d, lines: [lineDraft(line(o2))] }, { items: [], received: () => 0 });
+  const typed = planOrderSave(o2, [], { ...d, sent_on: '2026-07-30', lines: [lineDraft(line(o2))] }, { items: [], received: () => 0 });
+  check('lead: the panel saves a changed sent day as typed in (manual); unchanged, nothing',
+    d.sent_on === '2026-08-01' && !('sent_on' in same.order) && typed.order.sent_on === '2026-07-30' && typed.order.sent_source === 'manual', typed.order);
+
+  const shipped = line(o2, { status: 'SHIPPED' });
+  const dd = orderDraft(o2, [shipped], '2026-11-03');
+  const mark = (day: string) => planOrderSave(o2, [shipped], { ...dd, delivered_on: day, lines: dd.lines.map(l => ({ ...l, status: 'DELIVERED' as const })) }, { items: [], received: () => 0 });
+  check('lead: marking lines delivered on an earlier day saves that day (manual); today is left to the database',
+    mark('2026-10-20').updates[0]?.patch.delivered_on === '2026-10-20' && mark('2026-10-20').updates[0]?.patch.delivered_source === 'manual'
+    && !('delivered_on' in (mark('2026-11-03').updates[0]?.patch ?? {})) && arrivesNow('SHIPPED', 'RECEIVED') && !arrivesNow('DELIVERED', 'RECEIVED'));
+  const names = vendorLeadTimes([o1, { ...o3, vendor_name: 'E&E Mercantile Co.' }, { ...o2, vendor_name: 'EE MERCANTILE' }], ls, '2026-11-03');
+  check('lead: one vendor row however the name is written', names.length === 1 && names[0].took.length === 2 && names[0].open.length === 1, names.map(v => v.vendor));
+  check('lead: sort "Sent longest ago" — the oldest sent first, no day last',
+    sortOrders([{ o: o3, ls: [] }, { o: order({ sent_on: null }), ls: [] }, { o: o1, ls: [] }], 'sent', () => '').map(r => r.o.sent_on).join(',') === '2026-07-01,2026-10-06,');
+
+  // the bible's Item # column, found under its header row
+  const cell = (text: string) => ({ text, style: {}, link: null, image: null, rowSpan: 1, colSpan: 1, covered: false });
+  const sheet = { name: 'Glassware', colWidths: [80, 80, 80, 80], frozenRows: 0, frozenCols: 0, floats: [], truncated: false,
+    rows: [{ height: 20, cells: [cell('Delilah'), cell(''), cell(''), cell('')] },
+      { height: 20, cells: [cell('Image'), cell('Item'), cell('Manufacturer'), cell('Manufacturer Item #')] },
+      { height: 20, cells: [cell(''), cell('Coupe'), cell('Pasabahce'), cell('P67296')] }] };
+  const ic = bibleItemColumn(sheet);
+  check('lead: the bible\'s Item # / SKU column under its header row', ic?.headerRow === 1 && ic?.col === 3, ic);
+  check('lead: a sheet with no item-number column has none', bibleItemColumn({ ...sheet, rows: sheet.rows.map(r => ({ ...r, cells: r.cells.slice(0, 3) })) }) === null);
+
+  // wiring
+  const bv = src('src/components/orderTracker/BibleView.tsx'), ov = src('src/components/orderTracker/OrdersView.tsx'), dr = src('src/components/orderTracker/OrderDrawer.tsx');
+  check('lead: bibles show the lead time column (pinned right) from the tracker\'s orders',
+    /productLeadIndex\(data\.orders, data\.lines, today\)/.test(bv) && /className="ch lt"/.test(bv) && /<BibleView data=\{data\} today=\{today\} \/>/.test(src('src/screens/OrderTracker.tsx')));
+  check('lead: the list has a Sent column with open / took; the panel has Sent to vendor',
+    /<th>Sent<\/th>/.test(ov) && /timingText\(timing\)/.test(ov) && /label="Sent to vendor"/.test(dr));
+  check('lead: Overview lists lead times by vendor; Ask AI gets sent days and lead times',
+    /<LeadTimes data=\{data\}/.test(src('src/screens/OrderTracker.tsx')) && /sent to the vendor \$\{t\.sentOn\}/.test(src('src/lib/askAiOrders.ts')) && /lead time from orders/.test(src('src/lib/askAiOrders.ts')));
+  const fn = sibling('supabase', 'functions', 'kount-order-mail', 'index.ts');
+  if (fn) check('lead: the morning pull dates orders from the e-mail that sent them (never over a typed-in day)',
+    /await sentPhase\(sb, stats\);/.test(fn) && /sentToVendor\(thread\.get\(c\)!, domains, docMessages/.test(fn) && /sent_source\.in\.\(sheet,po_date\)/.test(fn) && /action === 'sent'/.test(fn));
+  const mig = sibling('supabase', 'migrations', '0147_kount_ot_lead_times.sql');
+  if (mig) check('lead: 0147 stamps the delivered day on the step into Delivered / Received only',
+    /before insert or update of status, delivered_on on public\.kount_ot_lines/.test(mig) && /not was_delivered/.test(mig));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

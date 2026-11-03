@@ -281,6 +281,17 @@ export function bibleFromCsv(rows: string[][], name: string): BibleBook {
 export interface BibleIndexSheet { name: string; header: string[]; rows: string[][] }
 export interface BibleIndex { sheets: BibleIndexSheet[] }
 const HEADER_WORD = /\b(item|description|manufacturer|vendor|qty|quantity|sku|size|status|link)\b/i;
+const ITEM_NO = /item\s*(#|no\b|number)|\bsku\b|mfr\.?\s*#/i;
+
+/** The row naming the columns (as bibleTextIndex finds it) and its Item # / SKU column — where a row's product
+ *  number is, to look up its lead time (0147). Null when the sheet has none. */
+export function bibleItemColumn(sheet: BibleSheet): { headerRow: number; col: number } | null {
+  const texts = sheet.rows.slice(0, 8).map(r => r.cells.map(c => (c.covered ? '' : c.text.trim())));
+  const h = texts.findIndex(r => r.filter(Boolean).length >= 3 && r.some(x => HEADER_WORD.test(x)));
+  if (h < 0) return null;
+  const col = texts[h].findIndex(x => ITEM_NO.test(x));
+  return col < 0 ? null : { headerRow: h, col };
+}
 
 /** A bible's cell text by sheet (no pictures, no styling): its header row (the first of the top rows that
  *  names columns like Item / Manufacturer / QTY), then every row with at least two filled cells. Empty

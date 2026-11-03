@@ -1,17 +1,19 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { VENUES } from '@/lib/access';
 import { orderVenues } from '@/lib/orderTracker';
-import { bibleFromCsv, bibleTextIndex, loadBible, type BibleBook, type BibleSheet } from '@/lib/bibleRender';
+import { bibleFromCsv, bibleItemColumn, bibleTextIndex, loadBible, type BibleBook, type BibleSheet } from '@/lib/bibleRender';
+import { leadForItem, leadText, productLeadIndex, type ProductLead } from '@/lib/leadTime';
 import { parseCsv } from '@/lib/sheetPreview';
-import { documentUrl, loadBibles, saveBibleIndex, uploadBible, type Bible } from '@/lib/orderTrackerData';
+import { documentUrl, loadBibles, saveBibleIndex, uploadBible, type Bible, type TrackerData } from '@/lib/orderTrackerData';
 import { shortDate } from './shared';
 import { Icon } from './ui';
 
 /** Each venue's OS&E bible, drawn as it looks in Excel (bibleRender): pick the venue, then the sheet. */
 const cache = new Map<string, Promise<BibleBook>>();             // a workbook once per session (they run to 25 MB)
-const ROW_HEAD = 40, COL_HEAD = 22;
+const ROW_HEAD = 40, COL_HEAD = 22, LEAD_COL = 170;
 
-export function BibleView() {
+/** `data` / `today`: the tracker's orders, for each product's lead time by its item number (0147). */
+export function BibleView({ data, today }: { data: TrackerData; today: string }) {
   const [bibles, setBibles] = useState<Bible[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [venue, setVenue] = useState('');
@@ -25,6 +27,7 @@ export function BibleView() {
   const mine = useMemo(() => (bibles ?? []).filter(b => b.venue_id === venue), [bibles, venue]);
   useEffect(() => { if (!mine.some(b => b.id === bibleId)) setBibleId(mine[0]?.id ?? ''); }, [mine, bibleId]);
   const bible = mine.find(b => b.id === bibleId) ?? null;
+  const leads = useMemo(() => productLeadIndex(data.orders, data.lines, today), [data.orders, data.lines, today]);
 
   return (
     <>
@@ -42,7 +45,7 @@ export function BibleView() {
       {err && <div className="ot-note crit">{err}</div>}
       {!bibles ? <div className="ot-card"><div className="ot-empty"><p>Loading…</p></div></div>
         : !bible ? <div className="ot-card"><div className="ot-empty"><h3>No bible yet</h3><p>Add a venue's bible (the Excel workbook) and it shows here as it looks in Excel.</p></div></div>
-        : <BibleDoc key={bible.id} bible={bible} onReplaced={() => void reload()} />}
+        : <BibleDoc key={bible.id} bible={bible} leads={leads} onReplaced={() => void reload()} />}
     </>
   );
 }
@@ -72,7 +75,7 @@ function AddBible({ venues, onDone }: { venues: Array<{ id: string; name: string
   );
 }
 
-function BibleDoc({ bible, onReplaced }: { bible: Bible; onReplaced: () => void }) {
+function BibleDoc({ bible, leads, onReplaced }: { bible: Bible; leads: Map<string, ProductLead>; onReplaced: () => void }) {
   const [book, setBook] = useState<BibleBook | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [sheet, setSheet] = useState(0);
@@ -128,7 +131,7 @@ function BibleDoc({ bible, onReplaced }: { bible: Bible; onReplaced: () => void 
                 {book.sheets.map((s, i) => <button key={s.name + i} type="button" role="tab" aria-selected={i === sheet} onClick={() => setSheet(i)}>{s.name}</button>)}
               </div>
             )}
-            {book.sheets[sheet] ? <BibleGrid sheet={book.sheets[sheet]} urls={urls} /> : <div className="ot-empty"><p>This workbook has no sheets to show.</p></div>}
+            {book.sheets[sheet] ? <BibleGrid sheet={book.sheets[sheet]} urls={urls} leads={leads} /> : <div className="ot-empty"><p>This workbook has no sheets to show.</p></div>}
           </>
         )}
     </div>
@@ -139,9 +142,22 @@ const colName = (i: number): string => (i < 26 ? String.fromCharCode(65 + i) : c
 
 /** One sheet as Excel draws it: fixed column widths and row heights, fills / fonts / borders, merges,
  *  frozen rows / columns, links, pictures in cells and floating pictures by their anchors. */
-function BibleGrid({ sheet, urls }: { sheet: BibleSheet; urls: Map<string, string> }) {
+function BibleGrid({ sheet, urls, leads }: { sheet: BibleSheet; urls: Map<string, string>; leads: Map<string, ProductLead> }) {
   const cols = sheet.colWidths.map((w, i) => ({ w, i })).filter(c => c.w > 0);
-  const total = cols.reduce((s, c) => s + c.w, 0);
+  // each row's lead time, by the number in its Item # / SKU column — the column shows only when some row has one
+  const itemCol = useMemo(() => bibleItemColumn(sheet), [sheet]);
+  const rowLead = useMemo(() => {
+    const m = new Map<number, ReturnType<typeof leadText>>();
+    if (!itemCol) return m;
+    sheet.rows.forEach((r, ri) => {
+      const c = ri > itemCol.headerRow ? r.cells[itemCol.col] : undefined;
+      const p = c && !c.covered ? leadForItem(leads, c.text) : null;
+      if (p && (p.took.length || p.open.length)) m.set(ri, leadText(p));
+    });
+    return m;
+  }, [sheet, itemCol, leads]);
+  const leadCol = rowLead.size > 0 ? LEAD_COL : 0;
+  const total = cols.reduce((s, c) => s + c.w, 0) + leadCol;
   const frozenTop: number[] = [];
   let acc = COL_HEAD;
   sheet.rows.forEach((r, i) => { frozenTop[i] = acc; if (i < sheet.frozenRows) acc += r.height; });
@@ -154,8 +170,9 @@ function BibleGrid({ sheet, urls }: { sheet: BibleSheet; urls: Map<string, strin
     <div className="ot-bible-scroll">
       <div style={{ position: 'relative', width: total + ROW_HEAD }}>
         <table className="ot-bible" style={{ width: total + ROW_HEAD }}>
-          <colgroup><col style={{ width: ROW_HEAD }} />{cols.map(c => <col key={c.i} style={{ width: c.w }} />)}</colgroup>
-          <thead><tr style={{ height: COL_HEAD }}><th className="corner" />{cols.map(c => <th key={c.i} className="ch">{colName(c.i)}</th>)}</tr></thead>
+          <colgroup><col style={{ width: ROW_HEAD }} />{cols.map(c => <col key={c.i} style={{ width: c.w }} />)}{leadCol > 0 && <col style={{ width: leadCol }} />}</colgroup>
+          <thead><tr style={{ height: COL_HEAD }}><th className="corner" />{cols.map(c => <th key={c.i} className="ch">{colName(c.i)}</th>)}
+            {leadCol > 0 && <th className="ch lt" title="From Kount's orders of the same item number: the day it went to the vendor to the day it was delivered">Lead time</th>}</tr></thead>
           <tbody>
             {sheet.rows.map((r, ri) => (r.height === 0 ? null : (
               <tr key={ri} style={{ height: r.height }}>
@@ -182,6 +199,12 @@ function BibleGrid({ sheet, urls }: { sheet: BibleSheet; urls: Map<string, strin
                     </td>
                   );
                 })}
+                {leadCol > 0 && (() => {
+                  const lt = rowLead.get(ri);
+                  const sticky: CSSProperties = ri < sheet.frozenRows ? { top: frozenTop[ri], zIndex: 5 } : {};
+                  if (itemCol && ri === itemCol.headerRow) return <td className="lt hd" style={sticky}>Lead time (orders)</td>;
+                  return <td className="lt" style={sticky} title={lt?.title}>{lt ? <>{lt.took}{lt.took && lt.open ? ' · ' : ''}{lt.open && <span className="open">{lt.open}</span>}</> : null}</td>;
+                })()}
               </tr>
             )))}
           </tbody>

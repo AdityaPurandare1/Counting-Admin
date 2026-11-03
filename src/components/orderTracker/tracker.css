@@ -234,4 +234,9 @@ select.ot-inp { appearance: none; -webkit-appearance: none; padding-right: 28px;
 .ot-bible th.corner { left: 0; z-index: 6; }
 .ot-bible th.rh { position: sticky; left: 0; z-index: 4; background: #F8F9FA; color: #5F6368; font: 500 11px Arial, sans-serif; border: 1px solid #DADCE0; text-align: center; padding: 0; }
 .ot-bible img.cellimg { display: block; max-width: 100%; margin: auto; object-fit: contain; }
+/* lead time from Kount's orders (0147): pinned at the right edge, not part of the workbook */
+.ot-bible th.lt, .ot-bible td.lt { position: sticky; right: 0; z-index: 3; background: #F3F6FB; border-left: 2px solid #C9D3E3; font: 12px Arial, sans-serif; white-space: nowrap; color: #1F2A3A; padding: 1px 6px; overflow: hidden; text-overflow: ellipsis; }
+.ot-bible th.lt { top: 0; z-index: 6; background: #E8EEF7; font-weight: 600; color: #3A4A63; }
+.ot-bible td.lt .open { color: #9A5B00; }
+.ot-bible td.lt.hd { font-weight: 600; color: #3A4A63; }
 .ot-bible img.float { position: absolute; z-index: 1; object-fit: contain; pointer-events: none; }

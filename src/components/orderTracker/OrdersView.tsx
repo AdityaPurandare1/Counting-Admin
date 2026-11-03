@@ -5,6 +5,7 @@ import {
 } from '@/lib/orderTracker';
 import { FULFILLMENT, fulfillmentOf, fulfillmentStep, lastUpdate, nextEta, orderCategory, paymentOf, stubsToGet, timeAgo, type PaymentView } from '@/lib/orderTrackerView';
 import type { TrackerData } from '@/lib/orderTrackerData';
+import { orderTiming, timingText } from '@/lib/leadTime';
 import { fmtMoney, shortDate } from './shared';
 import { OrderDrawer } from './OrderDrawer';
 import { DocChips, DocViewer, Icon, docSort, isOtherDoc, latestByName } from './ui';
@@ -127,7 +128,7 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
           <div className="ot-table-wrap">
             <table className="ot-tbl">
               <thead><tr>
-                <th>Order</th><th>Venue</th><th>Fulfillment</th><th>Payment</th><th className="r">Lines</th><th>Next ETA</th><th className="r">Value</th>
+                <th>Order</th><th>Venue</th><th>Fulfillment</th><th>Payment</th><th className="r">Lines</th><th>Sent</th><th>Next ETA</th><th className="r">Value</th>
                 <th>Documents</th><th>Other</th><th className="r">Updated</th>
               </tr></thead>
               <tbody>
@@ -136,6 +137,7 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
                   const ful = fulfillmentOf(head);
                   const step = fulfillmentStep(head);
                   const eta = nextEta(o, ls);
+                  const timing = orderTiming(o, ls, today);
                   const liveLines = ls.filter(l => l.status !== 'CANCELLED');
                   const docs = docsByOrder.get(o.id) ?? [];
                   const vIds = o.venue_id === MULTIPLE_VENUES ? orderVenueIds(o, ls) : [];
@@ -157,6 +159,10 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
                         {pay.state === 'unpaid' && pay.oldestDays != null && <div className="t2">{pay.oldestDays ? `${pay.oldestDays} day${pay.oldestDays === 1 ? '' : 's'} waiting` : 'invoiced today'}</div>}
                       </td>
                       <td className="r num">{ls.length}{late > 0 && <span className="ot-pill crit" style={{ marginLeft: 6 }}>{late} late</span>}</td>
+                      <td className="num" style={{ whiteSpace: 'nowrap' }} title={timing.approx ? 'An estimate: the PO date or an ETA stands in for a day not known' : undefined}>
+                        {timing.sentOn ? shortDate(timing.sentOn) : <span className="faint">—</span>}
+                        {timing.state !== 'unsent' && <div className="t2" style={timing.state === 'open' && (timing.days ?? 0) >= 42 ? { color: 'var(--ot-warn)' } : undefined}>{timingText(timing)}</div>}
+                      </td>
                       <td className="num" style={eta && eta < today && late ? { color: 'var(--ot-crit)', fontWeight: 600 } : undefined}>{eta ? shortDate(eta) : <span className="faint">—</span>}</td>
                       <td className="r num">{fmtMoney(liveLines.reduce((s, l) => s + lineTotal(l), 0))}</td>
                       <td><DocChips docs={docs.filter(d => !isOtherDoc(d))} onOpen={setViewing} /></td>

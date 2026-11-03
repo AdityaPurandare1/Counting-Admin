@@ -9,6 +9,7 @@ import {
 import { loadTracker, type TrackerData } from '@/lib/orderTrackerData';
 import { buildReportWorkbook } from '@/lib/orderTrackerReport';
 import { attentionItems, stubsToGet, trackerKpis, type Attention } from '@/lib/orderTrackerView';
+import { median, spanText, vendorLeadTimes } from '@/lib/leadTime';
 import { OrdersView, type OrdersPreset } from '@/components/orderTracker/OrdersView';
 import { AttachStubButton, Icon } from '@/components/orderTracker/ui';
 import '@/components/orderTracker/tracker.css';
@@ -186,7 +187,7 @@ export function OrderTracker({ today: todayProp, load = loadTracker, loadMail = 
             {view === 'inbox' && <InboxView items={inbox} orders={data.orders} lines={data.lines} onReview={i => { setReviewing(i); setDocFile(null); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
               onOpenOrder={id => { setFocusOrder(id); setView('orders'); }} onChanged={() => void reload()} />}
             {view === 'warehouse' && <WarehouseView data={data} today={today} venueName={venueName} onReload={() => void reload()} />}
-            {view === 'bibles' && <BibleView />}
+            {view === 'bibles' && <BibleView data={data} today={today} />}
             {view === 'overview' && <Overview data={data} today={today} venueName={venueName} onOpen={id => { setFocusOrder(id); setView('orders'); }} onReload={() => void reload()} />}
             </div>
           </div>
@@ -217,6 +218,7 @@ function Overview({ data, today, venueName, onOpen, onReload }: { data: TrackerD
   return (
     <div style={{ display: 'grid', gap: 14 }}>
       <StubsToGet data={data} onOpen={onOpen} onReload={onReload} />
+      <LeadTimes data={data} today={today} onOpen={onOpen} />
       <Card padding={16}>
         <div style={{ fontWeight: 700, marginBottom: 8 }}>Where every line is</div>
         {funnel.map(f => (
@@ -273,6 +275,40 @@ function Overview({ data, today, venueName, onOpen, onReload }: { data: TrackerD
       </Card>
       <div style={subTxt}>An order's status is its least-advanced line. {STATUS_LABEL.CANCELLED} lines are left out of every count.</div>
     </div>
+  );
+}
+
+/** Lead times by vendor (0147): sent to the vendor -> delivered, and the orders still open the longest. */
+function LeadTimes({ data, today, onOpen }: { data: TrackerData; today: string; onOpen: (orderId: string) => void }) {
+  const rows = useMemo(() => vendorLeadTimes(data.orders, data.lines, today), [data.orders, data.lines, today]);
+  if (!rows.length) return null;
+  const range = (xs: number[]) => (xs.length > 1 ? `${spanText(Math.min(...xs))} – ${spanText(Math.max(...xs))}` : '');
+  return (
+    <Card flush padding={0}>
+      <div style={{ padding: '12px 14px', fontWeight: 700 }}>Lead times <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--fg-muted)' }}>
+        from the day an order went to the vendor to the day it was delivered · ~ = estimated (delivery day from the ETA, or the PO date for the sent day)</span></div>
+      <table style={tbl}>
+        <thead><tr style={headRow}><th style={th}>Vendor</th><th style={thR}>Typical</th><th style={th}>Range</th><th style={thR}>Delivered orders</th><th style={th}>Open the longest</th></tr></thead>
+        <tbody>{rows.map(v => (
+          <tr key={v.vendor} style={rowBorder}>
+            <td style={td}>{v.vendor}</td>
+            <td style={tdNum}>{v.took.length ? `${v.approx === v.took.length ? '~' : ''}${spanText(median(v.took))}` : '—'}</td>
+            <td style={{ ...td, color: 'var(--fg-secondary)' }}>{range(v.took)}</td>
+            <td style={tdNum}>{v.took.length || '—'}{v.approx > 0 && v.approx < v.took.length ? <span style={subTxt}> ({v.approx} est.)</span> : null}</td>
+            <td style={td}>{v.open.length === 0 ? <span style={subTxt}>none open</span> : (
+              <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 6 }}>
+                {v.open.slice(0, 3).map(x => (
+                  <button key={x.order.id} style={linkBtn} onClick={() => onOpen(x.order.id)} title={`Sent ${shortDate(x.order.sent_on!)} — not delivered yet`}>
+                    {x.order.order_number || 'No order #'} · {spanText(x.days)}
+                  </button>
+                ))}
+                {v.open.length > 3 && <span style={subTxt}>+{v.open.length - 3} more</span>}
+              </span>
+            )}</td>
+          </tr>
+        ))}</tbody>
+      </table>
+    </Card>
   );
 }
 
