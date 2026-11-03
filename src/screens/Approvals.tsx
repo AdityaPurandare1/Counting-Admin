@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import type { AccessEntry } from '@/lib/access';
 import type { UpcMapping, KountPendingItem } from '@/lib/types';
@@ -6,6 +6,7 @@ import { Btn, Card, Eyebrow, Pill, Segment } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
 
 import { can } from '@/lib/access';
+import { groupPending, linkState, needsPick, searchTerm, upcNorm, type Owner, type UpcGroup } from '@/lib/upcApprovals';
 /* ───────────────────────────────────────────────────────────────────────
    Approvals queue (desktop v0.17)
 
@@ -97,6 +98,10 @@ function UpcQueue({ user, onCount }: { user: AccessEntry; onCount: (n: number) =
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
+  // v0.97: the catalog item each row links to, and the item that already has each barcode
+  const [names, setNames] = useState<Map<string, string>>(new Map());
+  const [owners, setOwners] = useState<Map<string, Owner>>(new Map());
+  const [picking, setPicking] = useState<UpcGroup | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -110,7 +115,17 @@ function UpcQueue({ user, onCount }: { user: AccessEntry; onCount: (n: number) =
     const list = (data ?? []) as UpcMapping[];
     setRows(list);
     onCount(list.length);
+    const ids = [...new Set(list.map(r => r.master_item_id).filter((x): x is string => !!x))];
+    const norms = [...new Set(list.map(r => upcNorm(r.barcode_raw)).filter(Boolean))];
+    const [{ data: ms }, { data: os }] = await Promise.all([
+      ids.length ? supabase.from('master_items').select('id,name').in('id', ids) : Promise.resolve({ data: [] }),
+      norms.length ? supabase.from('master_item_upcs').select('upc_normalized,master_item_id,master_items(name)').in('upc_normalized', norms) : Promise.resolve({ data: [] }),
+    ]);
+    setNames(new Map(((ms ?? []) as Array<{ id: string; name: string }>).map(m => [m.id, m.name])));
+    setOwners(new Map(((os ?? []) as unknown as Array<{ upc_normalized: string; master_item_id: string; master_items: { name: string } | null }>)
+      .map(o => [o.upc_normalized, { id: o.master_item_id, name: o.master_items?.name ?? o.master_item_id }])));
   }, [onCount]);
+  const groups = useMemo(() => groupPending(rows), [rows]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -122,29 +137,38 @@ function UpcQueue({ user, onCount }: { user: AccessEntry; onCount: (n: number) =
     return () => { supabase.removeChannel(ch); };
   }, [load]);
 
-  const act = async (row: UpcMapping, approve: boolean) => {
+  /** Approve or reject a group (the same scan sent several times = one decision). A row with no catalog item
+   *  asks which one first — approve_upc_mapping cannot guess it from a name typed on the phone. */
+  const act = async (g: UpcGroup, approve: boolean, masterId?: string) => {
     if (!canAct) return;
+    const row = g.first;
+    if (approve && !masterId && !row.master_item_id) { setPicking(g); return; }
     setBusyId(row.id);
     setLastError(null);
     const rpc = approve ? 'approve_upc_mapping' : 'reject_upc_mapping';
-    const { data, error } = await supabase.rpc(rpc, {
-      p_mapping_id: row.id,
-      p_admin_email: user.email,
-      p_admin_name:  user.name,
-      ...(approve ? {} : { p_reason: null }),
-    });
-    setBusyId(null);
-    if (error || (data && (data as { ok?: boolean }).ok === false)) {
-      const msg = (data && (data as { error?: string }).error) || error?.message || 'unknown error';
-      setLastError(`${approve ? 'Approve' : 'Reject'} via ${rpc} RPC failed for ${row.barcode_raw} → ${row.item_name}: ${msg}`);
-      console.warn('[approvals] RPC failed:', { rpc, row, data, error });
-      return;
+    const done: string[] = [];
+    for (const r of g.rows) {
+      const { data, error } = await supabase.rpc(rpc, {
+        p_mapping_id: r.id,
+        p_admin_email: user.email,
+        p_admin_name:  user.name,
+        ...(approve ? (masterId ? { p_master_item_id: masterId } : {}) : { p_reason: null }),
+      });
+      if (error || (data && (data as { ok?: boolean }).ok === false)) {
+        const msg = (data && (data as { error?: string }).error) || error?.message || 'unknown error';
+        if (approve && needsPick(msg)) { setBusyId(null); setPicking(g); return; }
+        setLastError(`${approve ? 'Approve' : 'Reject'} via ${rpc} RPC failed for ${r.barcode_raw} → ${r.item_name}: ${msg}`);
+        console.warn('[approvals] RPC failed:', { rpc, row: r, data, error });
+        break;
+      }
+      done.push(r.id);
     }
+    setBusyId(null);
     // Optimistic removal: without this, the only feedback the admin gets is
     // the row disappearing via realtime — and realtime's 2 events/sec cap
     // can throttle, leaving the admin staring at a row that "didn't
     // respond" and re-clicking. Realtime will reconcile naturally.
-    const nextRows = rows.filter(r => r.id !== row.id);
+    const nextRows = rows.filter(r => !done.includes(r.id));
     setRows(nextRows);
     onCount(nextRows.length);
   };
@@ -276,14 +300,21 @@ function UpcQueue({ user, onCount }: { user: AccessEntry; onCount: (n: number) =
               </tr>
             </thead>
             <tbody>
-              {rows.map(r => (
-                <tr key={r.id} style={{ borderBottom: '1px solid var(--border)' }}>
+              {groups.map(g => { const r = g.first; const link = linkState(r, owners); const target = r.master_item_id ? names.get(r.master_item_id) ?? 'a catalog item' : null; return (
+                <tr key={g.key} style={{ borderBottom: '1px solid var(--border)' }}>
                   <td style={{ padding: '10px 4px', fontFamily: 'JetBrains Mono, monospace', fontWeight: 600 }}>
                     {r.barcode_raw}
+                    {g.rows.length > 1 && <span title="The same scan was sent more than once; Approve / Reject takes them all" style={{ marginLeft: 8 }}><Pill tone="neutral" size="sm">×{g.rows.length}</Pill></span>}
                   </td>
                   <td style={{ padding: '10px 4px' }}>
                     <div style={{ fontWeight: 500 }}>{r.item_name}</div>
                     {r.item_brand && <div style={{ fontSize: 11, color: 'var(--fg-muted)' }}>{r.item_brand}</div>}
+                    {link.kind === 'no-item' && <div style={{ fontSize: 11.5, color: 'var(--copper-400, #A0703A)', marginTop: 2 }}>
+                      Not in the catalog under this name — Approve asks which item it is{link.owner ? `; this barcode is already on "${link.owner.name}"` : ''}.</div>}
+                    {link.kind === 'new' && target && <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', marginTop: 2 }}>→ links to {target}</div>}
+                    {link.kind === 'same' && <div style={{ fontSize: 11.5, color: 'var(--fg-muted)', marginTop: 2 }}>Already linked to {target} — approving just clears it.</div>}
+                    {link.kind === 'other-owner' && <div style={{ fontSize: 11.5, color: 'var(--raspberry-400)', marginTop: 2 }}>
+                      Barcode is already on "{link.owner!.name}" — Approve leaves it there; Force moves it to {target}.</div>}
                   </td>
                   <td style={{ padding: '10px 4px', color: 'var(--fg-muted)' }}>
                     {r.item_category ?? '—'}
@@ -295,8 +326,8 @@ function UpcQueue({ user, onCount }: { user: AccessEntry; onCount: (n: number) =
                   <td style={{ padding: '10px 4px', textAlign: 'right' }}>
                     {canAct ? (
                       <div style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                        <Btn variant="positive" size="sm" leading={Ic.check(12)} onClick={() => void act(r, true)}  disabled={busyId === r.id}>Approve</Btn>
-                        <Btn variant="critical" size="sm" leading={Ic.close(12)} onClick={() => void act(r, false)} disabled={busyId === r.id}>Reject</Btn>
+                        <Btn variant="positive" size="sm" leading={Ic.check(12)} onClick={() => void act(g, true)}  disabled={busyId === r.id}>{link.kind === 'no-item' ? 'Approve as…' : 'Approve'}</Btn>
+                        <Btn variant="critical" size="sm" leading={Ic.close(12)} onClick={() => void act(g, false)} disabled={busyId === r.id}>Reject</Btn>
                         {can(user, 'admin:force-approve') && (
                           <Btn variant="ghost" size="sm" onClick={() => void forceApprove(r)} disabled={busyId === r.id} title="Skip the RPC and commit the mapping directly. Use if Approve errors out.">Force</Btn>
                         )}
@@ -306,12 +337,62 @@ function UpcQueue({ user, onCount }: { user: AccessEntry; onCount: (n: number) =
                     )}
                   </td>
                 </tr>
-              ))}
+              ); })}
             </tbody>
           </table>
         )}
       </Card>
+      {picking && <PickMaster group={picking} owner={linkState(picking.first, owners).owner} onClose={() => setPicking(null)}
+        onPick={id => { const g = picking; setPicking(null); void act(g, true, id); }} />}
     </>
+  );
+}
+
+/** Which catalog item a scanned barcode is (v0.97): the item that already has the barcode first, then a search
+ *  of the active catalog (it starts from the submitted name's first words). */
+function PickMaster({ group, owner, onClose, onPick }: { group: UpcGroup; owner: Owner | null; onClose: () => void; onPick: (masterId: string) => void }) {
+  const r = group.first;
+  const [q, setQ] = useState(searchTerm(r.item_name));
+  const [hits, setHits] = useState<Array<{ id: string; name: string; category: string | null }>>([]);
+  useEffect(() => {
+    const t = q.trim();
+    if (t.length < 2) { setHits([]); return; }
+    const timer = setTimeout(() => {
+      const like = '%' + t.split(/\s+/).join('%') + '%';
+      void supabase.from('master_items').select('id,name,category').eq('is_active', true).ilike('name', like).order('name').limit(30)
+        .then(({ data }) => setHits((data ?? []) as Array<{ id: string; name: string; category: string | null }>));
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [q]);
+  const row = (id: string, name: string, note: string | null) => (
+    <button key={id} type="button" onClick={() => onPick(id)}
+      style={{ display: 'flex', width: '100%', textAlign: 'left', gap: 10, alignItems: 'baseline', padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 8,
+        background: '#FFF', font: 'inherit', cursor: 'pointer', marginBottom: 6 }}>
+      <span style={{ fontWeight: 500 }}>{name}</span>{note && <span style={{ fontSize: 11.5, color: 'var(--fg-muted)' }}>{note}</span>}
+    </button>
+  );
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(13,10,8,0.45)', zIndex: 60, display: 'grid', placeItems: 'center', padding: 20 }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ width: '100%', maxWidth: 560, maxHeight: '80vh', overflow: 'auto', background: '#FFF', border: '1px solid var(--border)', borderRadius: 12, padding: 22 }}>
+        <Eyebrow>Approve barcode</Eyebrow>
+        <h2 style={{ margin: '6px 0 4px', fontSize: 18 }}>Which catalog item is {r.barcode_raw}?</h2>
+        <div style={{ fontSize: 12.5, color: 'var(--fg-muted)', marginBottom: 12 }}>
+          Sent as "{r.item_name}" by {r.submitted_by_name ?? r.submitted_by_email}{group.rows.length > 1 ? ` (${group.rows.length} times)` : ''} — that name is not an item in the catalog.
+        </div>
+        {owner && <>
+          <div style={{ fontSize: 11, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--fg-muted)', margin: '4px 0 6px' }}>Already has this barcode</div>
+          {row(owner.id, owner.name, 'scans already find this item — picking it just clears the request')}
+        </>}
+        <div style={{ fontSize: 11, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--fg-muted)', margin: '10px 0 6px' }}>Search the catalog</div>
+        <input value={q} onChange={e => setQ(e.target.value)} autoFocus placeholder="Item name"
+          style={{ width: '100%', padding: '8px 10px', border: '1px solid var(--border-strong)', borderRadius: 8, font: 'inherit', marginBottom: 10 }} />
+        {owner && hits.some(h => h.id !== owner.id) && <div style={{ fontSize: 12, color: 'var(--raspberry-400)', marginBottom: 8 }}>
+          Picking another item approves the request, but the barcode stays on "{owner.name}" — Force moves it.</div>}
+        {hits.filter(h => h.id !== owner?.id).map(h => row(h.id, h.name, h.category))}
+        {q.trim().length >= 2 && !hits.length && <div style={{ fontSize: 12.5, color: 'var(--fg-muted)' }}>No active catalog item matches. Add it on Catalog first, or Reject the scan.</div>}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}><Btn variant="ghost" size="sm" onClick={onClose}>Cancel</Btn></div>
+      </div>
+    </div>
   );
 }
 
