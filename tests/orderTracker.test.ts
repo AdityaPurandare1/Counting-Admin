@@ -889,5 +889,30 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   check('Overview lists them by R365 payment with Attach stub (on every order of the payment)', /<StubsToGet /.test(ot) && /orderIds=\{g\.items\.map\(i => i\.orderId\)\}/.test(ot));
 }
 
+// ── an invoice PDF for lines that already have it (Delilah Mints Sept order, 11/3) ──
+{
+  const o = order({ order_number: 'CUS-0013', venue_id: 'x:Multiple venues', deliver_to: 'venue' });
+  const mk = (venue_id: string, inv: string, status: OtLine['status']) => line(o, { description: 'Mints — custom', sku: null, qty: 5, unit: 'case', unit_price: 98.72, invoice_number: inv, venue_id, status });
+  const la = mk('v1', 'INV-2026-418297', 'DELIVERED'), hq = mk('x:h.wood Corporate', 'INV-2026-702662', 'SHIPPED'), dal = mk('x:Delilah Dallas', 'INV-2026-244133', 'DELIVERED');
+  const data = { orders: [o], lines: [la, hq, dal], items: [], documents: [] as OtDocument[] };
+  const inv = (doc_number: string, bill_to: string): ReadDoc => ({ doc_kind: 'invoice', is_credit: false, vendor_name: 'EE Mercantile', doc_number, doc_date: '2026-08-31', order_number: '',
+    expected_date: '', tracking_numbers: [], subtotal: 493.6, total: 529.39, bill_to, ship_to: '',
+    lines: [{ line_kind: 'product', description: 'DELILAH - MINTS 1000/CS', sku: '', qty: 5, unit: 'case', unit_price: 98.72, line_total: 493.6, pack_size: 1000 }, { line_kind: 'tax', description: 'Tax 7.25%', sku: '', qty: 0, unit: '', unit_price: 0, line_total: 35.79, pack_size: 0 }] });
+  const src = { id: 'ib-hq', message_id: 'M-mints', conversation_id: 'T-mints', file_name: 'Invoice-INV-2026-702662 (1).pdf', storage_path: 'docs/ib-hq.pdf' };
+  const venues = [{ id: 'v1', name: 'Delilah LA' }, { id: 'x:Delilah Dallas', name: 'Delilah Dallas' }, { id: 'x:h.wood Corporate', name: 'h.wood Corporate' }];
+  const d = decideMailDocument(inv('INV-2026-702662', 'Delilah LA'), src, data, '2026-11-03', x => '$' + x.toFixed(2), { autoCreate: true, venues });
+  check('known invoice: the HQ invoice billed to LA goes on the HQ line (its own number), not the LA line', d.state === 'applied'
+    && !d.payload.updates.some(u => u.id === la.id) && !d.payload.new_lines.length, d);
+  check('known invoice: the PDF goes on the order, only the HQ line is touched (its invoice date filled), no status change',
+    d.state === 'applied' && d.payload.order_id === o.id && d.payload.document.doc_number === 'INV-2026-702662'
+    && d.payload.updates.every(u => u.id === hq.id && !('status' in u)) && d.payload.updates[0]?.invoice_date === '2026-08-31', d.state === 'applied' ? d.payload.updates : d);
+  const full = { ...data, lines: [la, { ...hq, invoice_date: '2026-08-31' }, dal] };
+  const again = decideMailDocument(inv('INV-2026-702662', 'Delilah LA'), src, full, '2026-11-03', x => '$' + x.toFixed(2), { autoCreate: true, venues });
+  check('known invoice: nothing on it changes the order → the PDF is still attached ("Attached to …"), not left waiting',
+    again.state === 'applied' && !again.payload.updates.length && /^Attached to CUS-0013/.test(again.reason), again.state === 'applied' ? JSON.stringify(again.payload.updates) : again);
+  const dd = decideMailDocument(inv('INV-2026-244133', 'Delilah Dallas'), { ...src, id: 'ib-dal' }, data, '2026-11-03', x => '$' + x.toFixed(2), { autoCreate: true, venues });
+  check('known invoice: never moves a delivered line back to Invoiced', dd.state === 'applied' && !dd.payload.updates.some(u => 'status' in u), dd);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
