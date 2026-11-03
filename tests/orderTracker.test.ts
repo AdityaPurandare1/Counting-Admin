@@ -8,7 +8,8 @@ import { join } from 'node:path';
 import {
   statusRank, headlineStatus, orderState, isLate, statusAfterDocument, matchDocLines, matchItem, matchOrder,
   onHand, receivedForLine, stockRows, releasesByVenue, validateNewOrder, similarity, addDays, sameVendor,
-  planDocRows, planDocumentSave, documentChecks, decideMailDocument, extractTracking, trackingUrl, orderForEmail, venueForDoc, type ReadDoc, type MailSource,
+  planDocRows, planDocumentSave, documentChecks, decideMailDocument, extractTracking, trackingUrl, orderForEmail, venueForDoc, filterByVenue, sortOrders, orderVenueIds,
+  type ReadDoc, type MailSource,
   type OtItem, type OtLine, type OtMove, type OtOrder, type OtDocument, type DocLine, type DocReview,
 } from '../src/lib/orderTracker';
 import { pricePoints, histories, priceMoves, quoteChecks, invoiceRegister, spendByMonth, isInvoiced, priceMovesCsv } from '../src/lib/orderPrices';
@@ -291,7 +292,9 @@ check('"other" documents change nothing', statusAfterDocument('ORDERED', 'other'
   const dupDoc: OtDocument = { id: 'd0', order_id: o.id, kind: 'invoice', doc_number: 'inv 9', doc_date: null, vendor_name: 'EE Mercantile Inc', total: 7032, file_name: null, storage_path: null, created_at: '2026-10-06T10:00:00Z' };
   check('checks: the same invoice from the same vendor again', documentChecks(base, printed, { ...known, documents: [dupDoc] }, fmt).some(c => c.includes('already added on 2026-10-06')));
   check('checks: ...but not another vendor\'s invoice with that number', !documentChecks(base, printed, { ...known, documents: [{ ...dupDoc, vendor_name: 'Uline' }] }, fmt).some(c => c.includes('already added')));
-  check('checks: an invoice # already typed onto lines', documentChecks(base, printed, { ...known, lines: [{ ...bagLine, invoice_number: 'INV-9' }] }, fmt).some(c => c.includes('already on 1 line')));
+  const otherOrder = order({ order_number: 'PO-OTHER' });
+  check('checks: an invoice # already typed onto ANOTHER order lines', documentChecks(base, printed, { ...known, orders: [o, otherOrder], lines: [bagLine, line(otherOrder, { invoice_number: 'INV-9' })] }, fmt).some(c => c.includes('already on 1 line')));
+  check('checks: ...but not when it is on the order being updated (saving updates those lines)', !documentChecks(base, printed, { ...known, lines: [{ ...bagLine, invoice_number: 'INV-9' }] }, fmt).some(c => c.includes('already on')));
   check('checks: order from another vendor', documentChecks({ ...base, vendor: 'Uline' }, printed, known, fmt).some(c => c.includes('chosen order is from EE Mercantile')));
   check('checks: credit memo', documentChecks(base, printed, known, fmt).some(c => c.includes('credit memo')));
   check('checks: line on another invoice', documentChecks({ ...base, orderLines: [onOther], rows: [{ ...rows[0], target: onOther.id }] }, printed, known, fmt).some(c => c.includes('already on invoice INV-1')));
@@ -360,7 +363,7 @@ check('"other" documents change nothing', statusAfterDocument('ORDERED', 'other'
   check('report: archived orders never included', !all.orders.some(r => r[0] === 'PO-ARCH'));
   check('report: completed included on request', all.orders.length === 3 && openOnly.orders.length === 2, [all.orders.length, openOnly.orders.length]);
   check('report: order status column is the headline status', all.orders.find(r => r[0] === 'PO-OPEN')?.[6] === 'Shipped');
-  check('report: a line row per line with invoice #', all.lines.length === 3 && all.lines.some(r => r[11] === 'INV-5'));
+  check('report: a line row per line with invoice # (and its venue)', all.lines.length === 3 && all.lines.some(r => r[12] === 'INV-5') && all.lines[0][2] === 'Venue');
   check('report: warehouse on hand', all.warehouse.length === 2 && all.warehouse[1][4] === 96, all.warehouse[1]);
   check('report: warehouse incoming column', all.warehouse[0][5] === 'Incoming (not received yet)' && all.warehouse[1][5] === 100, all.warehouse[1]);
   // prepaid: a SHIPPED line has been invoiced and paid, so it is spend too (Aug, from its status date)
@@ -478,17 +481,44 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   const other = line(o, { description: 'MEPRA - WINE COOLER', sku: '200680', status: 'QUOTED' });
   const d1: OtDocument = { id: 'd1', order_id: o.id, kind: 'quote', doc_number: 'Q-OTHER', doc_date: null, vendor_name: 'EE Mercantile', total: 1, file_name: null, storage_path: null, created_at: '', source_conversation_id: 'T1' };
   const second = decideMailDocument(quote(), src(), { orders: [o], lines: [other], items: [], documents: [d1] }, '2026-11-02', fmt, { autoCreate: true, venues });
-  check('auto-create: same thread, no shared item -> its own new order', second.state === 'applied' && !!second.payload.new_order, second);
+  check('one request = one order: new items in the same thread are ADDED to its order, not a new one', second.state === 'applied' && second.payload.order_id === o.id && !second.payload.new_order && second.payload.new_lines.length === 1, second);
   const same = line(o, { description: 'LIBBEY - CONTOUR GOBLET GLASS 16 OZ/ 12', sku: '9156', qty: 6, status: 'QUOTED', unit_price: 68.84, quote_number: 'Q-OTHER' });
   const follow = decideMailDocument(quote({ doc_kind: 'invoice', doc_number: 'INV-9' }), src(), { orders: [o], lines: [same], items: [], documents: [d1] }, '2026-11-02', fmt, { autoCreate: true, venues });
   const feeOnly = decideMailDocument(quote({ doc_kind: 'invoice', doc_number: 'INV-2026-885072', subtotal: 494.4, total: 494.4,
     lines: [dl({ line_kind: 'freight', description: 'Shipping fee', sku: '', qty: 1, unit_price: 494.4, line_total: 494.4, pack_size: 0 })] }), src({ conversation_id: 'T9' }), empty, '2026-11-02', fmt, { autoCreate: true, venues });
   check('auto-create: a shipping-fee-only invoice starts an order too', feeOnly.state === 'applied' && feeOnly.payload.new_lines.length === 1, feeOnly);
-  const invoiced = line(o, { description: 'LIBBEY - CONTOUR GOBLET GLASS 16 OZ/ 12', sku: '9156', qty: 6, status: 'INVOICED', unit_price: 68.84, invoice_number: 'INV-A' });
-  const perVenue = decideMailDocument(quote({ doc_kind: 'invoice', doc_number: 'INV-B' }), src(), { orders: [o], lines: [invoiced], items: [], documents: [d1] }, '2026-11-02', fmt, { autoCreate: true, venues });
-  check('auto-create: same item already on ANOTHER invoice in the thread -> its own order (per-venue invoices)', perVenue.state === 'applied' && !!perVenue.payload.new_order, perVenue);
+  const miami = { ...o, venue_id: 'v5' };
+  const invoiced = line(miami, { description: 'LIBBEY - CONTOUR GOBLET GLASS 16 OZ/ 12', sku: '9156', qty: 6, status: 'INVOICED', unit_price: 68.84, invoice_number: 'INV-A' });
+  const perVenue = decideMailDocument(quote({ doc_kind: 'invoice', doc_number: 'INV-B' }), src(), { orders: [miami], lines: [invoiced], items: [], documents: [d1] }, '2026-11-02', fmt, { autoCreate: true, venues });
+  check('per-venue invoices of one request: the LA invoice joins the Miami order as an LA line, the order serves several venues',
+    perVenue.state === 'applied' && perVenue.payload.order_id === o.id && perVenue.payload.new_lines[0]?.venue_id === 'v4'
+    && perVenue.payload.order_patch?.venue_id === 'x:Multiple venues' && perVenue.payload.updates.length === 0, perVenue);
   check('auto-create: the invoice after the quote updates that order (no new one)', follow.state === 'applied' && follow.payload.order_id === o.id && !follow.payload.new_order
     && follow.payload.updates[0]?.status === 'INVOICED', follow);
+}
+
+// ── Orders list: filter by venue, sort ─────────────────────────────────
+{
+  const o1 = order({ order_number: 'OSE-0002', venue_id: 'v1', ordered_on: '2026-09-01', expected_on: '2026-11-20' });
+  const o2 = order({ order_number: 'OSE-0010', venue_id: 'x:Multiple venues', ordered_on: '2026-10-01', expected_on: null });
+  const o3 = order({ order_number: 'CUS-0003', vendor_name: 'Uline', venue_id: 'v3', ordered_on: '2026-08-15', expected_on: '2026-11-05' });
+  const rows = [
+    { o: o1, ls: [line(o1, { qty: 1, unit_price: 100, status: 'PAID', status_at: '2026-10-01T00:00:00Z' })] },
+    { o: o2, ls: [line(o2, { qty: 2, unit_price: 500, status: 'QUOTED', venue_id: 'v2' }), line(o2, { qty: 1, unit_price: 50, status: 'SHIPPED', venue_id: 'x:Delilah Dallas' })] },
+    { o: o3, ls: [line(o3, { qty: 3, unit_price: 10, status: 'DELIVERED', status_at: '2026-10-30T00:00:00Z' })] },
+  ];
+  const vn = (id: string | null) => ({ v1: 'Delilah LA', v2: 'Delilah Miami', v3: 'The Nice Guy', 'x:Delilah Dallas': 'Delilah Dallas' } as Record<string, string>)[id ?? ''] ?? '';
+  const nums = (rs: typeof rows) => rs.map(r => r.o.order_number).join(',');
+  check('venue filter: an order serving several venues shows under each of them', nums(filterByVenue(rows, 'x:Delilah Dallas')) === 'OSE-0010' && nums(filterByVenue(rows, 'v2')) === 'OSE-0010');
+  check('venue filter: single-venue orders by their venue; none = all', nums(filterByVenue(rows, 'v1')) === 'OSE-0002' && filterByVenue(rows, '').length === 3);
+  check('venues of an order', orderVenueIds(o2, rows[1].ls).sort().join() === 'v2,x:Delilah Dallas' && orderVenueIds(o1, rows[0].ls).join() === 'v1');
+  check('sort: newest / oldest', nums(sortOrders(rows, 'newest', vn)) === 'OSE-0010,OSE-0002,CUS-0003' && nums(sortOrders(rows, 'oldest', vn)) === 'CUS-0003,OSE-0002,OSE-0010');
+  check('sort: total high to low', nums(sortOrders(rows, 'total-desc', vn)) === 'OSE-0010,OSE-0002,CUS-0003');
+  check('sort: expected soonest, no date last', nums(sortOrders(rows, 'expected', vn)) === 'CUS-0003,OSE-0002,OSE-0010', nums(sortOrders(rows, 'expected', vn)));
+  check('sort: status, earliest stage first', nums(sortOrders(rows, 'status', vn)) === 'OSE-0010,OSE-0002,CUS-0003');
+  check('sort: order # in number order', nums(sortOrders(rows, 'number', vn)) === 'CUS-0003,OSE-0002,OSE-0010');
+  check('sort: venue A-Z (an order serving several sorts by its first venue)', nums(sortOrders(rows, 'venue', vn)) === 'OSE-0010,OSE-0002,CUS-0003', nums(sortOrders(rows, 'venue', vn)));
+  check('sort never changes the list it was given', nums(rows) === 'OSE-0002,OSE-0010,CUS-0003');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -45,7 +45,7 @@ export function buildReportRows(inp: ReportInput): ReportSheets {
     .sort((a, b) => (a.ordered_on ?? a.created_at).localeCompare(b.ordered_on ?? b.created_at));
 
   const orders: Cell[][] = [['Order #', 'Vendor', 'For', 'Deliver to', 'Ordered', 'Expected', 'Status', 'State', 'Lines', 'Order total', 'Invoiced', 'Invoice #s', 'Tracking #s', 'Last update']];
-  const lines: Cell[][] = [['Order #', 'Vendor', 'Item', 'SKU', 'Qty', 'Unit', 'Unit price', 'Line total', 'Status', 'Status since',
+  const lines: Cell[][] = [['Order #', 'Vendor', 'Venue', 'Item', 'SKU', 'Qty', 'Unit', 'Unit price', 'Line total', 'Status', 'Status since',
     'Quote #', 'Invoice #', 'Invoice date', 'Tracking #', 'Expected', 'Received into warehouse']];
   for (const o of shown) {
     const ls = (linesByOrder.get(o.id) ?? []).slice().sort((a, b) => a.sort - b.sort);
@@ -61,7 +61,7 @@ export function buildReportRows(inp: ReportInput): ReportSheets {
     for (const l of ls) {
       const item = l.item_id ? itemById.get(l.item_id) : undefined;
       const tracked = item?.track_stock && o.deliver_to === 'warehouse';
-      lines.push([o.order_number ?? '', o.vendor_name, item?.name ?? l.description, l.sku ?? item?.sku ?? '', l.qty, l.unit ?? item?.unit ?? '',
+      lines.push([o.order_number ?? '', o.vendor_name, inp.venueName(l.venue_id ?? o.venue_id), item?.name ?? l.description, l.sku ?? item?.sku ?? '', l.qty, l.unit ?? item?.unit ?? '',
         l.unit_price, l.unit_price != null ? r2(lineTotal(l)) : null, STATUS_LABEL[l.status], l.status_at.slice(0, 10),
         l.quote_number ?? '', l.invoice_number ?? '', l.invoice_date ?? '', l.tracking_number ?? '', l.expected_on ?? o.expected_on ?? '',
         tracked ? receivedForLine(inp.moves, l.id) : null]);

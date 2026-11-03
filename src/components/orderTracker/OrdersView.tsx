@@ -1,8 +1,9 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { Btn, Card, Pill, Segment } from '@/components/atoms';
 import {
-  ALL_STATUSES, STATUS_LABEL, extractTracking, headlineStatus, isLate, lineTotal, orderState, receivedForLine, statusRank, isoDay, trackingUrl,
-  type LineStatus, type OtLine, type OtOrder, type OrderState,
+  ALL_STATUSES, MULTIPLE_VENUES, ORDER_SORTS, STATUS_LABEL, extractTracking, filterByVenue, headlineStatus, isLate, lineTotal, orderState, orderVenueIds, receivedForLine,
+  sortOrders, statusRank, isoDay, trackingUrl,
+  type LineStatus, type OrderSort, type OtLine, type OtOrder, type OrderState,
 } from '@/lib/orderTracker';
 import { addLines, addMove, addTracking, deleteLine, documentUrl, loadEvents, removeTracking, updateLine, updateOrder, type EventRow, type TrackerData } from '@/lib/orderTrackerData';
 import { StatusPill, errBox, fmtMoney, fmtQty, headRow, linkBtn, picker, rowBorder, shortDate, smallInput, subTxt, tbl, td, tdNum, th, thR } from './shared';
@@ -15,6 +16,8 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId }: {
   const [q, setQ] = useState('');
   const [state, setState] = useState<StateFilter>('open');
   const [vendor, setVendor] = useState('');
+  const [venue, setVenue] = useState('');
+  const [sort, setSort] = useState<OrderSort>('newest');
   const [open, setOpen] = useState<string | null>(focusOrderId);
   useEffect(() => { if (focusOrderId) setOpen(focusOrderId); }, [focusOrderId]);
 
@@ -25,10 +28,13 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId }: {
     return m;
   }, [data.lines]);
   const vendors = useMemo(() => [...new Set(data.orders.map(o => o.vendor_name))].sort(), [data.orders]);
+  // the venues orders are for, by name (an order serving several counts for each)
+  const venues = useMemo(() => [...new Set(data.orders.flatMap(o => orderVenueIds(o, linesByOrder.get(o.id) ?? [])))]
+    .map(id => ({ id, name: venueName(id) })).sort((a, b) => a.name.localeCompare(b.name)), [data.orders, linesByOrder, venueName]);
 
   const rows = useMemo(() => {
     const term = q.trim().toLowerCase();
-    return data.orders.map(o => {
+    const list = data.orders.map(o => {
       const ls = linesByOrder.get(o.id) ?? [];
       return { o, ls, st: orderState(o, ls) as OrderState, head: headlineStatus(ls) };
     }).filter(r => {
@@ -40,8 +46,9 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId }: {
         ...data.tracking.filter(t => t.order_id === r.o.id).map(t => t.tracking_number)]
         .filter(Boolean).join(' ').toLowerCase();
       return hay.includes(term);
-    }).sort((a, b) => (b.o.ordered_on ?? b.o.created_at).localeCompare(a.o.ordered_on ?? a.o.created_at));
-  }, [data.orders, data.tracking, linesByOrder, q, state, vendor, venueName]);
+    });
+    return sortOrders(filterByVenue(list, venue), sort, venueName);
+  }, [data.orders, data.tracking, linesByOrder, q, state, vendor, venue, sort, venueName]);
 
   return (
     <>
@@ -56,6 +63,15 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId }: {
           <option value="">All vendors</option>
           {vendors.map(v => <option key={v} value={v}>{v}</option>)}
         </select>
+        <select style={picker} value={venue} onChange={e => setVenue(e.target.value)} aria-label="Venue">
+          <option value="">All venues</option>
+          {venues.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+        </select>
+        <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 12, color: 'var(--fg-muted)' }}>Sort
+          <select style={picker} value={sort} onChange={e => setSort(e.target.value as OrderSort)} aria-label="Sort orders">
+            {ORDER_SORTS.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+          </select>
+        </label>
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>{rows.length} order{rows.length === 1 ? '' : 's'}</span>
       </div>
@@ -86,7 +102,8 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId }: {
                           <div style={{ fontWeight: 600 }}>{o.order_number || 'No order #'}</div>
                           <div style={subTxt}>{o.vendor_name} · {shortDate(o.ordered_on ?? o.created_at)}</div>
                         </td>
-                        <td style={td}>{o.venue_id ? venueName(o.venue_id) : 'Warehouse stock'}<div style={subTxt}>delivers to {o.deliver_to}</div></td>
+                        <td style={td}>{o.venue_id === MULTIPLE_VENUES ? orderVenueIds(o, ls).map(v => venueName(v)).join(', ') : o.venue_id ? venueName(o.venue_id) : 'Warehouse stock'}
+                          <div style={subTxt}>{o.venue_id === MULTIPLE_VENUES ? `${orderVenueIds(o, ls).length} venues · ` : ''}delivers to {o.deliver_to}</div></td>
                         <td style={td}>
                           <StatusPill status={head} />
                           {st !== 'open' && <span style={{ marginLeft: 6 }}><Pill tone="ghost" size="sm">{st}</Pill></span>}
@@ -188,7 +205,7 @@ function OrderDetail({ order, lines, data, today, venueName, onReload }: {
     <div style={{ padding: '12px 14px 16px' }}>
       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'baseline', fontSize: 12, color: 'var(--fg-secondary)' }}>
         <span><b>{order.vendor_name}</b></span>
-        <span>For {order.venue_id ? venueName(order.venue_id) : 'warehouse stock'} · delivers to {order.deliver_to}</span>
+        <span>For {order.venue_id === MULTIPLE_VENUES ? orderVenueIds(order, lines).map(v => venueName(v)).join(', ') : order.venue_id ? venueName(order.venue_id) : 'warehouse stock'} · delivers to {order.deliver_to}</span>
         <span>Ordered {shortDate(order.ordered_on)}</span>
         <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>Expected
           <input key={`${order.id}:${order.updated_at}:e`} type="date" style={smallInput} defaultValue={order.expected_on ?? ''} onBlur={e => { const v = e.target.value || null; if (v !== order.expected_on) void run(() => updateOrder(order.id, { expected_on: v })); }} />
@@ -240,7 +257,7 @@ function OrderDetail({ order, lines, data, today, venueName, onReload }: {
                   <tr style={rowBorder}>
                     <td style={{ ...td, maxWidth: 280 }}>
                       <div style={{ fontWeight: 600 }}>{item?.name ?? l.description}</div>
-                      <div style={subTxt}>{[l.sku, l.quote_number && `quote ${l.quote_number}`, isLate(l, order, today, got) && 'late'].filter(Boolean).join(' · ') || ' '}</div>
+                      <div style={subTxt}>{[l.venue_id && order.venue_id === MULTIPLE_VENUES && venueName(l.venue_id), l.sku, l.quote_number && `quote ${l.quote_number}`, isLate(l, order, today, got) && 'late'].filter(Boolean).join(' · ') || ' '}</div>
                     </td>
                     <td style={tdNum}><input key={`${l.id}:${l.updated_at ?? ''}:q`} style={{ ...smallInput, width: 64, textAlign: 'right' }} defaultValue={fmtQty(l.qty)} onBlur={e => saveField(l, 'qty', e.target.value)} /> <span style={subTxt}>{l.unit ?? item?.unit ?? ''}</span></td>
                     <td style={tdNum}><input key={`${l.id}:${l.updated_at ?? ''}:p`} style={{ ...smallInput, width: 84, textAlign: 'right' }} defaultValue={l.unit_price ?? ''} placeholder="—" onBlur={e => saveField(l, 'unit_price', e.target.value)} /></td>
