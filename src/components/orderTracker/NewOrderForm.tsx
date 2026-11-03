@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Btn, Card, Eyebrow, Segment } from '@/components/atoms';
 import { VENUES } from '@/lib/access';
-import { isoDay, validateNewOrder, type DraftLine, type LineStatus, type OtItem, type OtOrder } from '@/lib/orderTracker';
+import { isoDay, orderVenues, validateNewOrder, type DraftLine, type LineStatus, type OtItem, type OtOrder } from '@/lib/orderTracker';
 import { createOrder } from '@/lib/orderTrackerData';
 import { errBox, lbl, picker } from './shared';
 
@@ -68,7 +68,7 @@ export function NewOrderForm({ items, orders, onSaved, onCancel }: {
         <label style={lbl}>For venue
           <select style={picker} value={venueId} onChange={e => setVenueId(e.target.value)}>
             <option value="">All / warehouse stock</option>
-            {VENUES.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+            {orderVenues(VENUES).map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
           </select>
         </label>
         <label style={lbl}>Ordered on

@@ -3,7 +3,7 @@ import type { AccessEntry } from '@/lib/access';
 import { VENUES } from '@/lib/access';
 import { Btn, Card, Eyebrow, Pill, Segment } from '@/components/atoms';
 import {
-  STATUSES, STATUS_LABEL, isLate, isoDay, lineTotal, orderState, receivedForLine, statusRank, stockRows,
+  STATUSES, STATUS_LABEL, isLate, isoDay, lineTotal, orderState, orderVenueName, receivedForLine, statusRank, stockRows,
   type OtLine,
 } from '@/lib/orderTracker';
 import { loadTracker, type TrackerData } from '@/lib/orderTrackerData';
@@ -13,7 +13,7 @@ import { OrdersView } from '@/components/orderTracker/OrdersView';
 import { WarehouseView } from '@/components/orderTracker/WarehouseView';
 import { DocumentReview } from '@/components/orderTracker/DocumentReview';
 import { InboxView } from '@/components/orderTracker/InboxView';
-import { loadInbox, redecideInbox, type InboxItem } from '@/lib/orderMail';
+import { inboxGroups, loadInbox, redecideInbox, type InboxItem } from '@/lib/orderMail';
 import { StatusPill, download, errBox, fmtCompact, fmtMoney, headRow, linkBtn, rowBorder, shortDate, subTxt, tbl, td, tdNum, th, thR } from '@/components/orderTracker/shared';
 
 /* ───────────────────────────────────────────────────────────────────────
@@ -61,9 +61,9 @@ export function OrderTracker({ today: todayProp, load = loadTracker, loadMail = 
     } finally { if (s === seq.current) setLoading(false); }
   }, [load, loadMail]);
   useEffect(() => { void reload(); }, [reload]);
-  const waiting = inbox.filter(i => i.state === 'pending' || i.state === 'error').length;
+  const waiting = inboxGroups(inbox).waiting.length;
 
-  const venueName = useCallback((id: string | null) => (id ? VENUES.find(v => v.id === id)?.name ?? id : 'Warehouse'), []);
+  const venueName = useCallback((id: string | null) => orderVenueName(id, VENUES), []);
 
   const downloadReport = async () => {
     if (!data) return;

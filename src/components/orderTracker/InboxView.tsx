@@ -3,7 +3,7 @@ import { Btn, Card, Pill } from '@/components/atoms';
 import { DOC_KIND_LABEL, headlineStatus, STATUS_LABEL, trackingUrl, type OtLine, type OtOrder } from '@/lib/orderTracker';
 import { addTracking, documentUrl } from '@/lib/orderTrackerData';
 import {
-  disconnectMail, inboxGroups, isTrackingEmail, mailStatus, pollConnect, pullNow, setAutoCreate, setDocKinds, setInboxState, setVendorDomains, startConnect,
+  disconnectMail, inboxGroups, isPaymentStub, isTrackingEmail, mailStatus, pollConnect, pullNow, setAutoCreate, setDocKinds, setInboxState, setVendorDomains, startConnect,
   type DeviceCode, type InboxItem, type MailStatus,
 } from '@/lib/orderMail';
 import { errBox, fmtMoney, linkBtn, okBox, picker, shortDate, smallInput, subTxt } from './shared';
@@ -14,6 +14,7 @@ export function InboxView({ items, orders, lines, onReview, onOpenOrder, onChang
 }) {
   const g = inboxGroups(items);
   const [showSkipped, setShowSkipped] = useState(false);
+  const [showStubs, setShowStubs] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   const skip = async (i: InboxItem, back = false) => {
@@ -35,7 +36,7 @@ export function InboxView({ items, orders, lines, onReview, onOpenOrder, onChang
           <>
             {isTrackingEmail(i)
               ? <TrackingApply item={i} orders={orders} lines={lines} onDone={onChanged} />
-              : i.parsed && <Btn variant="primary" size="sm" onClick={() => onReview(i)}>Review</Btn>}
+              : i.parsed && Array.isArray(i.parsed.lines) && <Btn variant="primary" size="sm" onClick={() => onReview(i)}>Review</Btn>}
             <Btn variant="ghost" size="sm" onClick={() => void skip(i)}>Skip</Btn>
           </>
         } />)}
@@ -56,6 +57,15 @@ export function InboxView({ items, orders, lines, onReview, onOpenOrder, onChang
         {g.applied.map(i => <InboxRow key={i.id} item={i} actions={i.order_id ? <Btn variant="ghost" size="sm" onClick={() => onOpenOrder(i.order_id!)}>Open order</Btn> : null} />)}
       </Card>
 
+      {g.stubs.length > 0 && (
+        <Card padding={16}>
+          <button style={{ ...linkBtn, fontSize: 13 }} onClick={() => setShowStubs(s => !s)}>
+            {showStubs ? 'Hide' : 'Show'} check stubs waiting for their order ({g.stubs.length}) — they go on by themselves once that invoice is in the tracker
+          </button>
+          {showStubs && g.stubs.map(i => <InboxRow key={i.id} item={i} actions={null} />)}
+        </Card>
+      )}
+
       {g.skipped.length > 0 && (
         <Card padding={16}>
           <button style={{ ...linkBtn, fontSize: 13 }} onClick={() => setShowSkipped(s => !s)}>
@@ -75,7 +85,8 @@ function InboxRow({ item: i, actions }: { item: InboxItem; actions: ReactNode })
     try { window.open(await documentUrl(i.storage_path), '_blank', 'noopener'); } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
   };
   const body = isTrackingEmail(i);
-  const what = body ? `Tracking ${(d?.tracking ?? []).map(t => `${t.carrier} ${t.number}`).join(', ')}` : d ? [d.is_credit ? 'Credit memo' : DOC_KIND_LABEL[d.doc_kind] ?? d.doc_kind, d.vendor_name, d.doc_number && `#${d.doc_number}`, d.total ? fmtMoney(d.total) : null].filter(Boolean).join(' · ') : null;
+  const stub = isPaymentStub(i);
+  const what = stub ? `Check stub · ${(d?.invoices ?? []).join(', ')}` : body ? `Tracking ${(d?.tracking ?? []).map(t => `${t.carrier} ${t.number}`).join(', ')}` : d ? [d.is_credit ? 'Credit memo' : DOC_KIND_LABEL[d.doc_kind] ?? d.doc_kind, d.vendor_name, d.doc_number && `#${d.doc_number}`, d.total ? fmtMoney(d.total) : null].filter(Boolean).join(' · ') : null;
   return (
     <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', padding: '10px 0', borderTop: '1px solid var(--border)', marginTop: 8, flexWrap: 'wrap' }}>
       <div style={{ flex: '1 1 320px', minWidth: 0 }}>
@@ -88,7 +99,7 @@ function InboxRow({ item: i, actions }: { item: InboxItem; actions: ReactNode })
         {err && <div style={{ fontSize: 12, color: 'var(--raspberry-300)' }}>{err}</div>}
       </div>
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-        {!body && <button style={{ ...linkBtn, fontSize: 12 }} onClick={() => void open()} title={i.file_name ?? ''}>PDF</button>}
+        {!body && <button style={{ ...linkBtn, fontSize: 12 }} onClick={() => void open()} title={i.file_name ?? ''}>{stub ? 'File' : 'PDF'}</button>}
         {body && (d?.tracking ?? []).map(t => <a key={t.number} href={trackingUrl(t)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12 }}>track</a>)}
         {actions}
       </div>

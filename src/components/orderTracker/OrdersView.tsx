@@ -326,7 +326,7 @@ function OrderDetail({ order, lines, data, today, venueName, onReload }: {
         {docs.length > 0 && <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>Documents:</span>}
         {docs.map(d => (
           <button key={d.id} style={{ ...linkBtn, fontSize: 12 }} onClick={() => void openDoc(d.storage_path)} title={d.file_name ?? ''}>
-            {d.kind} {d.doc_number ?? ''} ({shortDate(d.doc_date ?? d.created_at)})
+            {d.kind === 'payment' ? 'check stub' : d.kind} {d.doc_number ?? ''} ({shortDate(d.doc_date ?? d.created_at)})
           </button>
         ))}
       </div>

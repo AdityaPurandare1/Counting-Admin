@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Btn, Card, Eyebrow, Pill } from '@/components/atoms';
 import { VENUES } from '@/lib/access';
 import {
-  DOC_KIND_LABEL, STATUS_LABEL, documentChecks, matchOrder, planDocRows, planDocumentSave, statusAfterDocument, headlineStatus,
+  DOC_KIND_LABEL, STATUS_LABEL, documentChecks, matchOrder, orderVenues, planDocRows, planDocumentSave, statusAfterDocument, headlineStatus,
   type DocKind, type DocRowPlan, type LineStatus,
 } from '@/lib/orderTracker';
 import {
@@ -184,7 +184,7 @@ export function DocumentReview({ file, inbox = null, data, today, onDone, onCanc
                 <label style={lbl}>For venue
                   <select style={picker} value={venueId} onChange={e => setVenueId(e.target.value)}>
                     <option value="">All / warehouse stock</option>
-                    {VENUES.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                    {orderVenues(VENUES).map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
                   </select>
                 </label>
               </>

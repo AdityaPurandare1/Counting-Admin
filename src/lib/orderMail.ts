@@ -24,7 +24,7 @@ export interface InboxItem {
   size_bytes: number | null;
   storage_path: string;
   state: InboxState;
-  parsed: (ReadDoc & { bill_to?: string; ship_to?: string; tracking?: TrackingHit[]; excerpt?: string }) | null;
+  parsed: (ReadDoc & { bill_to?: string; ship_to?: string; tracking?: TrackingHit[]; excerpt?: string; kind?: 'payment'; invoices?: string[] }) | null;
   attempts: number;
   read_error: string | null;
   decision: string | null;
@@ -98,6 +98,8 @@ export const pullNow = () => invokeMail<{ started: boolean; reason?: string }>({
 export const redecideInbox = () => invokeMail<{ applied: number }>({ action: 'redecide' });
 
 export const isTrackingEmail = (i: Pick<InboxItem, 'attachment_id'>) => i.attachment_id === 'body';
+/** a check stub (0139): goes onto its order by itself once that invoice is tracked */
+export const isPaymentStub = (i: Pick<InboxItem, 'parsed'>) => i.parsed?.kind === 'payment';
 
 export async function disconnectMail(): Promise<void> {
   const { error } = await supabase.rpc('kount_ot_mail_disconnect');
@@ -130,7 +132,8 @@ export function inboxGroups(items: InboxItem[], today: Date = new Date()) {
   const since = new Date(today.getTime() - 30 * 86_400_000).toISOString();
   const byNewest = (a: InboxItem, b: InboxItem) => (b.received_at ?? b.created_at).localeCompare(a.received_at ?? a.created_at);
   return {
-    waiting: items.filter(i => i.state === 'pending' || i.state === 'error').sort(byNewest),
+    waiting: items.filter(i => (i.state === 'pending' || i.state === 'error') && !isPaymentStub(i)).sort(byNewest),
+    stubs: items.filter(i => i.state === 'pending' && isPaymentStub(i)).sort(byNewest),
     reading: items.filter(i => i.state === 'unread').sort(byNewest),
     applied: items.filter(i => i.state === 'applied' && i.updated_at >= since).sort(byNewest),
     skipped: items.filter(i => i.state === 'ignored').sort(byNewest),
