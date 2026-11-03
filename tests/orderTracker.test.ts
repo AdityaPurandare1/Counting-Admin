@@ -9,7 +9,7 @@ import {
   statusRank, headlineStatus, orderState, isLate, statusAfterDocument, matchDocLines, matchItem, matchOrder,
   onHand, receivedForLine, stockRows, releasesByVenue, validateNewOrder, similarity, addDays, sameVendor,
   planDocRows, planDocumentSave, documentChecks, decideMailDocument, extractTracking, trackingUrl, orderForEmail, venueForDoc, filterByVenue, sortOrders, orderVenueIds,
-  planStorageLine, storageMoveRows, isStorageLine,
+  planStorageLine, storageMoveRows, isStorageLine, autoOrderNumber,
   type ReadDoc, type MailSource,
   type OtItem, type OtLine, type OtMove, type OtOrder, type OtDocument, type DocLine, type DocReview,
 } from '../src/lib/orderTracker';
@@ -468,6 +468,7 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   const empty = { orders: [], lines: [], items: [], documents: [] };
   const fmt = (x: number) => '$' + x.toFixed(2);
   const a = decideMailDocument(quote(), src(), empty, '2026-11-02', fmt, { autoCreate: true, venues });
+  check('auto-create: the new order gets the next order #', a.state === 'applied' && a.payload.new_order?.order_number === 'OSE-0001', a.state === 'applied' && a.payload.new_order);
   check('auto-create: a quote with no order starts one at Quoted, for its venue', a.state === 'applied' && !!a.payload.new_order && a.payload.new_order.venue_id === 'v4'
     && a.payload.new_order.deliver_to === 'venue' && a.payload.new_lines[0]?.status === 'QUOTED' && a.payload.document.source_conversation_id === 'T1', a);
   check('auto-create off: it waits', decideMailDocument(quote(), src(), empty, '2026-11-02', fmt, {}).state === 'pending');
@@ -488,6 +489,15 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   const feeOnly = decideMailDocument(quote({ doc_kind: 'invoice', doc_number: 'INV-2026-885072', subtotal: 494.4, total: 494.4,
     lines: [dl({ line_kind: 'freight', description: 'Shipping fee', sku: '', qty: 1, unit_price: 494.4, line_total: 494.4, pack_size: 0 })] }), src({ conversation_id: 'T9' }), empty, '2026-11-02', fmt, { autoCreate: true, venues });
   check('auto-create: a shipping-fee-only invoice starts an order too', feeOnly.state === 'applied' && feeOnly.payload.new_lines.length === 1, feeOnly);
+  const fee = (description: string, line_total: number) => dl({ line_kind: 'fee', description, sku: '', qty: 1, unit_price: line_total, line_total, pack_size: 0 });
+  const storage = (lines: DocLine[]) => decideMailDocument(quote({ doc_kind: 'invoice', doc_number: 'INV-2026-794351', bill_to: 'h.wood Group', ship_to: '',
+    subtotal: lines.reduce((s, l) => s + l.line_total, 0), total: lines.reduce((s, l) => s + l.line_total, 0), lines }), src({ conversation_id: 'T-whs' }), empty, '2026-11-03', fmt, { autoCreate: true, venues });
+  const oneVenue = storage([fee('TNG - delivery 10/28/2026 SKU: TNG-EURO (2)', 31.8)]);
+  check('auto-create: billed to h.wood, the venue comes from the line ("TNG delivery"), and it is a WHS order',
+    oneVenue.state === 'applied' && oneVenue.payload.new_order?.venue_id === 'v9' && oneVenue.payload.new_order?.deliver_to === 'venue' && oneVenue.payload.new_order?.order_number === 'WHS-0001', oneVenue.state === 'applied' && oneVenue.payload.new_order);
+  const twoVenues = storage([fee('TNG delivery - 10/12/2026 - 3 CASES TNG-EURO', 34.8), fee('Delilah LA delivery - 10/13/2026 - 2cs bags', 28.8)]);
+  check('auto-create: two venues on one storage invoice -> one order serving both, each line its venue',
+    twoVenues.state === 'applied' && twoVenues.payload.new_order?.venue_id === 'x:Multiple venues' && twoVenues.payload.new_lines.map(l => l.venue_id).join() === 'v9,v4', twoVenues.state === 'applied' && twoVenues.payload);
   const miami = { ...o, venue_id: 'v5' };
   const invoiced = line(miami, { description: 'LIBBEY - CONTOUR GOBLET GLASS 16 OZ/ 12', sku: '9156', qty: 6, status: 'INVOICED', unit_price: 68.84, invoice_number: 'INV-A' });
   const perVenue = decideMailDocument(quote({ doc_kind: 'invoice', doc_number: 'INV-B' }), src(), { orders: [miami], lines: [invoiced], items: [], documents: [d1] }, '2026-11-02', fmt, { autoCreate: true, venues });
@@ -531,8 +541,9 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   const pizza = st('TNG Pizza Box', 'SPTNGPZBX2', 'The Nice Guy'), paso = st('Paso Robles Pizza Box', null, 'Paso Robles');
   const taco = st('BS Taco Wrap 6x7', 'SPBSTACOW', 'Bird Streets'), bsEuro = st('BS Eurotote Bag', 'SPBS-EURO', 'Bird Streets');
   const gloss = st('Delilah Gloss Eurotote Bag', 'SHUR8180', 'Delilah'), medium = st('Delilah Medium Eurotote Bag', null, 'Delilah');
+  const foil = st('BS Linen-like Guest Towels (foil logo)', 'BS-FOILLOGO', 'Bird Streets');
   const pag = st('PAG Black Unbranded Eurotote Bags / 100', 'SHUR8123', 'h.wood'), soap = st("Hwood Mrs. Meyer's Hand Soap", 'SPHW8452', 'h.wood');
-  const items = [napkin, tngEuro, pizza, paso, taco, bsEuro, gloss, medium, pag, soap];
+  const items = [napkin, tngEuro, pizza, paso, taco, bsEuro, gloss, medium, pag, soap, foil];
   const moves = [move(gloss.id, 'count', 18, '2026-10-07'), move(napkin.id, 'count', 37, '2026-10-07'), move(pag.id, 'count', 0, '2026-10-07')];
   const whs = order({ order_number: 'WHS-0001', venue_id: 'x:Multiple venues' }), bsc = order({ order_number: 'WHS-0007', venue_id: 'v4' });
   const plan = (description: string, o = bsc, venue_id: string | null = null) => planStorageLine({ description, venue_id }, o, items, moves, V);
@@ -564,6 +575,11 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   check('storage: two venues on one line = asked', /more than one venue/i.test(plan('Delilah LA / Delilah Miami delivery - 11/02/2026 - 2cs bags', whs).problem ?? ''));
   check('storage: h.wood stock any venue can draw', draws(plan('TNG delivery - 11/02/2026 - 1 cs hand soap')) === "1 Hwood Mrs. Meyer's Hand Soap");
   check('storage: an item not in stock = asked', /no stock item matches/i.test(plan('TNG delivery - 11/02/2026 - 2 cs glass ashtrays').problem ?? ''));
+  const k = plan('BSC - delivery 10/28/2026 SKU: BS-EUROTTE (2) SKU: BS-FOILLOGO (2)', order({ venue_id: null }));
+  check('storage: E&E\'s "SKU: X (2)" form (11/3 pull) — one draw per SKU, cases in brackets, E&E\'s own SKU spelling',
+    k.problem === null && k.venueId === 'v4' && k.day === '2026-10-28' && draws(k) === '2 BS Eurotote Bag + 2 BS Linen-like Guest Towels (foil logo)', k);
+  check('storage: one letter off in a long word still matches ("EUROTTE")',
+    draws(plan('Delilah LA delivery - 11/02/2026 - SKU: DEL-EUROTTE (3)', whs, 'v1')) === '3 Delilah Gloss Eurotote Bag');
   const rows = storageMoveRows(a, { id: 'L9', description: 'TNG delivery - 10/12/2026 - 3 CASES TNG-EURO / 2 CASES TNG-PIZZAB' }, '2026-10-20');
   check('storage moves: one release per item, tied to the line, on the delivery day at noon (a count that day wins)',
     rows.length === 2 && rows.every(r => r.line_id === 'L9' && r.kind === 'release' && r.venue_id === 'v3' && r.moved_on === '2026-10-12' && r.created_at === '2026-10-12T19:00:00Z'));
@@ -578,6 +594,18 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
     && !isStorageLine({ description: 'TNG delivery - 10/07/2026', item_id: null }, 'Uline')
     && !isStorageLine({ description: 'Delilah to-go bags', item_id: null }, 'EE Mercantile')
     && !isStorageLine({ description: 'Delivery fee', item_id: 'i1' }, 'EE Mercantile'));
+}
+
+// ── order # for orders the pull starts ──────────────────────────────
+{
+  const st = (name: string, category: string | null) => item({ name, sku: null, category });
+  const items = [st('BS Eurotote Bag', 'Bird Streets'), st('Hwood Mrs. Meyer\'s Hand Soap', 'h.wood')];
+  const orders = ['WHS-0001', 'WHS-0010', 'CUS-0025', 'CUS-0025-DAL', 'CUS-0042', 'OSE-0035', null].map(n => ({ order_number: n }));
+  const nl = (description: string) => ({ description, sku: null, item_id: null });
+  check('order #: an E&E storage delivery -> next WHS', autoOrderNumber([nl('BSC - delivery 10/28/2026 SKU: BS-EUROTTE (2)')], 'EE Mercantile', { orders, items }) === 'WHS-0011');
+  check('order #: a custom (branded) item -> next CUS', autoOrderNumber([nl('Bird Streets eurotote bag')], 'EE Mercantile', { orders, items }) === 'CUS-0043');
+  check('order #: anything else -> next OSE', autoOrderNumber([nl('LIBBEY - CONTOUR GOBLET GLASS 16 OZ/ 12')], 'EE Mercantile', { orders, items }) === 'OSE-0036');
+  check('order #: a series starts at 0001', autoOrderNumber([nl('Mepra wine cooler')], 'EE Mercantile', { orders: [], items: [] }) === 'OSE-0001');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
