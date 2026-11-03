@@ -117,6 +117,27 @@ export async function attachFile(orderId: string, file: File): Promise<void> {
   }
 }
 
+/** A check stub reprinted from R365 (one payment, several invoices): stored once, a 'payment' document on
+ *  every order it covers, listing those invoices — the same shape the morning pull gives an e-mailed stub. */
+export async function attachStubFile(file: File, invoices: string[], orderIds: string[], payment: string | null): Promise<void> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(b => b.toString(16).padStart(2, '0')).join('');
+  const ext = (file.name.split('.').pop() ?? 'pdf').toLowerCase().replace(/[^a-z0-9]/g, '') || 'pdf';
+  const path = `docs/${crypto.randomUUID()}.${ext}`;
+  const up = await supabase.storage.from(DOC_BUCKET).upload(path, bytes, { contentType: file.type || 'application/pdf', upsert: false });
+  if (up.error) fail('Stub not attached', up.error);
+  const rows = [...new Set(orderIds)].map(order_id => ({
+    order_id, kind: 'payment', doc_number: invoices.join(', ').slice(0, 200), doc_date: new Date().toISOString().slice(0, 10),
+    file_name: file.name.slice(0, 200), storage_path: path, content_hash: hash, parsed: { invoices, r365_payment: payment, source: 'R365 reprint' },
+  }));
+  const { error } = await supabase.from('kount_ot_documents').insert(rows);
+  if (error) {
+    await supabase.storage.from(DOC_BUCKET).remove([path]);
+    if (error.code === '23505') throw new Error('That stub is already attached to one of these orders.');
+    fail('Stub not attached', error);
+  }
+}
+
 export async function updateLine(id: string, patch: Partial<OtLine>, how: { source: 'manual' | 'document'; note?: string | null } = { source: 'manual' }): Promise<void> {
   const body: Record<string, unknown> = { ...patch };
   if ('status' in patch) { body.status_source = how.source; body.status_note = how.note ?? null; }

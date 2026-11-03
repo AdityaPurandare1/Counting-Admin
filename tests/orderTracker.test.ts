@@ -20,6 +20,7 @@ import { parseCsv, tidyRows, cellText, sheetsFromXlsx, sheetsFromFile } from '..
 import {
   fulfillmentOf, fulfillmentStep, paymentOf, nextEta, orderCategory, timeAgo, lastUpdate, trackerKpis, attentionItems,
   orderDraft, lineDraft, planOrderSave, isPlanEmpty, setDraftStage, markDraft, draftStage, draftTotal, draftLineTotal,
+  stubsToGet, invoiceToken, stubInvoices,
 } from '../src/lib/orderTrackerView';
 import { inboxGroups, findSummary, type InboxItem } from '../src/lib/orderMail';
 import { existsSync } from 'node:fs';
@@ -852,6 +853,40 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
     && (await sheetsFromFile('Ship.CSV', new TextEncoder().encode('a,b\n1,2').buffer as ArrayBuffer))?.[0].rows.length === 2);
   const ui = readFileSync(join(process.cwd(), 'src/components/orderTracker/ui.tsx'), 'utf8');
   check('viewer: a spreadsheet opens as tables (never as HTML from the file), with Download kept', /sheetsFromFile\(doc\.storage_path/.test(ui) && /<SheetTables/.test(ui) && !/dangerouslySetInnerHTML/.test(ui));
+}
+
+// ── check stubs to get from R365 (0143) ──────────────────────────────
+{
+  const ach = (number: string, date: string, amount: number) => [{ number, date, amount }];
+  const a = order({ order_number: 'OSE-0035', vendor_name: 'EE Mercantile' }), b = order({ order_number: 'CUS-0041' }), c = order({ order_number: 'WHS-0001' });
+  const old = order({ order_number: 'CUS-0001', archived_at: '2026-10-01T00:00:00Z' });
+  const ls = [
+    line(a, { invoice_number: 'INV-2026-418553', status: 'PAID', qty: 3, unit_price: 100, r365_payments: ach('ACH - 24567', '2026-10-22', 10926.42) }),
+    line(a, { invoice_number: 'INV-2026-418553', status: 'DELIVERED', qty: 1, unit_price: 50, r365_payments: ach('ACH - 24567', '2026-10-22', 10926.42) }),
+    line(b, { invoice_number: 'INV-2026-466262 Delilah Miami', status: 'SHIPPED', qty: 1, unit_price: 80, r365_payments: ach('ACH - 24567', '2026-10-22', 10926.42) }),
+    line(b, { invoice_number: 'INV-2026-280644', status: 'PAID', qty: 1, unit_price: 70, r365_payments: ach('ACH - 24779', '2026-10-29', 8355.77) }),
+    line(c, { invoice_number: 'INV-2026-875132', status: 'PAID', qty: 1, unit_price: 28.8 }),
+    line(c, { invoice_number: 'INV-2026-804153', status: 'INVOICED', qty: 1, unit_price: 36.6 }),
+    line(old, { invoice_number: 'INV-2026-752134', status: 'PAID', qty: 1, unit_price: 1 }),
+  ];
+  const stub = (order_id: string, invoices: string[] | null, doc_number: string | null = null) =>
+    ({ id: id('d'), order_id, kind: 'payment', doc_number, doc_date: null, vendor_name: null, total: null, file_name: 'stub.pdf', storage_path: 'docs/s.pdf', created_at: '', parsed: invoices ? { invoices } : null }) as OtDocument;
+  const docs = [stub(b.id, ['INV-2026-280644']), stub(a.id, null, 'INV-2026-999999')];
+  const { needs, groups } = stubsToGet([a, b, c, old], ls, docs);
+  check('stubs: invoice # read as R365 writes it', invoiceToken('INV-2026-466262 Delilah Miami') === 'INV-2026-466262' && invoiceToken(' inv-2026-857309/2 ') === 'INV-2026-857309');
+  check('stubs: a stub covers the invoices it lists (or names in its doc #)', stubInvoices(docs[0] as never).has('INV-2026-280644') && stubInvoices(docs[1] as never).has('INV-2026-999999'));
+  check('stubs: paid invoices with no stub on their order — not the covered one, not an unpaid one, not an archived order',
+    needs.map(n => n.invoice).sort().join() === 'INV-2026-418553,INV-2026-466262,INV-2026-875132', needs);
+  check('stubs: one row per R365 payment (one ACH paid two orders\' invoices), the unmatched last',
+    groups.length === 2 && groups[0].key === 'ACH - 24567' && groups[0].items.map(i => i.orderNumber).sort().join() === 'CUS-0041,OSE-0035' && groups[1].key === '' && groups[1].items[0].invoice === 'INV-2026-875132', groups);
+  check('stubs: the invoice amount is its lines (paid, delivered alike)', needs.find(n => n.invoice === 'INV-2026-418553')?.amount === 350);
+  const att = attentionItems({ orders: [a, b, c, old], lines: ls, items: [], moves: [], documents: docs }, '2026-11-03', 0, x => '$' + x);
+  check('bell: "N paid invoices have no check stub" → Overview', att.some(x => x.title === '3 paid invoices have no check stub' && x.act.kind === 'tab' && (x.act as { tab: string }).tab === 'overview' && /1 R365 payment to reprint/.test(x.sub)), att);
+  const fn = sibling('supabase', 'functions', 'kount-order-mail', 'index.ts');
+  if (fn) check('pull: each paid line keeps the R365 payment that paid it, lines past Paid too',
+    /r365_payments: refs/.test(fn) && /\.in\('status', PAID_ON\)\.is\('r365_payments', null\)/.test(fn));
+  const ot = readFileSync(join(process.cwd(), 'src/screens/OrderTracker.tsx'), 'utf8');
+  check('Overview lists them by R365 payment with Attach stub (on every order of the payment)', /<StubsToGet /.test(ot) && /orderIds=\{g\.items\.map\(i => i\.orderId\)\}/.test(ot));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

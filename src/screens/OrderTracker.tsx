@@ -8,9 +8,9 @@ import {
 } from '@/lib/orderTracker';
 import { loadTracker, type TrackerData } from '@/lib/orderTrackerData';
 import { buildReportWorkbook } from '@/lib/orderTrackerReport';
-import { attentionItems, trackerKpis, type Attention } from '@/lib/orderTrackerView';
+import { attentionItems, stubsToGet, trackerKpis, type Attention } from '@/lib/orderTrackerView';
 import { OrdersView, type OrdersPreset } from '@/components/orderTracker/OrdersView';
-import { Icon } from '@/components/orderTracker/ui';
+import { AttachStubButton, Icon } from '@/components/orderTracker/ui';
 import '@/components/orderTracker/tracker.css';
 import { WarehouseView } from '@/components/orderTracker/WarehouseView';
 import { DocumentReview } from '@/components/orderTracker/DocumentReview';
@@ -184,7 +184,7 @@ export function OrderTracker({ today: todayProp, load = loadTracker, loadMail = 
             {view === 'inbox' && <InboxView items={inbox} orders={data.orders} lines={data.lines} onReview={i => { setReviewing(i); setDocFile(null); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
               onOpenOrder={id => { setFocusOrder(id); setView('orders'); }} onChanged={() => void reload()} />}
             {view === 'warehouse' && <WarehouseView data={data} today={today} venueName={venueName} onReload={() => void reload()} />}
-            {view === 'overview' && <Overview data={data} today={today} venueName={venueName} onOpen={id => { setFocusOrder(id); setView('orders'); }} />}
+            {view === 'overview' && <Overview data={data} today={today} venueName={venueName} onOpen={id => { setFocusOrder(id); setView('orders'); }} onReload={() => void reload()} />}
             </div>
           </div>
         )}
@@ -193,7 +193,7 @@ export function OrderTracker({ today: todayProp, load = loadTracker, loadMail = 
   );
 }
 
-function Overview({ data, today, venueName, onOpen }: { data: TrackerData; today: string; venueName: (id: string | null) => string; onOpen: (orderId: string) => void }) {
+function Overview({ data, today, venueName, onOpen, onReload }: { data: TrackerData; today: string; venueName: (id: string | null) => string; onOpen: (orderId: string) => void; onReload: () => void }) {
   const byOrder = useMemo(() => {
     const m = new Map<string, OtLine[]>();
     for (const l of data.lines) (m.get(l.order_id) ?? m.set(l.order_id, []).get(l.order_id)!).push(l);
@@ -213,6 +213,7 @@ function Overview({ data, today, venueName, onOpen }: { data: TrackerData; today
 
   return (
     <div style={{ display: 'grid', gap: 14 }}>
+      <StubsToGet data={data} onOpen={onOpen} onReload={onReload} />
       <Card padding={16}>
         <div style={{ fontWeight: 700, marginBottom: 8 }}>Where every line is</div>
         {funnel.map(f => (
@@ -268,6 +269,63 @@ function Overview({ data, today, venueName, onOpen }: { data: TrackerData; today
         )}
       </Card>
       <div style={subTxt}>An order's status is its least-advanced line. {STATUS_LABEL.CANCELLED} lines are left out of every count.</div>
+    </div>
+  );
+}
+
+/** Paid invoices with no check stub (0143): one row per R365 payment — reprint its stub in R365 and attach it
+ *  here, and it goes on every order and invoice that payment paid. */
+function StubsToGet({ data, onOpen, onReload }: { data: TrackerData; onOpen: (orderId: string) => void; onReload: () => void }) {
+  const { needs, groups } = useMemo(() => stubsToGet(data.orders, data.lines, data.documents), [data.orders, data.lines, data.documents]);
+  if (!needs.length) return null;
+  const matched = groups.filter(g => g.payments.length);
+  const other = groups.find(g => !g.payments.length);
+  const invoiceChips = (items: typeof needs) => (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+      {items.map(n => (
+        <button key={`${n.orderId}|${n.invoice}`} type="button" className="ot-doc" onClick={() => onOpen(n.orderId)} title={`${n.vendor} · ${fmtMoney(n.amount)} — open the order`}>
+          <span className="ext">{n.orderNumber ?? 'order'}</span><span className="nm mono">{n.invoice}</span>
+        </button>
+      ))}
+    </div>
+  );
+  return (
+    <div className="ot-card">
+      <div style={{ padding: '14px 16px 10px', borderBottom: '1px solid var(--ot-line)' }}>
+        <div style={{ fontWeight: 600 }}>Check stubs to get from R365 <span className="ot-pill warn" style={{ marginLeft: 6 }}>{needs.length} invoice{needs.length > 1 ? 's' : ''}</span></div>
+        <div className="faint" style={{ fontSize: 12.5, marginTop: 4 }}>
+          Paid, with no stub on the order. In R365: Accounts Payable → AP Transactions → open the payment below → Action → Check Stub Reprint → save the PDF,
+          then attach it here — it goes on every order and invoice that payment paid.
+        </div>
+      </div>
+      <div className="ot-table-wrap">
+        <table className="ot-tbl" style={{ minWidth: 820 }}>
+          <thead><tr><th>R365 payment</th><th>Paid on</th><th className="r">Payment amount</th><th>Invoices without a stub</th><th /></tr></thead>
+          <tbody>
+            {matched.map(g => (
+              <tr key={g.key}>
+                <td className="mono t1">{g.key}</td>
+                <td>{g.payments.map(p => shortDate(p.date)).join(', ')}</td>
+                <td className="r num">{fmtMoney(g.payments.reduce((s, p) => s + p.amount, 0))}</td>
+                <td>{invoiceChips(g.items)}</td>
+                <td className="r"><AttachStubButton invoices={g.items.map(i => i.invoice)} orderIds={g.items.map(i => i.orderId)} payment={g.key} onDone={onReload} /></td>
+              </tr>
+            ))}
+            {other && other.items.map(n => (
+              <tr key={`x|${n.orderId}|${n.invoice}`}>
+                <td className="faint" style={{ fontSize: 12.5 }}>not matched to an R365 payment</td>
+                <td className="faint">—</td>
+                <td className="r num">{fmtMoney(n.amount)}</td>
+                <td>{invoiceChips([n])}</td>
+                <td className="r"><AttachStubButton invoices={[n.invoice]} orderIds={[n.orderId]} payment={null} onDone={onReload} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {other && <div className="faint" style={{ fontSize: 12, padding: '8px 16px 12px' }}>
+        "Not matched": marked paid (by hand or the old tracker sheet) but no R365 payment matches it — look the invoice up in R365, or it was paid outside R365.
+      </div>}
     </div>
   );
 }

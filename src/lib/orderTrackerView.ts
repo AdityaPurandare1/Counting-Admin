@@ -7,7 +7,7 @@
    ─────────────────────────────────────────────────────────────────────── */
 import {
   MULTIPLE_VENUES, STATUSES, isLate, isStorageLine, lineTotal, orderState, receivedForLine, statusRank, stockRows,
-  type LineStatus, type OtItem, type OtLine, type OtMove, type OtOrder,
+  type LineStatus, type OtDocument, type OtItem, type OtLine, type OtMove, type OtOrder,
 } from './orderTracker';
 
 const DAY = 86_400_000;
@@ -86,7 +86,7 @@ export interface TrackerKpis {
   onOrder$: number; onOrderOrders: number; unpaid$: number; unpaidInvoices: number; oldestUnpaidDays: number;
   reorder: number; soon: number;
 }
-interface Data { orders: OtOrder[]; lines: OtLine[]; items: OtItem[]; moves: OtMove[] }
+interface Data { orders: OtOrder[]; lines: OtLine[]; items: OtItem[]; moves: OtMove[]; documents?: OtDocument[] }
 const byOrder = (lines: OtLine[]) => {
   const m = new Map<string, OtLine[]>();
   for (const l of lines) (m.get(l.order_id) ?? m.set(l.order_id, []).get(l.order_id)!).push(l);
@@ -115,7 +115,7 @@ export function trackerKpis(data: Data, today: string): TrackerKpis {
   };
 }
 
-export type AttentionAct = { kind: 'order'; id: string } | { kind: 'tab'; tab: 'inbox' | 'warehouse' };
+export type AttentionAct = { kind: 'order'; id: string } | { kind: 'tab'; tab: 'inbox' | 'warehouse' | 'overview' };
 export interface Attention { sev: 'crit' | 'warn' | 'info'; title: string; sub: string; act: AttentionAct }
 export const CHASE_DAYS = 14;
 
@@ -143,6 +143,11 @@ export function attentionItems(data: Data, today: string, inboxWaiting: number, 
   const drawn = new Set(data.moves.map(m => m.line_id).filter(Boolean));
   const deliveries = data.lines.filter(l => !l.stock_draw && !drawn.has(l.id) && orders.has(l.order_id) && isStorageLine(l, orders.get(l.order_id)!.vendor_name)).length;
   if (deliveries) out.push({ sev: 'info', title: `${deliveries} E&E deliver${deliveries > 1 ? 'ies' : 'y'} to put in stock`, sub: 'pick the item for each in Warehouse', act: { kind: 'tab', tab: 'warehouse' } });
+  if (data.documents) {
+    const { needs, groups } = stubsToGet(data.orders, data.lines, data.documents);
+    if (needs.length) out.push({ sev: 'info', title: `${needs.length} paid invoice${needs.length > 1 ? 's have' : ' has'} no check stub`,
+      sub: `${groups.filter(g => g.payments.length).length} R365 payment${groups.filter(g => g.payments.length).length === 1 ? '' : 's'} to reprint — see Overview`, act: { kind: 'tab', tab: 'overview' } });
+  }
   const reorder = stockRows(data.items, data.moves, data.lines, data.orders, today).filter(r => r.state === 'reorder now');
   if (reorder.length) out.push({ sev: 'warn', title: `${reorder.length} item${reorder.length > 1 ? 's' : ''} to reorder`, sub: reorder.slice(0, 3).map(r => r.item.name).join(', ') + (reorder.length > 3 ? '…' : ''), act: { kind: 'tab', tab: 'warehouse' } });
   const rank = { crit: 0, warn: 1, info: 2 };
@@ -275,3 +280,53 @@ export const isPlanEmpty = (p: OrderSavePlan) => !Object.keys(p.order).length &&
 /** The order's venue choices: counting venues + order-only ones, several, or none (warehouse stock). */
 export const VENUE_SEVERAL = MULTIPLE_VENUES;
 export const ALL_LINE_STATUSES = STATUSES;
+
+/* ── check stubs to get from R365 (0143) ──────────────────────────────── */
+
+export interface R365Payment { number: string; date: string; amount: number }
+/** The invoice # as R365 and the stubs write it ("INV-2026-857309 Delilah LA" → "INV-2026-857309"). */
+export const invoiceToken = (s: string | null | undefined) => {
+  const t = String(s ?? '').trim().toUpperCase();
+  return t.match(/INV-\d{4}-\d{5,7}/)?.[0] ?? t;
+};
+/** The invoices a check stub on an order covers (its parsed list, else the numbers in its doc #). */
+export const stubInvoices = (d: Pick<OtDocument, 'kind' | 'doc_number'> & { parsed?: unknown }) => {
+  const listed = (d.parsed as { invoices?: unknown } | null)?.invoices;
+  return new Set((Array.isArray(listed) ? listed.map(String) : String(d.doc_number ?? '').split(/[,;\s]+/)).map(invoiceToken).filter(Boolean));
+};
+
+export interface StubNeed { orderId: string; orderNumber: string | null; vendor: string; invoice: string; amount: number; payments: R365Payment[] }
+export interface StubGroup { key: string; payments: R365Payment[]; items: StubNeed[] }
+
+/** Paid invoices with no check stub on their order — grouped by the R365 payment that paid them, since R365
+ *  reprints a stub per payment (one ACH often pays several invoices). A group with no payment = paid but not
+ *  matched to an R365 payment (paid outside R365, or per the old sheet). */
+export function stubsToGet(orders: OtOrder[], lines: OtLine[], documents: OtDocument[]): { needs: StubNeed[]; groups: StubGroup[] } {
+  const live = new Map(orders.filter(o => !o.archived_at).map(o => [o.id, o]));
+  const covered = new Set<string>();
+  for (const d of documents) if (d.kind === 'payment' && d.order_id) for (const t of stubInvoices(d)) covered.add(`${d.order_id}|${t}`);
+  const byInvoice = new Map<string, OtLine[]>();
+  for (const l of lines) {
+    if (!l.invoice_number || l.status === 'CANCELLED' || !live.has(l.order_id)) continue;
+    const k = `${l.order_id}|${invoiceToken(l.invoice_number)}`;
+    (byInvoice.get(k) ?? byInvoice.set(k, []).get(k)!).push(l);
+  }
+  const needs: StubNeed[] = [];
+  for (const [k, ls] of byInvoice) {
+    if (covered.has(k) || !ls.every(l => statusRank(l.status) >= statusRank('PAID'))) continue;
+    const o = live.get(ls[0].order_id)!;
+    const pays = new Map<string, R365Payment>();
+    for (const l of ls) for (const p of l.r365_payments ?? []) pays.set(p.number, { number: p.number, date: p.date, amount: Number(p.amount) || 0 });
+    needs.push({ orderId: o.id, orderNumber: o.order_number, vendor: o.vendor_name, invoice: k.split('|')[1], amount: ls.reduce((s, l) => s + lineTotal(l), 0),
+      payments: [...pays.values()].sort((a, b) => a.date.localeCompare(b.date)) });
+  }
+  const groups = new Map<string, StubGroup>();
+  for (const n of needs) {
+    const key = n.payments.map(p => p.number).join(' + ') || '';
+    (groups.get(key) ?? groups.set(key, { key, payments: n.payments, items: [] }).get(key)!).items.push(n);
+  }
+  // the newest payments first; the unmatched ones last
+  const sorted = [...groups.values()].sort((a, b) => (!a.key ? 1 : !b.key ? -1 : (b.payments.slice(-1)[0]?.date ?? '').localeCompare(a.payments.slice(-1)[0]?.date ?? '')));
+  for (const g of sorted) g.items.sort((a, b) => a.invoice.localeCompare(b.invoice));
+  return { needs, groups: sorted };
+}

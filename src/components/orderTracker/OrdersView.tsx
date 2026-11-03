@@ -3,7 +3,7 @@ import {
   ORDER_SORTS, filterByVenue, headlineStatus, isLate, isoDay, lineTotal, orderState, orderVenueIds, receivedForLine, sortOrders, MULTIPLE_VENUES,
   type OrderSort, type OrderState, type OtDocument, type OtLine,
 } from '@/lib/orderTracker';
-import { FULFILLMENT, fulfillmentOf, fulfillmentStep, lastUpdate, nextEta, orderCategory, paymentOf, timeAgo, type PaymentView } from '@/lib/orderTrackerView';
+import { FULFILLMENT, fulfillmentOf, fulfillmentStep, lastUpdate, nextEta, orderCategory, paymentOf, stubsToGet, timeAgo, type PaymentView } from '@/lib/orderTrackerView';
 import type { TrackerData } from '@/lib/orderTrackerData';
 import { fmtMoney, shortDate } from './shared';
 import { OrderDrawer } from './OrderDrawer';
@@ -49,6 +49,12 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
     return m;
   }, [data.documents]);
   const vendors = useMemo(() => [...new Set(data.orders.map(o => o.vendor_name))].sort(), [data.orders]);
+  // paid invoices with no check stub, per order (reprint them from R365 — Overview lists them by payment)
+  const noStub = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const n of stubsToGet(data.orders, data.lines, data.documents).needs) m.set(n.orderId, (m.get(n.orderId) ?? 0) + 1);
+    return m;
+  }, [data.orders, data.lines, data.documents]);
   // the venues orders are for, by name (an order serving several counts for each)
   const venues = useMemo(() => [...new Set(data.orders.flatMap(o => orderVenueIds(o, linesByOrder.get(o.id) ?? [])))]
     .map(id => ({ id, name: venueName(id) })).sort((a, b) => a.name.localeCompare(b.name)), [data.orders, linesByOrder, venueName]);
@@ -147,6 +153,7 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
                       <td>
                         <span className={`ot-pill ${PAY_TONE[pay.state]}`}>{pay.label}</span>
                         {pay.invoices.length > 0 && <div className="t2 mono" title={pay.invoices.join(', ')}>{pay.invoices[0]}{pay.invoices.length > 1 ? ` +${pay.invoices.length - 1}` : ''}</div>}
+                        {noStub.get(o.id) ? <div className="t2" style={{ color: 'var(--ot-warn)' }}>no check stub{noStub.get(o.id)! > 1 ? ` (${noStub.get(o.id)})` : ''}</div> : null}
                         {pay.state === 'unpaid' && pay.oldestDays != null && <div className="t2">{pay.oldestDays ? `${pay.oldestDays} day${pay.oldestDays === 1 ? '' : 's'} waiting` : 'invoiced today'}</div>}
                       </td>
                       <td className="r num">{ls.length}{late > 0 && <span className="ot-pill crit" style={{ marginLeft: 6 }}>{late} late</span>}</td>

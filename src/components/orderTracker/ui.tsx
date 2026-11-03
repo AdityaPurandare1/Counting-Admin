@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { OtDocument } from '@/lib/orderTracker';
-import { documentUrl } from '@/lib/orderTrackerData';
+import { attachStubFile, documentUrl } from '@/lib/orderTrackerData';
 import { sheetsFromFile, MAX_PREVIEW_ROWS, type SheetPreview } from '@/lib/sheetPreview';
 
 /* Small pieces of the v0.87 order tracker design: icons, document chips, the document viewer. */
@@ -43,6 +43,29 @@ export function DocChip({ d, onOpen, full = false }: { d: OtDocument; onOpen: (d
       onClick={e => { e.stopPropagation(); onOpen(d); }}>
       <span className="ext">{other ? extOf(d.file_name) || 'FILE' : k?.ext ?? 'DOC'}</span><span className="nm">{name}</span>
     </button>
+  );
+}
+
+/** Attach a check stub reprinted from R365 (PDF / photo): on every order and invoice of that payment. */
+export function AttachStubButton({ invoices, orderIds, payment, onDone, label = 'Attach stub' }: {
+  invoices: string[]; orderIds: string[]; payment: string | null; onDone: () => void; label?: string;
+}) {
+  const ref = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  return (
+    <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+      <button type="button" className="ot-btn sm" disabled={busy} onClick={e => { e.stopPropagation(); ref.current?.click(); }}
+        title={`The stub for ${payment ?? 'this payment'} — it goes on ${invoices.length > 1 ? `all ${invoices.length} invoices` : invoices[0]}`}>
+        <Icon name="clip" />{busy ? 'Attaching…' : label}</button>
+      <input ref={ref} type="file" accept=".pdf,.png,.jpg,.jpeg" style={{ display: 'none' }} onChange={e => {
+        const f = e.target.files?.[0]; e.target.value = '';
+        if (!f) return;
+        setBusy(true); setErr(null);
+        attachStubFile(f, invoices, orderIds, payment).then(onDone).catch(x => setErr(x instanceof Error ? x.message : String(x))).finally(() => setBusy(false));
+      }} />
+      {err && <span style={{ color: 'var(--ot-crit)', fontSize: 12 }}>{err}</span>}
+    </span>
   );
 }
 

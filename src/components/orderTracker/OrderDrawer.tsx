@@ -5,7 +5,7 @@ import {
   type LineStatus, type OtDocument, type OtLine, type OtOrder,
 } from '@/lib/orderTracker';
 import {
-  draftLineTotal, draftStage, draftTotal, isPlanEmpty, lastUpdate, lineDraft, markDraft, orderCategory, orderDraft, paymentOf, planOrderSave, setDraftStage, timeAgo,
+  draftLineTotal, draftStage, draftTotal, invoiceToken, isPlanEmpty, lastUpdate, stubInvoices, lineDraft, markDraft, orderCategory, orderDraft, paymentOf, planOrderSave, setDraftStage, timeAgo,
   type LineDraft, type OrderDraft,
 } from '@/lib/orderTrackerView';
 import {
@@ -13,7 +13,7 @@ import {
   type EventRow, type TrackerData,
 } from '@/lib/orderTrackerData';
 import { fmtMoney, shortDate } from './shared';
-import { DocChip, Icon, isOtherDoc } from './ui';
+import { AttachStubButton, DocChip, Icon, isOtherDoc } from './ui';
 
 /** One order in the side panel (the user's design): its fields, the cycle stepper, lines, invoices,
  *  tracking, documents and notes. Edits are a draft — Save writes only what changed (planOrderSave). */
@@ -195,12 +195,21 @@ export function OrderDrawer({ order, lines, docs, data, today, venueName, onClos
               <span className="faint" style={{ fontSize: 12 }}>Paid also comes from R365 each morning.</span>
             </div>
             {invoices.length ? (
-              <table className="ot-invs"><thead><tr><th>Invoice #</th><th>Date</th><th style={{ textAlign: 'right' }}>Amount</th><th>Payment</th><th>PDF</th></tr></thead>
+              <table className="ot-invs"><thead><tr><th>Invoice #</th><th>Date</th><th style={{ textAlign: 'right' }}>Amount</th><th>Payment</th><th>PDF</th><th>Check stub</th></tr></thead>
                 <tbody>{invoices.map(i => {
                   const pdf = pdfs.find(d => d.kind === 'invoice' && d.doc_number?.trim() === i.n);
+                  const tok = invoiceToken(i.n);
+                  const stub = docs.find(d => d.kind === 'payment' && stubInvoices(d as typeof d & { parsed?: unknown }).has(tok));
+                  // which R365 payment paid it (0143): the stub to reprint in R365
+                  const r365 = [...new Map(lines.filter(l => invoiceToken(l.invoice_number) === tok).flatMap(l => l.r365_payments ?? []).map(p => [p.number, p])).values()];
                   return <tr key={i.n}><td className="mono">{i.n}</td><td>{i.day ? shortDate(i.day) : '—'}</td><td style={{ textAlign: 'right' }} className="num">{fmtMoney(i.amount)}</td>
-                    <td><span className={`ot-pill ${i.paid ? 'ok' : 'warn'}`}>{i.paid ? 'Paid' : i.waiting != null ? `Not paid · ${i.waiting}d` : 'Not paid'}</span></td>
-                    <td>{pdf ? <DocChip d={pdf} onOpen={onOpenDoc} /> : <span className="faint">—</span>}</td></tr>;
+                    <td><span className={`ot-pill ${i.paid ? 'ok' : 'warn'}`}>{i.paid ? 'Paid' : i.waiting != null ? `Not paid · ${i.waiting}d` : 'Not paid'}</span>
+                      {r365.length > 0 && <div className="faint mono" style={{ fontSize: 11.5 }}>{r365.map(p => `${p.number} · ${shortDate(p.date)}`).join(', ')}</div>}</td>
+                    <td>{pdf ? <DocChip d={pdf} onOpen={onOpenDoc} /> : <span className="faint">—</span>}</td>
+                    <td>{stub ? <DocChip d={stub} onOpen={onOpenDoc} />
+                      : i.paid && order ? <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}><span className="ot-pill warn">No stub</span>
+                        <AttachStubButton invoices={[tok]} orderIds={[order.id]} payment={r365.map(p => p.number).join(' + ') || null} onDone={onReload} label="Attach" /></span>
+                      : <span className="faint">—</span>}</td></tr>;
                 })}</tbody></table>
             ) : <div className="faint" style={{ fontSize: 13 }}>No invoice on this order yet. Type the invoice # on its lines, or save the invoice PDF from the Inbox.</div>}
           </section>
