@@ -3,7 +3,7 @@ import { Btn, Card, Pill } from '@/components/atoms';
 import { DOC_KIND_LABEL } from '@/lib/orderTracker';
 import { documentUrl } from '@/lib/orderTrackerData';
 import {
-  disconnectMail, inboxGroups, mailStatus, pollConnect, pullNow, setInboxState, setVendorDomains, startConnect,
+  disconnectMail, inboxGroups, mailStatus, pollConnect, pullNow, setDocKinds, setInboxState, setVendorDomains, startConnect,
   type DeviceCode, type InboxItem, type MailStatus,
 } from '@/lib/orderMail';
 import { errBox, fmtMoney, linkBtn, okBox, picker, shortDate, smallInput, subTxt } from './shared';
@@ -92,7 +92,9 @@ function InboxRow({ item: i, actions }: { item: InboxItem; actions: ReactNode })
   );
 }
 
-/** Connect Outlook (device code), pull now, vendor domains, the last run. */
+const KINDS: Array<[string, string]> = [['invoice', 'Invoices (+ credit memos)'], ['quote', 'Quotes'], ['confirmation', 'Order confirmations'], ['shipping', 'Shipping notices']];
+
+/** Connect Outlook (device code), pull now, document types, vendor domains, the last run. */
 function MailCard({ onChanged }: { onChanged: () => void }) {
   const [s, setS] = useState<MailStatus | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -134,6 +136,11 @@ function MailCard({ onChanged }: { onChanged: () => void }) {
     try { await fn(); } catch (e) { setErr(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
   };
   const saveDomains = (list: string[]) => act(async () => { await setVendorDomains(list); await refresh(); });
+  const toggleKind = (k: string) => act(async () => {
+    const next = s!.doc_kinds.includes(k) ? s!.doc_kinds.filter(x => x !== k) : [...s!.doc_kinds, k];
+    if (!next.length) throw new Error('Keep at least one document type.');
+    await setDocKinds(next); await refresh();
+  });
 
   if (!s) return <Card padding={16}>{err ? <div style={errBox}>{err}{/kount_ot_mail_status|does not exist/i.test(err) && ' — the mail pull (migration 0135) is not applied yet.'}</div> : <Pill tone="neutral" size="sm">loading…</Pill>}</Card>;
 
@@ -147,8 +154,8 @@ function MailCard({ onChanged }: { onChanged: () => void }) {
           <div style={{ fontWeight: 700 }}>Morning mail pull</div>
           {s.connected ? (
             <div style={{ fontSize: 13, marginTop: 4 }}>
-              Reading <b>{s.mailbox}</b> every day at 9:00 Pacific. Quotes, confirmations, invoices and shipping notices from the vendors below go
-              onto their order when they clearly belong to one; the rest wait here.
+              Reading <b>{s.mailbox}</b> every day at 9:00 Pacific. The document types and vendors below go onto their order when they clearly
+              belong to one; the rest wait here.
             </div>
           ) : (
             <div style={{ fontSize: 13, marginTop: 4 }}>
@@ -183,7 +190,15 @@ function MailCard({ onChanged }: { onChanged: () => void }) {
       )}
       {err && <div style={errBox}>{err}</div>}
 
-      <div style={{ marginTop: 12, fontSize: 12 }}>
+      <div style={{ marginTop: 12, fontSize: 12, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+        <span style={{ color: 'var(--fg-muted)' }}>Takes:</span>
+        {KINDS.map(([k, label]) => (
+          <label key={k} style={{ display: 'inline-flex', gap: 4, alignItems: 'center', padding: '2px 8px', borderRadius: 12, background: s.doc_kinds.includes(k) ? 'var(--teal-100)' : 'var(--surface-alt)', cursor: 'pointer' }}>
+            <input type="checkbox" checked={s.doc_kinds.includes(k)} disabled={busy} onChange={() => void toggleKind(k)} /> {label}
+          </label>
+        ))}
+      </div>
+      <div style={{ marginTop: 10, fontSize: 12 }}>
         <div style={{ color: 'var(--fg-muted)', marginBottom: 4 }}>PDFs are only read from these sender domains (nothing from anyone else is opened):</div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
           {s.vendor_domains.map(d => (
