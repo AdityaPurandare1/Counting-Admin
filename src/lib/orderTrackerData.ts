@@ -4,7 +4,7 @@
    by the kount-read-purchase-doc Edge Function. */
 
 import { supabase, selectAllPagedFiltered } from './supabase';
-import type { ApplyDocument, DocKind, DocLine, LineStatus, OtDocument, OtItem, OtLine, OtMove, OtOrder } from './orderTracker';
+import type { ApplyDocument, DocKind, DocLine, LineStatus, OtDocument, OtItem, OtLine, OtMove, OtOrder, OtTracking } from './orderTracker';
 
 export const DOC_BUCKET = 'kount-order-docs';
 
@@ -14,6 +14,8 @@ export interface TrackerData {
   lines: OtLine[];
   moves: OtMove[];
   documents: OtDocument[];
+  /** tracking numbers per order (0137); empty when that migration is missing */
+  tracking: OtTracking[];
 }
 
 const num = (x: unknown): number | null => (x == null || x === '' ? null : Number.isFinite(Number(x)) ? Number(x) : null);
@@ -32,6 +34,7 @@ export async function loadTracker(): Promise<TrackerData> {
     page<OtMove>('kount_ot_stock_moves', 'created_at'),
     page<OtDocument>('kount_ot_documents', 'created_at'),
   ]);
+  const tracking = await page<OtTracking>('kount_ot_tracking', 'created_at').catch(() => [] as OtTracking[]);
   const fixLine = (l: OtLine): OtLine => ({ ...l, qty: Number(l.qty) || 0, unit_price: num(l.unit_price) });
   const fixItem = (i: OtItem): OtItem => ({ ...i, pack_size: num(i.pack_size), reorder_point: num(i.reorder_point), lead_time_days: num(i.lead_time_days) });
   return {
@@ -40,6 +43,7 @@ export async function loadTracker(): Promise<TrackerData> {
     lines: lines.map(fixLine),
     moves: moves.map(m => ({ ...m, qty: Number(m.qty) || 0 })),
     documents: documents.map(d => ({ ...d, total: num(d.total) })),
+    tracking,
   };
 }
 
@@ -117,6 +121,23 @@ export async function addMove(move: Omit<OtMove, 'id' | 'created_at'>): Promise<
 export async function deleteMove(id: string): Promise<void> {
   const { error } = await supabase.from('kount_ot_stock_moves').delete().eq('id', id);
   if (error) fail('Stock entry not removed', error);
+}
+
+/* ── tracking ── */
+
+/** Add tracking numbers to an order; its lines not shipped yet move to Shipped (kount_ot_add_tracking, 0137). */
+export async function addTracking(orderId: string, numbers: Array<{ number: string; carrier: string | null }>, opts: { inboxId?: string; note?: string; source?: 'email' | 'manual'; shipLines?: boolean } = {}): Promise<number> {
+  const { data, error } = await supabase.rpc('kount_ot_add_tracking', { p: {
+    order_id: orderId, numbers, inbox_id: opts.inboxId ?? null, note: opts.note ?? null, source: opts.source ?? 'manual',
+    ship_lines: opts.shipLines ?? true, decision: opts.inboxId ? 'Tracking added from the inbox.' : null,
+  } });
+  if (error) fail('Tracking not added', error);
+  return Number(data) || 0;
+}
+
+export async function removeTracking(id: string): Promise<void> {
+  const { error } = await supabase.from('kount_ot_tracking').delete().eq('id', id);
+  if (error) fail('Tracking not removed', error);
 }
 
 /* ── documents ── */

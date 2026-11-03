@@ -6,13 +6,15 @@
    and never reaches the browser; kount_ot_mail_status() is all the admin sees. */
 
 import { supabase, selectAllPagedFiltered } from './supabase';
-import type { ReadDoc } from './orderTracker';
+import type { ReadDoc, TrackingHit } from './orderTracker';
 
 export type InboxState = 'unread' | 'pending' | 'applied' | 'ignored' | 'error';
 
 export interface InboxItem {
   id: string;
   message_id: string;
+  /** 'body' = no PDF: tracking numbers read from the email text (0137) */
+  attachment_id: string;
   conversation_id: string | null;
   subject: string | null;
   sender_email: string | null;
@@ -22,7 +24,7 @@ export interface InboxItem {
   size_bytes: number | null;
   storage_path: string;
   state: InboxState;
-  parsed: (ReadDoc & { bill_to?: string; ship_to?: string }) | null;
+  parsed: (ReadDoc & { bill_to?: string; ship_to?: string; tracking?: TrackingHit[]; excerpt?: string }) | null;
   attempts: number;
   read_error: string | null;
   decision: string | null;
@@ -54,7 +56,7 @@ export interface MailStatus {
 }
 
 export async function loadInbox(): Promise<InboxItem[]> {
-  const cols = 'id, message_id, conversation_id, subject, sender_email, sender_name, received_at, file_name, size_bytes, storage_path, state, parsed, attempts, read_error, decision, order_id, decided_by, created_at, updated_at';
+  const cols = 'id, message_id, attachment_id, conversation_id, subject, sender_email, sender_name, received_at, file_name, size_bytes, storage_path, state, parsed, attempts, read_error, decision, order_id, decided_by, created_at, updated_at';
   return selectAllPagedFiltered<InboxItem>(() => supabase.from('kount_ot_inbox').select(cols), { column: 'created_at', ascending: false }, 1000, 20);
 }
 
@@ -88,6 +90,10 @@ export interface DeviceCode { user_code: string; verification_uri: string; expir
 export const startConnect = () => invokeMail<DeviceCode>({ action: 'connect_start' });
 export const pollConnect = () => invokeMail<{ state: 'waiting' | 'connected' | 'failed' | 'expired'; mailbox?: string; reason?: string }>({ action: 'connect_poll' });
 export const pullNow = () => invokeMail<{ started: boolean; reason?: string }>({ action: 'pull' });
+/** After a save: waiting items that now match an order (the invoice in the quote's thread, a tracking email) are applied. */
+export const redecideInbox = () => invokeMail<{ applied: number }>({ action: 'redecide' });
+
+export const isTrackingEmail = (i: Pick<InboxItem, 'attachment_id'>) => i.attachment_id === 'body';
 
 export async function disconnectMail(): Promise<void> {
   const { error } = await supabase.rpc('kount_ot_mail_disconnect');

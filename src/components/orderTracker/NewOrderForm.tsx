@@ -18,7 +18,7 @@ export function NewOrderForm({ items, orders, onSaved, onCancel }: {
   const [deliverTo, setDeliverTo] = useState<'warehouse' | 'venue'>('warehouse');
   const [orderedOn, setOrderedOn] = useState(isoDay(new Date()));
   const [expectedOn, setExpectedOn] = useState('');
-  const [status, setStatus] = useState<LineStatus>('ORDERED');
+  const [status, setStatus] = useState<LineStatus>('REQUESTED');
   const [notes, setNotes] = useState('');
   const [lines, setLines] = useState<DraftLine[]>([blank()]);
   const [saving, setSaving] = useState(false);
@@ -83,8 +83,10 @@ export function NewOrderForm({ items, orders, onSaved, onCancel }: {
           <Segment<'warehouse' | 'venue'> value={deliverTo} onChange={setDeliverTo}
             options={[{ value: 'warehouse', label: 'Delivers to warehouse' }, { value: 'venue', label: 'Delivers to venue' }]} />
         </div>
-        <div style={{ width: 220 }}>
-          <Segment<LineStatus> value={status} onChange={setStatus} options={[{ value: 'QUOTED', label: 'Quoted' }, { value: 'ORDERED', label: 'Ordered' }]} />
+        <div style={{ width: 320 }}>
+          <Segment<LineStatus> value={status} onChange={setStatus} options={[
+            { value: 'REQUESTED', label: 'Requested' }, { value: 'ORDERED', label: 'Ordered' }, { value: 'QUOTED', label: 'Quoted' },
+          ]} />
         </div>
         <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
           {deliverTo === 'warehouse' ? 'Delivered lines can be received into warehouse stock.' : 'Goes straight to the venue — no warehouse stock.'}

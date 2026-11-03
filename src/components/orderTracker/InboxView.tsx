@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Btn, Card, Pill } from '@/components/atoms';
-import { DOC_KIND_LABEL } from '@/lib/orderTracker';
-import { documentUrl } from '@/lib/orderTrackerData';
+import { DOC_KIND_LABEL, headlineStatus, STATUS_LABEL, trackingUrl, type OtLine, type OtOrder } from '@/lib/orderTracker';
+import { addTracking, documentUrl } from '@/lib/orderTrackerData';
 import {
-  disconnectMail, inboxGroups, mailStatus, pollConnect, pullNow, setDocKinds, setInboxState, setVendorDomains, startConnect,
+  disconnectMail, inboxGroups, isTrackingEmail, mailStatus, pollConnect, pullNow, setDocKinds, setInboxState, setVendorDomains, startConnect,
   type DeviceCode, type InboxItem, type MailStatus,
 } from '@/lib/orderMail';
 import { errBox, fmtMoney, linkBtn, okBox, picker, shortDate, smallInput, subTxt } from './shared';
 
 /** The morning mail pull: the Outlook connection, then what it found — waiting for a person first. */
-export function InboxView({ items, onReview, onOpenOrder, onChanged }: {
-  items: InboxItem[]; onReview: (item: InboxItem) => void; onOpenOrder: (orderId: string) => void; onChanged: () => void;
+export function InboxView({ items, orders, lines, onReview, onOpenOrder, onChanged }: {
+  items: InboxItem[]; orders: OtOrder[]; lines: OtLine[]; onReview: (item: InboxItem) => void; onOpenOrder: (orderId: string) => void; onChanged: () => void;
 }) {
   const g = inboxGroups(items);
   const [showSkipped, setShowSkipped] = useState(false);
@@ -33,7 +33,9 @@ export function InboxView({ items, onReview, onOpenOrder, onChanged }: {
         {g.waiting.length === 0 && <div style={{ marginTop: 8, fontSize: 13, color: 'var(--fg-muted)' }}>Nothing waiting.</div>}
         {g.waiting.map(i => <InboxRow key={i.id} item={i} actions={
           <>
-            {i.parsed && <Btn variant="primary" size="sm" onClick={() => onReview(i)}>Review</Btn>}
+            {isTrackingEmail(i)
+              ? <TrackingApply item={i} orders={orders} lines={lines} onDone={onChanged} />
+              : i.parsed && <Btn variant="primary" size="sm" onClick={() => onReview(i)}>Review</Btn>}
             <Btn variant="ghost" size="sm" onClick={() => void skip(i)}>Skip</Btn>
           </>
         } />)}
@@ -72,7 +74,8 @@ function InboxRow({ item: i, actions }: { item: InboxItem; actions: ReactNode })
   const open = async () => {
     try { window.open(await documentUrl(i.storage_path), '_blank', 'noopener'); } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
   };
-  const what = d ? [d.is_credit ? 'Credit memo' : DOC_KIND_LABEL[d.doc_kind] ?? d.doc_kind, d.vendor_name, d.doc_number && `#${d.doc_number}`, d.total ? fmtMoney(d.total) : null].filter(Boolean).join(' · ') : null;
+  const body = isTrackingEmail(i);
+  const what = body ? `Tracking ${(d?.tracking ?? []).map(t => `${t.carrier} ${t.number}`).join(', ')}` : d ? [d.is_credit ? 'Credit memo' : DOC_KIND_LABEL[d.doc_kind] ?? d.doc_kind, d.vendor_name, d.doc_number && `#${d.doc_number}`, d.total ? fmtMoney(d.total) : null].filter(Boolean).join(' · ') : null;
   return (
     <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', padding: '10px 0', borderTop: '1px solid var(--border)', marginTop: 8, flexWrap: 'wrap' }}>
       <div style={{ flex: '1 1 320px', minWidth: 0 }}>
@@ -85,7 +88,8 @@ function InboxRow({ item: i, actions }: { item: InboxItem; actions: ReactNode })
         {err && <div style={{ fontSize: 12, color: 'var(--raspberry-300)' }}>{err}</div>}
       </div>
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-        <button style={{ ...linkBtn, fontSize: 12 }} onClick={() => void open()} title={i.file_name ?? ''}>PDF</button>
+        {!body && <button style={{ ...linkBtn, fontSize: 12 }} onClick={() => void open()} title={i.file_name ?? ''}>PDF</button>}
+        {body && (d?.tracking ?? []).map(t => <a key={t.number} href={trackingUrl(t)} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12 }}>track</a>)}
         {actions}
       </div>
     </div>
@@ -93,6 +97,32 @@ function InboxRow({ item: i, actions }: { item: InboxItem; actions: ReactNode })
 }
 
 const KINDS: Array<[string, string]> = [['invoice', 'Invoices (+ credit memos)'], ['quote', 'Quotes'], ['confirmation', 'Order confirmations'], ['shipping', 'Shipping notices']];
+
+/** A tracking email the pull could not place: pick the order, add the numbers (its lines move to Shipped). */
+function TrackingApply({ item, orders, lines, onDone }: { item: InboxItem; orders: OtOrder[]; lines: OtLine[]; onDone: () => void }) {
+  const [orderId, setOrderId] = useState(item.order_id ?? '');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const open = orders.filter(o => !o.archived_at && !o.completed_at).sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const apply = async () => {
+    setBusy(true); setErr(null);
+    try { await addTracking(orderId, item.parsed?.tracking ?? [], { inboxId: item.id, source: 'email', note: `Tracking from email: ${item.subject ?? ''}`.slice(0, 200) }); onDone(); }
+    catch (e) { setErr(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
+  };
+  return (
+    <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+      <select style={{ ...smallInput, maxWidth: 260 }} value={orderId} onChange={e => setOrderId(e.target.value)} aria-label="Order">
+        <option value="">Which order?</option>
+        {open.map(o => {
+          const h = headlineStatus(lines.filter(l => l.order_id === o.id));
+          return <option key={o.id} value={o.id}>{o.order_number || 'No order #'} · {o.vendor_name}{h ? ` · ${STATUS_LABEL[h]}` : ''}</option>;
+        })}
+      </select>
+      <Btn variant="primary" size="sm" disabled={!orderId || busy} onClick={() => void apply()}>Add tracking</Btn>
+      {err && <span style={{ fontSize: 12, color: 'var(--raspberry-300)' }}>{err}</span>}
+    </span>
+  );
+}
 
 /** Connect Outlook (device code), pull now, document types, vendor domains, the last run. */
 function MailCard({ onChanged }: { onChanged: () => void }) {

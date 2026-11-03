@@ -13,7 +13,7 @@ import { OrdersView } from '@/components/orderTracker/OrdersView';
 import { WarehouseView } from '@/components/orderTracker/WarehouseView';
 import { DocumentReview } from '@/components/orderTracker/DocumentReview';
 import { InboxView } from '@/components/orderTracker/InboxView';
-import { loadInbox, type InboxItem } from '@/lib/orderMail';
+import { loadInbox, redecideInbox, type InboxItem } from '@/lib/orderMail';
 import { StatusPill, download, errBox, fmtCompact, fmtMoney, headRow, linkBtn, rowBorder, shortDate, subTxt, tbl, td, tdNum, th, thR } from '@/components/orderTracker/shared';
 
 /* ───────────────────────────────────────────────────────────────────────
@@ -69,7 +69,7 @@ export function OrderTracker({ today: todayProp, load = loadTracker, loadMail = 
     if (!data) return;
     setReportBusy(true);
     try {
-      const buf = await buildReportWorkbook({ ...data, venueName, today, includeClosed });
+      const buf = await buildReportWorkbook({ ...data, venueName, today, includeClosed, tracking: data.tracking });
       download(`Order tracker report ${today}.xlsx`, buf, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     } catch (e) {
       setError('Report not built: ' + (e instanceof Error ? e.message : String(e)));
@@ -114,7 +114,11 @@ export function OrderTracker({ today: todayProp, load = loadTracker, loadMail = 
         {data && reviewing && !docFile && (
           <DocumentReview key={reviewing.id} file={null} inbox={reviewing} data={data} today={today}
             onCancel={() => setReviewing(null)}
-            onDone={orderId => { setReviewing(null); setFocusOrder(orderId); setView('orders'); void reload(); }} />
+            onDone={orderId => {
+              setReviewing(null); setFocusOrder(orderId); setView('orders');
+              // other waiting documents of this order (its invoice, a tracking email) may now go in by themselves
+              void redecideInbox().catch(() => undefined).finally(() => void reload());
+            }} />
         )}
 
         {data && (
@@ -127,7 +131,7 @@ export function OrderTracker({ today: todayProp, load = loadTracker, loadMail = 
               ]} />
             </div>
             {view === 'orders' && <OrdersView data={data} today={today} venueName={venueName} onReload={() => void reload()} focusOrderId={focusOrder} />}
-            {view === 'inbox' && <InboxView items={inbox} onReview={i => { setReviewing(i); setDocFile(null); setNewOpen(false); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+            {view === 'inbox' && <InboxView items={inbox} orders={data.orders} lines={data.lines} onReview={i => { setReviewing(i); setDocFile(null); setNewOpen(false); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
               onOpenOrder={id => { setFocusOrder(id); setView('orders'); }} onChanged={() => void reload()} />}
             {view === 'warehouse' && <WarehouseView data={data} today={today} venueName={venueName} onReload={() => void reload()} />}
             {view === 'overview' && <Overview data={data} today={today} venueName={venueName} onOpen={id => { setFocusOrder(id); setView('orders'); }} />}
@@ -145,7 +149,7 @@ function Tiles({ data, today }: { data: TrackerData; today: string }) {
     const open = data.orders.filter(o => orderState(o, byOrder.get(o.id) ?? []) === 'open');
     const openLines = open.flatMap(o => (byOrder.get(o.id) ?? []).filter(l => l.status !== 'CANCELLED'));
     const late = open.flatMap(o => (byOrder.get(o.id) ?? []).filter(l => isLate(l, o, today, receivedForLine(data.moves, l.id))));
-    const onOrder$ = openLines.filter(l => statusRank(l.status) < statusRank('DELIVERED') && l.status !== 'QUOTED').reduce((a, l) => a + lineTotal(l), 0);
+    const onOrder$ = openLines.filter(l => statusRank(l.status) < statusRank('DELIVERED') && l.status !== 'REQUESTED').reduce((a, l) => a + lineTotal(l), 0);
     // archived orders were never real (tests, duplicates): they leave every total
     const live = new Set(data.orders.filter(o => !o.archived_at).map(o => o.id));
     const unpaid$ = data.lines.filter(l => l.status === 'INVOICED' && live.has(l.order_id)).reduce((a, l) => a + lineTotal(l), 0);

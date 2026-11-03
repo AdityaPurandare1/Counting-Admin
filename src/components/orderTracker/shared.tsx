@@ -6,8 +6,8 @@ import { STATUS_LABEL, type LineStatus } from '@/lib/orderTracker';
 type Tone = 'neutral' | 'gold' | 'critical' | 'caution' | 'positive' | 'inform' | 'ink' | 'ghost';
 
 const STATUS_TONE: Record<LineStatus, Tone> = {
-  QUOTED: 'ghost', ORDERED: 'neutral', CONFIRMED: 'inform', IN_PRODUCTION: 'inform', SHIPPED: 'caution',
-  DELIVERED: 'positive', INVOICED: 'gold', PAID: 'ink', CANCELLED: 'ghost',
+  REQUESTED: 'ghost', ORDERED: 'neutral', QUOTED: 'inform', INVOICED: 'gold', PAID: 'ink',
+  SHIPPED: 'caution', DELIVERED: 'positive', RECEIVED: 'positive', CANCELLED: 'ghost',
 };
 
 /** Status always carries its name — the colour is a second channel, never the only one. */

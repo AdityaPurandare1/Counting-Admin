@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import {
   statusRank, headlineStatus, orderState, isLate, statusAfterDocument, matchDocLines, matchItem, matchOrder,
   onHand, receivedForLine, stockRows, releasesByVenue, validateNewOrder, similarity, addDays, sameVendor,
-  planDocRows, planDocumentSave, documentChecks, decideMailDocument, type ReadDoc, type MailSource,
+  planDocRows, planDocumentSave, documentChecks, decideMailDocument, extractTracking, trackingUrl, orderForEmail, type ReadDoc, type MailSource,
   type OtItem, type OtLine, type OtMove, type OtOrder, type OtDocument, type DocLine, type DocReview,
 } from '../src/lib/orderTracker';
 import { pricePoints, histories, priceMoves, quoteChecks, invoiceRegister, spendByMonth, isInvoiced, priceMovesCsv } from '../src/lib/orderPrices';
@@ -44,14 +44,16 @@ const move = (itemId: string, kind: OtMove['kind'], qty: number, moved_on: strin
 });
 
 // ── lifecycle ──────────────────────────────────────────────────────────
-check('cycle order', statusRank('QUOTED') < statusRank('ORDERED') && statusRank('SHIPPED') < statusRank('DELIVERED') && statusRank('INVOICED') < statusRank('PAID'));
+check('cycle order = requested, ordered, quoted, invoiced, paid, shipped, delivered, received',
+  ['REQUESTED', 'ORDERED', 'QUOTED', 'INVOICED', 'PAID', 'SHIPPED', 'DELIVERED', 'RECEIVED'].every((st, i, a) => i === 0 || statusRank(a[i - 1] as never) < statusRank(st as never)));
 {
   const o = order();
   const ls = [line(o, { status: 'SHIPPED' }), line(o, { status: 'CONFIRMED' }), line(o, { status: 'CANCELLED' })];
   check('headline = least-advanced live line', headlineStatus(ls) === 'CONFIRMED', headlineStatus(ls));
   check('all cancelled -> CANCELLED; no lines -> null', headlineStatus([line(o, { status: 'CANCELLED' })]) === 'CANCELLED' && headlineStatus([]) === null);
   check('open while lines are moving', orderState(o, ls) === 'open');
-  check('every live line paid -> completed', orderState(o, [line(o, { status: 'PAID' }), line(o, { status: 'CANCELLED' })]) === 'completed');
+  check('every live line received -> completed', orderState(o, [line(o, { status: 'RECEIVED' }), line(o, { status: 'CANCELLED' })]) === 'completed');
+  check('paid is not done: it still has to ship', orderState(o, [line(o, { status: 'PAID' })]) === 'open');
   check('marked complete wins', orderState({ ...o, completed_at: 'x' }, ls) === 'completed');
   check('archived wins over everything', orderState({ ...o, archived_at: 'x', completed_at: 'x' }, ls) === 'archived');
   check('late: expected date passed, not delivered', isLate(line(o, { status: 'SHIPPED' }), o, '2026-10-20') === true);
@@ -66,7 +68,10 @@ check('cycle order', statusRank('QUOTED') < statusRank('ORDERED') && statusRank(
 check('invoice moves an ordered line to INVOICED', statusAfterDocument('ORDERED', 'invoice') === 'INVOICED');
 check('a confirmation does not pull a shipped line back', statusAfterDocument('SHIPPED', 'confirmation') === 'SHIPPED');
 check('an invoice for a paid line leaves it paid', statusAfterDocument('PAID', 'invoice') === 'PAID');
-check('a quote never re-opens an ordered line', statusAfterDocument('ORDERED', 'quote') === 'ORDERED');
+check('a quote moves an ordered line to QUOTED', statusAfterDocument('ORDERED', 'quote') === 'QUOTED');
+check('a quote never pulls an invoiced line back', statusAfterDocument('INVOICED', 'quote') === 'INVOICED');
+check('an order confirmation means ORDERED', statusAfterDocument('REQUESTED', 'confirmation') === 'ORDERED' && statusAfterDocument('PAID', 'confirmation') === 'PAID');
+check('a shipping notice after payment -> SHIPPED', statusAfterDocument('PAID', 'shipping') === 'SHIPPED');
 check('cancelled stays cancelled', statusAfterDocument('CANCELLED', 'invoice') === 'CANCELLED');
 check('new line from a shipping notice starts SHIPPED', statusAfterDocument(null, 'shipping') === 'SHIPPED');
 check('"other" documents change nothing', statusAfterDocument('ORDERED', 'other') === 'ORDERED' && statusAfterDocument(null, 'other') === null);
@@ -139,22 +144,24 @@ check('"other" documents change nothing', statusAfterDocument('ORDERED', 'other'
   // on order / awaiting receipt
   const o2 = order({ order_number: 'PO-101' });
   const shipped = line(o2, { item_id: bag.id, status: 'SHIPPED', qty: 50 });
-  const quoted = line(o2, { item_id: bag.id, status: 'QUOTED', qty: 999 });
+  const quoted = line(o2, { item_id: bag.id, status: 'REQUESTED', qty: 999 });
   const cancelled = line(o2, { item_id: bag.id, status: 'CANCELLED', qty: 999 });
   const delivered = line(o2, { item_id: bag.id, status: 'DELIVERED', qty: 30 });
   const toVenue = order({ order_number: 'PO-102', deliver_to: 'venue' });
   const venueLine = line(toVenue, { item_id: bag.id, status: 'SHIPPED', qty: 999 });
   const r2 = stockRows([bag], [move(bag.id, 'receipt', 10, '2026-10-02', { line_id: delivered.id })], [shipped, quoted, cancelled, delivered, venueLine], [o2, toVenue], '2026-10-20')[0];
-  check('incoming: every unreceived unit on open warehouse orders (not quotes, not cancelled, not venue deliveries)', r2.incoming === 70, r2.incoming);
+  check('incoming: every unreceived unit on open warehouse orders (not requests, not cancelled, not venue deliveries)', r2.incoming === 70, r2.incoming);
   check('awaiting receipt: the delivered-not-received part of incoming', r2.awaitingReceipt === 20, r2.awaitingReceipt);
   const doneO = order({ order_number: 'PO-103', completed_at: '2026-10-01T00:00:00Z' });
   const paidO = order({ order_number: 'PO-104' });
-  const r3 = stockRows([bag], [], [line(doneO, { item_id: bag.id, status: 'SHIPPED', qty: 40 }), line(paidO, { item_id: bag.id, status: 'PAID', qty: 40 })], [doneO, paidO], '2026-10-20')[0];
-  check('completed orders (by hand, or all paid) bring nothing more in', r3.incoming === 0, r3.incoming);
+  const r3 = stockRows([bag], [], [line(doneO, { item_id: bag.id, status: 'SHIPPED', qty: 40 }), line(paidO, { item_id: bag.id, status: 'RECEIVED', qty: 40 })], [doneO, paidO], '2026-10-20')[0];
+  check('completed orders (by hand, or all received) bring nothing more in', r3.incoming === 0, r3.incoming);
   const invoicedO = order({ order_number: 'PO-105' });
-  const invLine = line(invoicedO, { item_id: bag.id, status: 'INVOICED', qty: 40 });
+  const invLine = line(invoicedO, { item_id: bag.id, status: 'DELIVERED', qty: 40 });
   const r4 = stockRows([bag], [], [invLine, line(invoicedO, { item_id: bag.id, status: 'SHIPPED', qty: 1 })], [invoicedO], '2026-10-20')[0];
-  check('an invoiced line not received yet is still incoming', r4.incoming === 41 && r4.awaitingReceipt === 40, r4);
+  check('a delivered line not received yet is still incoming (awaiting receipt)', r4.incoming === 41 && r4.awaitingReceipt === 40, r4);
+  const r4b = stockRows([bag], [], [line(invoicedO, { item_id: bag.id, status: 'QUOTED', qty: 5 })], [invoicedO], '2026-10-20')[0];
+  check('a quoted line counts as coming (it was ordered first)', r4b.incoming === 5, r4b.incoming);
   const rpItem = item({ reorder_point: 20 });
   const openO = order({ order_number: 'PO-106' });
   const r5 = stockRows([rpItem], [move(rpItem.id, 'count', 10, '2026-10-01')], [line(openO, { item_id: rpItem.id, status: 'ORDERED', qty: 50 })], [openO], '2026-10-20')[0];
@@ -356,7 +363,9 @@ check('"other" documents change nothing', statusAfterDocument('ORDERED', 'other'
   check('report: a line row per line with invoice #', all.lines.length === 3 && all.lines.some(r => r[11] === 'INV-5'));
   check('report: warehouse on hand', all.warehouse.length === 2 && all.warehouse[1][4] === 96, all.warehouse[1]);
   check('report: warehouse incoming column', all.warehouse[0][5] === 'Incoming (not received yet)' && all.warehouse[1][5] === 100, all.warehouse[1]);
-  check('report: spend sheet from invoiced lines', all.spend.length === 2 && all.spend[1][0] === '2026-09');
+  // prepaid: a SHIPPED line has been invoiced and paid, so it is spend too (Aug, from its status date)
+  check('report: spend sheet from invoiced lines (shipped = invoiced first)', all.spend.length === 3 && all.spend.some(r => r[0] === '2026-09') && all.spend.some(r => r[0] === '2026-08'), all.spend);
+  check('report: orders sheet has the tracking column', all.orders[0].includes('Tracking #s'));
 }
 
 // ── wiring ─────────────────────────────────────────────────────────────
@@ -406,6 +415,39 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
     check('the morning pull runs an identical copy of src/lib/orderTracker.ts', readFileSync(serverCopy, 'utf8') === src('src/lib/orderTracker.ts'),
       'copy src/lib/orderTracker.ts to Counting-App/supabase/functions/_shared/orderTracker.ts and redeploy kount-order-mail');
   }
+}
+
+// ── tracking numbers in vendor emails (0137) ─────────────────────────
+{
+  const jemma = "Hi Hursh, here's the tracking Fedex with tracking# 879337642791 and 879337641177 Thanks On Fri, Oct 16, 2026 at 7:21 AM Jemma Eredera <jemma@eemercantile.co> wrote:";
+  const hits = extractTracking(jemma);
+  check('tracking: both FedEx numbers from E&E\'s reply', hits.length === 2 && hits.every(h => h.carrier === 'FedEx') && hits.map(h => h.number).join() === '879337642791,879337641177', hits);
+  check('tracking: UPS 1Z anywhere', extractTracking('Your box: 1Z999AA10123456784 arrives Tue')[0]?.carrier === 'UPS');
+  check('tracking: USPS 22-digit', extractTracking('USPS tracking 9400 1000 0000 0000 0000 00')[0]?.number === '9400100000000000000000');
+  const sig = 'Aleli Abad Buyer- OS&E 323.576.3157 EEMercantile.co. Invoice INV-2026-086418 total $2397.33. Account #: 215732249556 on Oct 29, 2026';
+  check('tracking: phone, invoice #, dates and an account # with no tracking word are not taken', extractTracking(sig).length === 0, extractTracking(sig));
+  check('tracking: "will ship after November 15" has no number -> nothing', extractTracking('the glasses will be available to ship after November 15 (estimate only)').length === 0);
+  check('tracking links', trackingUrl({ number: '879337642791', carrier: 'FedEx' }).includes('fedex.com') && trackingUrl({ number: '1Z9', carrier: 'UPS' }).includes('ups.com'));
+
+  const o = order({ order_number: null, vendor_name: 'EE Mercantile' }), o2 = order({ vendor_name: 'EE Mercantile' });
+  const l1 = line(o, { invoice_number: 'INV-2026-918389', status: 'PAID' });
+  const d1: OtDocument = { id: 'd1', order_id: o.id, kind: 'quote', doc_number: 'Q-1', doc_date: null, vendor_name: 'EE Mercantile', total: 1, file_name: null, storage_path: null, created_at: '', source_conversation_id: 'POPPY-BAGS' };
+  const data = { orders: [o, o2], lines: [l1], documents: [d1] };
+  check('email -> order: the quote\'s thread', orderForEmail('POPPY-BAGS', jemma, data)?.id === o.id);
+  check('email -> order: an invoice # in the text', orderForEmail(null, 'Shipped today for INV-2026-918389, tracking 1Z999AA10123456784', data)?.id === o.id);
+  check('email -> order: nothing to go on -> none', orderForEmail('OTHER', jemma, data) === null);
+  check('email -> order: never an archived order', orderForEmail('POPPY-BAGS', jemma, { ...data, orders: [{ ...o, archived_at: 'x' }, o2] }) === null);
+}
+
+// a quote that arrives AFTER the invoice never overwrites the invoiced price
+{
+  const o = order({ expected_on: null });
+  const inv = line(o, { status: 'INVOICED', invoice_number: 'INV-1', unit_price: 60, sku: 'S1', description: 'Bag' });
+  const dl: DocLine = { line_kind: 'product', description: 'Bag', sku: 'S1', qty: 100, unit: 'case', unit_price: 55, line_total: 5500, pack_size: 0 };
+  const rows = planDocRows([dl], [inv], [], 'quote');
+  const p = planDocumentSave({ docId: 'q', kind: 'quote', vendor: 'EE Mercantile', docNumber: 'Q-9', docDate: '', orderNumber: '', expected: '', tracking: '', order: o, orderLines: [inv],
+    deliverTo: 'warehouse', venueId: '', rows, today: '2026-11-02', fileName: 'q.pdf', storagePath: 'docs/q.pdf', total: 5500, parsed: {} });
+  check('late quote: records the quote #, keeps the invoiced price and status', p.updates.length === 1 && p.updates[0].quote_number === 'Q-9' && !('unit_price' in p.updates[0]) && !('status' in p.updates[0]), p.updates);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

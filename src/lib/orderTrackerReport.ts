@@ -7,7 +7,7 @@
 import type ExcelJSNS from 'exceljs';
 import {
   STATUS_LABEL, headlineStatus, lineTotal, orderState, receivedForLine, stockRows,
-  type OtItem, type OtLine, type OtMove, type OtOrder, type StockRow,
+  type OtItem, type OtLine, type OtMove, type OtOrder, type OtTracking, type StockRow,
 } from './orderTracker';
 import { isInvoiced, pricePoints, spendByMonth } from './orderPrices';
 
@@ -19,6 +19,7 @@ export interface ReportInput {
   venueName: (id: string | null) => string;
   today: string;            // YYYY-MM-DD
   includeClosed: boolean;   // completed orders too (archived never)
+  tracking?: OtTracking[];
 }
 
 export type Cell = string | number | null;
@@ -43,7 +44,7 @@ export function buildReportRows(inp: ReportInput): ReportSheets {
     .filter(o => inp.includeClosed || orderState(o, linesByOrder.get(o.id) ?? []) === 'open')
     .sort((a, b) => (a.ordered_on ?? a.created_at).localeCompare(b.ordered_on ?? b.created_at));
 
-  const orders: Cell[][] = [['Order #', 'Vendor', 'For', 'Deliver to', 'Ordered', 'Expected', 'Status', 'State', 'Lines', 'Order total', 'Invoiced', 'Invoice #s', 'Last update']];
+  const orders: Cell[][] = [['Order #', 'Vendor', 'For', 'Deliver to', 'Ordered', 'Expected', 'Status', 'State', 'Lines', 'Order total', 'Invoiced', 'Invoice #s', 'Tracking #s', 'Last update']];
   const lines: Cell[][] = [['Order #', 'Vendor', 'Item', 'SKU', 'Qty', 'Unit', 'Unit price', 'Line total', 'Status', 'Status since',
     'Quote #', 'Invoice #', 'Invoice date', 'Tracking #', 'Expected', 'Received into warehouse']];
   for (const o of shown) {
@@ -55,7 +56,8 @@ export function buildReportRows(inp: ReportInput): ReportSheets {
     orders.push([o.order_number ?? '', o.vendor_name, inp.venueName(o.venue_id), o.deliver_to === 'warehouse' ? 'Warehouse' : 'Venue',
       o.ordered_on ?? '', o.expected_on ?? '', head ? STATUS_LABEL[head] : '—', orderState(o, ls), ls.length,
       r2(ls.filter(l => l.status !== 'CANCELLED').reduce((s, l) => s + lineTotal(l), 0)), r2(invoiced.reduce((s, l) => s + lineTotal(l), 0)),
-      invNums, lastUpdate.slice(0, 10)]);
+      invNums, [...new Set([...(inp.tracking ?? []).filter(t => t.order_id === o.id).map(t => t.tracking_number),
+        ...ls.map(l => l.tracking_number).filter((x): x is string => !!x)])].join(', '), lastUpdate.slice(0, 10)]);
     for (const l of ls) {
       const item = l.item_id ? itemById.get(l.item_id) : undefined;
       const tracked = item?.track_stock && o.deliver_to === 'warehouse';

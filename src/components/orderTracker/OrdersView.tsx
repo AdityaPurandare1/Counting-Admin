@@ -1,10 +1,10 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { Btn, Card, Pill, Segment } from '@/components/atoms';
 import {
-  ALL_STATUSES, STATUS_LABEL, headlineStatus, isLate, lineTotal, orderState, receivedForLine, statusRank, isoDay,
+  ALL_STATUSES, STATUS_LABEL, extractTracking, headlineStatus, isLate, lineTotal, orderState, receivedForLine, statusRank, isoDay, trackingUrl,
   type LineStatus, type OtLine, type OtOrder, type OrderState,
 } from '@/lib/orderTracker';
-import { addLines, addMove, deleteLine, documentUrl, loadEvents, updateLine, updateOrder, type EventRow, type TrackerData } from '@/lib/orderTrackerData';
+import { addLines, addMove, addTracking, deleteLine, documentUrl, loadEvents, removeTracking, updateLine, updateOrder, type EventRow, type TrackerData } from '@/lib/orderTrackerData';
 import { StatusPill, errBox, fmtMoney, fmtQty, headRow, linkBtn, picker, rowBorder, shortDate, smallInput, subTxt, tbl, td, tdNum, th, thR } from './shared';
 
 type StateFilter = 'open' | 'completed' | 'all' | 'archived';
@@ -36,11 +36,12 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId }: {
       if (state === 'all' && r.st === 'archived') return false;
       if (vendor && r.o.vendor_name !== vendor) return false;
       if (!term) return true;
-      const hay = [r.o.order_number, r.o.vendor_name, venueName(r.o.venue_id), ...r.ls.flatMap(l => [l.description, l.sku, l.invoice_number, l.quote_number, l.tracking_number])]
+      const hay = [r.o.order_number, r.o.vendor_name, venueName(r.o.venue_id), ...r.ls.flatMap(l => [l.description, l.sku, l.invoice_number, l.quote_number, l.tracking_number]),
+        ...data.tracking.filter(t => t.order_id === r.o.id).map(t => t.tracking_number)]
         .filter(Boolean).join(' ').toLowerCase();
       return hay.includes(term);
     }).sort((a, b) => (b.o.ordered_on ?? b.o.created_at).localeCompare(a.o.ordered_on ?? a.o.created_at));
-  }, [data.orders, linesByOrder, q, state, vendor, venueName]);
+  }, [data.orders, data.tracking, linesByOrder, q, state, vendor, venueName]);
 
   return (
     <>
@@ -77,6 +78,7 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId }: {
                   const delivered = ls.filter(l => l.status !== 'CANCELLED' && statusRank(l.status) >= statusRank('DELIVERED')).length;
                   const live = ls.filter(l => l.status !== 'CANCELLED');
                   const invs = [...new Set(ls.map(l => l.invoice_number).filter(Boolean))];
+                  const trk = data.tracking.filter(t => t.order_id === o.id);
                   return (
                     <Fragment key={o.id}>
                       <tr style={{ ...rowBorder, cursor: 'pointer', background: open === o.id ? 'var(--surface-alt)' : undefined }} onClick={() => setOpen(open === o.id ? null : o.id)}>
@@ -93,7 +95,10 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId }: {
                         <td style={tdNum}>{ls.length}</td>
                         <td style={tdNum}>{fmtMoney(live.reduce((s, l) => s + lineTotal(l), 0))}</td>
                         <td style={td}>{shortDate(o.expected_on)}{late && <div><Pill tone="critical" size="sm">Late</Pill></div>}</td>
-                        <td style={{ ...td, fontSize: 12 }}>{invs.length ? invs.join(', ') : <span style={{ color: 'var(--fg-muted)' }}>—</span>}</td>
+                        <td style={{ ...td, fontSize: 12 }}>
+                          {invs.length ? invs.join(', ') : <span style={{ color: 'var(--fg-muted)' }}>—</span>}
+                          {trk.length > 0 && <div style={subTxt}>{trk.length} tracking # · {trk[trk.length - 1].carrier ?? 'carrier ?'}</div>}
+                        </td>
                       </tr>
                       {open === o.id && (
                         <tr><td colSpan={7} style={{ padding: 0, background: 'var(--surface-alt)' }}>
@@ -123,6 +128,11 @@ function OrderDetail({ order, lines, data, today, venueName, onReload }: {
   const [history, setHistory] = useState<EventRow[] | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [newLine, setNewLine] = useState({ description: '', sku: '', qty: '', unit: '', unitPrice: '', itemId: '' });
+  const [newTracking, setNewTracking] = useState('');
+  const tracking = data.tracking.filter(t => t.order_id === order.id);
+  // numbers only on the lines (a shipping notice PDF, typed on a line) show as links too
+  const lineTracking = [...new Set(lines.flatMap(l => (l.tracking_number ?? '').split(/[,;\s]+/)).map(x => x.trim().toUpperCase()).filter(x => x.length >= 8))]
+    .filter(n => !tracking.some(t => t.tracking_number === n)).map(n => extractTracking(`tracking ${n}`)[0] ?? { number: n, carrier: null });
   const docs = data.documents.filter(d => d.order_id === order.id).sort((a, b) => b.created_at.localeCompare(a.created_at));
   const itemById = useMemo(() => new Map(data.items.map(i => [i.id, i])), [data.items]);
 
@@ -149,9 +159,9 @@ function OrderDetail({ order, lines, data, today, venueName, onReload }: {
     if (qty > left + 1e-9) { setErr(`Only ${fmtQty(left)} left to receive on this line. If more arrived, raise the line's quantity first.`); return; }
     void run(async () => {
       await addMove({ item_id: l.item_id!, moved_on: recvDate || today, kind: 'receipt', qty, venue_id: null, line_id: l.id, note: `order ${order.order_number ?? ''}`.trim() });
-      // delivered only once all of it is in; a part delivery leaves the status where it was
-      if (got + qty >= l.qty - 1e-9 && statusRank(l.status) < statusRank('DELIVERED')) {
-        await updateLine(l.id, { status: 'DELIVERED' }, { source: 'manual', note: 'received into warehouse' });
+      // received only once all of it is in; a part delivery leaves the status where it was
+      if (got + qty >= l.qty - 1e-9 && statusRank(l.status) < statusRank('RECEIVED')) {
+        await updateLine(l.id, { status: 'RECEIVED' }, { source: 'manual', note: 'received into warehouse' });
       }
       setReceiving(null);
     });
@@ -187,6 +197,30 @@ function OrderDetail({ order, lines, data, today, venueName, onReload }: {
           <input key={`${order.id}:${order.updated_at}:n`} style={{ ...smallInput, width: 120 }} defaultValue={order.order_number ?? ''} onBlur={e => { const v = e.target.value.trim() || null; if (v !== order.order_number) void run(() => updateOrder(order.id, { order_number: v })); }} />
         </label>
         {order.notes && <span>Note: {order.notes}</span>}
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', fontSize: 12, marginTop: 8 }}>
+        <span style={{ color: 'var(--fg-muted)' }}>Tracking:</span>
+        {tracking.length === 0 && lineTracking.length === 0 && <span style={{ color: 'var(--fg-muted)' }}>none yet</span>}
+        {lineTracking.map(t => (
+          <a key={t.number} href={trackingUrl(t)} target="_blank" rel="noopener noreferrer" style={{ padding: '2px 8px', borderRadius: 12, background: 'var(--surface)' }}>{t.carrier ? `${t.carrier} ` : ''}{t.number}</a>
+        ))}
+        {tracking.map(t => (
+          <span key={t.id} style={{ display: 'inline-flex', gap: 4, alignItems: 'center', padding: '2px 8px', borderRadius: 12, background: 'var(--surface)' }}
+                title={[t.source === 'email' ? 'from email' : t.source, t.note, new Date(t.created_at).toLocaleDateString()].filter(Boolean).join(' · ')}>
+            <a href={trackingUrl({ number: t.tracking_number, carrier: t.carrier })} target="_blank" rel="noopener noreferrer">{t.carrier ? `${t.carrier} ` : ''}{t.tracking_number}</a>
+            <button style={{ ...linkBtn, fontWeight: 400, textDecoration: 'none', color: 'var(--fg-muted)' }} disabled={busy} aria-label={`Remove ${t.tracking_number}`}
+              onClick={() => { if (confirm(`Remove tracking ${t.tracking_number}?`)) void run(() => removeTracking(t.id)); }}>×</button>
+          </span>
+        ))}
+        <input style={{ ...smallInput, width: 190 }} placeholder="add a tracking #" value={newTracking} onChange={e => setNewTracking(e.target.value)} />
+        {newTracking.trim() && (
+          <Btn variant="secondary" size="sm" disabled={busy} onClick={() => {
+            const raw = newTracking.trim();
+            const hits = extractTracking(`tracking ${raw}`);
+            const numbers = hits.length ? hits : [{ number: raw.toUpperCase(), carrier: null }];
+            void run(async () => { await addTracking(order.id, numbers, { source: 'manual', note: 'added by hand' }); setNewTracking(''); });
+          }}>Add (marks it shipped)</Btn>
+        )}
       </div>
 
       <div style={{ overflowX: 'auto', marginTop: 10 }}>
@@ -226,7 +260,7 @@ function OrderDetail({ order, lines, data, today, venueName, onReload }: {
                       {!tracked ? <span style={{ color: 'var(--fg-muted)' }}>{order.deliver_to === 'venue' ? 'to venue' : item ? 'not stocked' : 'one-off'}</span> : (
                         <>
                           <div>{fmtQty(got)} of {fmtQty(l.qty)} received</div>
-                          {left > 0 && l.status !== 'CANCELLED' && l.status !== 'QUOTED' && (
+                          {left > 0 && l.status !== 'CANCELLED' && l.status !== 'REQUESTED' && (
                             <button style={{ ...linkBtn, fontSize: 12 }} onClick={() => { setReceiving(l.id); setRecvQty(fmtQty(left)); setRecvDate(today); }}>Receive</button>
                           )}
                         </>
@@ -246,7 +280,7 @@ function OrderDetail({ order, lines, data, today, venueName, onReload }: {
                         <input type="date" style={smallInput} value={recvDate} onChange={e => setRecvDate(e.target.value)} />
                         <Btn variant="primary" size="sm" onClick={() => receive(l)} disabled={busy}>Receive</Btn>
                         <Btn variant="ghost" size="sm" onClick={() => setReceiving(null)}>Cancel</Btn>
-                        <span style={{ color: 'var(--fg-muted)' }}>Adds to on-hand stock; the line is marked delivered once all of it is received.</span>
+                        <span style={{ color: 'var(--fg-muted)' }}>Adds to on-hand stock; the line is marked received once all of it is in.</span>
                       </div>
                     </td></tr>
                   )}
