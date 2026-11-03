@@ -7,7 +7,7 @@ import { Pill, SevChip, Card, Eyebrow, Btn, Money, Num } from '@/components/atom
 import { Ic } from '@/components/Icons';
 import { auditStageLabel } from '@/lib/auditPhase';
 
-import { isOrgWide, hasCorporateAccess } from '@/lib/access';
+import { can, isOrgWide } from '@/lib/access';
 /* ───────────────────────────────────────────────────────────────────────
    Recount screen (v0.7)
 
@@ -31,7 +31,7 @@ export function Recount({ user }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(auditParam);
 
   const filterVisible = useCallback((rows: KountAudit[]) => rows.filter(a => {
-    if (isOrgWide(user.role) || user.venueIds === 'all') return true;
+    if (isOrgWide(user) || user.venueIds === 'all') return true;
     return Array.isArray(user.venueIds) && user.venueIds.includes(a.venue_id);
   }), [user]);
 
@@ -135,7 +135,7 @@ function RecountDetail({ auditId, auditLabel, user }: { auditId: string; auditLa
     // Defense-in-depth: dismiss is UI-gated to corporate (the action column
     // only renders for corporate-or-above); guard the handler too so
     // a read-only role (e.g. venue_manager) can never trigger the write.
-    if (!hasCorporateAccess(user.role)) return;
+    if (!can(user, 'audit:manage')) return;
     if (!confirm(`Dismiss ${row.item_name}?\n\nIt'll no longer block Count 2 close.`)) return;
     const { error } = await supabase
       .from('kount_recounts')
@@ -249,7 +249,7 @@ function RecountDetail({ auditId, auditLabel, user }: { auditId: string; auditLa
                   <th style={{ padding: '4px 4px' }}>Count 2</th>
                   <th style={{ padding: '4px 4px' }}>Variance</th>
                   <th style={{ padding: '4px 4px' }}>Status</th>
-                  {hasCorporateAccess(user.role) && <th />}
+                  {can(user, 'audit:manage') && <th />}
                 </tr>
               </thead>
               <tbody>
@@ -271,7 +271,7 @@ function RecountDetail({ auditId, auditLabel, user }: { auditId: string; auditLa
                         {r.status}
                       </Pill>
                     </td>
-                    {hasCorporateAccess(user.role) && (
+                    {can(user, 'audit:manage') && (
                       <td style={{ padding: '8px 4px', textAlign: 'right' }}>
                         {r.status === 'pending' && (
                           <Btn variant="ghost" size="sm" leading={Ic.close(12)} onClick={() => void dismiss(r)}>Dismiss</Btn>

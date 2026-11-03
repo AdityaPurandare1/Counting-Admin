@@ -69,11 +69,11 @@ check('transfer net handles missing columns', transferNet({}) === 0);
 
 // wiring
 const src = (p: string) => readFileSync(join(process.cwd(), p), 'utf8');
-const app = src('src/App.tsx'); const side = src('src/components/Sidebar.tsx');
-check('Inventory route redirects (archived)', app.includes('<Route path="/inventory" element={<Navigate to="/variance" replace />} />'));
-check('Inventory nav row commented out', /\/\/ \{ to: '\/inventory'/.test(side) && !/^\s*\{ to: '\/inventory'/m.test(side));
-check('Transfers route gated by canRunAudits', app.includes('<Route path="/transfers" element={canRunAudits(user.role) ? <Transfers user={user} />'));
-check('Transfers nav row present', side.includes("{ to: '/transfers',      label: 'Transfers'"));
+const app = src('src/App.tsx'); const side = src('src/lib/routes.ts');   // v0.96: the nav lives in routes.ts, by permission
+check('Inventory route redirects (archived)', app.includes('<Route path="/inventory" element={<Navigate to={home} replace />} />'));
+check('Inventory nav row archived (no /inventory link)', !/to: '\/inventory'/.test(side) && /Inventory archived/.test(side));
+check('Transfers route gated by its permission', app.includes(`<Route path="/transfers" element={gate('admin:transfers', <Transfers user={user} />)} />`));
+check('Transfers nav row present', side.includes("{ to: '/transfers', label: 'Transfers', key: 'admin:transfers' }"));
 const t = src('src/screens/Transfers.tsx');
 check('create via kount_create_transfer with the 0099 parameters', t.includes("supabase.rpc('kount_create_transfer', {") && t.includes('p_lines: payload'));
 check('delete via kount_delete_transfer', t.includes("supabase.rpc('kount_delete_transfer', { p_id: r.id })"));

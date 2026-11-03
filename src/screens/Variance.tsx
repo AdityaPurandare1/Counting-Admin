@@ -12,7 +12,7 @@ import { parseQtyDraft } from '@/lib/qtyDraft';
 import { auditStageLabel } from '@/lib/auditPhase';
 import { localIsoDate } from '@/lib/auditReport';
 
-import { isOrgWide, hasCorporateAccess, canRunAudits, canEditCounts } from '@/lib/access';
+import { can, isOrgWide, canRunAudits, canEditCounts } from '@/lib/access';
 /* ───────────────────────────────────────────────────────────────────────
    Variance screen (v0.3)
 
@@ -47,7 +47,7 @@ export function Variance({ user }: Props) {
   const [dateFilter, setDateFilter] = useState<string>('');
 
   const filterVisible = useCallback((rows: KountAudit[]) => rows.filter(a => {
-    if (isOrgWide(user.role) || user.venueIds === 'all') return true;
+    if (isOrgWide(user) || user.venueIds === 'all') return true;
     return Array.isArray(user.venueIds) && user.venueIds.includes(a.venue_id);
   }), [user]);
 
@@ -118,7 +118,7 @@ export function Variance({ user }: Props) {
   const openAudit = (id: string) => {
     const a = [...activeAudits, ...historicAudits].find(x => x.id === id);
     if (!a) return;
-    if (!isOrgWide(user.role)) {
+    if (!isOrgWide(user)) {
       const ok = user.venueIds === 'all' || (Array.isArray(user.venueIds) && user.venueIds.includes(a.venue_id));
       if (!ok) return;
     }
@@ -325,11 +325,11 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
   // v0.72: show a Transfers column only when this report holds any (0099).
   const hasTransfers = useMemo(() => avtRows.some(r => transferNet(r) !== 0), [avtRows]);
 
-  const canClose = canRunAudits(user.role)
+  const canClose = canRunAudits(user)
     && audit?.status === 'active'
     && audit?.count_phase === 'count1';
 
-  const canCancel = hasCorporateAccess(user.role) && audit?.status === 'active';
+  const canCancel = can(user, 'audit:manage') && audit?.status === 'active';
 
   // Correcting a miscount is the venue's own job. A submitted audit turns the
   // Counts screen read-only for everyone, so this row is the only way to fix a
@@ -341,21 +341,21 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
   // quietly change it afterwards. Scoped the same way the audit list scopes
   // itself — org-wide roles see all, a GM gets their own venues and nothing else.
   const canEditEntries =
-    canEditCounts(user.role) &&
+    canEditCounts(user) &&
     (user.venueIds === 'all' ||
       (!!audit && Array.isArray(user.venueIds) && user.venueIds.includes(audit.venue_id)));
 
   // Deleting a count line stays with the org-wide roles. Editing a number is a
   // correction; removing the line is a different thing, and the entry-delete
   // guard exists because losing one has caused double counts before.
-  const canDeleteEntries = hasCorporateAccess(user.role);
+  const canDeleteEntries = can(user, 'audit:delete-lines');
   const [cancelling, setCancelling] = useState(false);
 
   // Finalize from the desktop once Count 1 is closed (phase review/count2).
   // Mirrors the phone's finalizeCount2 stamp: status submitted + phase final +
   // completed_at, then recompute the AVT so the final variance reflects the
   // latest counts. Available to corporate + managers (same gate as close).
-  const canComplete = canRunAudits(user.role)
+  const canComplete = canRunAudits(user)
     && audit?.status === 'active'
     && (audit?.count_phase === 'review' || audit?.count_phase === 'count2');
   const [completing, setCompleting] = useState(false);

@@ -24,6 +24,15 @@ export interface InviteArgs {
   redirect_to?: string;  // where the invite link sends the user (defaults to current origin)
 }
 
+/** v0.96: a person's roles (one primary), permissions and venues, saved together (User access). */
+export interface SetAccessArgs {
+  email: string;
+  role: Role;
+  roles: Role[];
+  features: string[];
+  venue_ids: string[];
+}
+
 export interface UpdateProfileArgs {
   email: string;
   name?: string;
@@ -141,6 +150,10 @@ export const adminUserMgmt = {
     // the admin happens to be browsing.
     const redirect = redirectTo || APP_URL.admin;
     return callAdminFunction({ action: 'reset_password', email, redirect_to: redirect });
+  },
+
+  setAccess(args: SetAccessArgs) {
+    return callAdminFunction({ action: 'set_access', ...args });
   },
 
   updateProfile(args: UpdateProfileArgs) {

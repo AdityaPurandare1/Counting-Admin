@@ -26,20 +26,18 @@ const access = src('src/lib/access.ts');
 const login = src('src/screens/Login.tsx');
 const app = src('src/App.tsx');
 
-const m = access.match(/export const DESKTOP_ROLES[^=]*=\s*\[([^\]]*)\]/);
-const roles = m ? [...m[1].matchAll(/'([a-z_]+)'/g)].map((x) => x[1]) : [];
-check('access.ts exports DESKTOP_ROLES', roles.length > 0);
-for (const r of ['admin', 'corporate', 'manager', 'venue_manager']) {
-  check(`DESKTOP_ROLES includes '${r}'`, roles.includes(r), roles);
-}
-check("DESKTOP_ROLES excludes 'counter' (counters use the phone)", !roles.includes('counter'), roles);
+// v0.96: the desktop admits whoever has a desktop permission (access.ts isDesktopUser -> permissions.ts usesDesktop)
+check('access.ts has the one check, isDesktopUser', /export function isDesktopUser\(u: Who\): boolean \{\s*return usesDesktop\(featuresOf\(u\)\);/.test(access));
+const perms = src('src/lib/permissions.ts');
+check('a desktop permission is any outside the phone\'s', /usesDesktop = \(features: readonly string\[\]\) => features\.some\(k => FEATURE_KEYS\.has\(k\) && projectOf\(k\) !== 'phone'\)/.test(perms));
+check("the counter template is phone-only (counters use the phone)", /counter: \['phone:count'\]/.test(perms));
 
 // No screen may re-declare its own list of desktop roles.
 const literal = /\[\s*'(admin|corporate|manager|venue_manager)'\s*,\s*'(admin|corporate|manager|venue_manager)'/;
 check('Login.tsx has no hardcoded role list', !literal.test(login));
 check('App.tsx has no hardcoded role list', !literal.test(app));
-check('Login.tsx gates on isDesktopRole', /isDesktopRole\(resolved\.role\)/.test(login));
-check('App.tsx gates on isDesktopRole (password-set + restored session)', (app.match(/isDesktopRole\(/g) ?? []).length >= 2);
+check('Login.tsx gates on isDesktopUser', /isDesktopUser\(resolved\)/.test(login));
+check('App.tsx gates on isDesktopUser (password-set + restored session)', (app.match(/isDesktopUser\(/g) ?? []).length >= 2);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

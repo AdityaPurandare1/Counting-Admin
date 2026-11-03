@@ -73,7 +73,7 @@ export function Overview({ user }: Props) {
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const visibleVenues = useMemo(() => {
-    if (isOrgWide(user.role) || user.venueIds === 'all') return VENUES;
+    if (isOrgWide(user) || user.venueIds === 'all') return VENUES;
     const set = new Set(Array.isArray(user.venueIds) ? user.venueIds : []);
     return VENUES.filter(v => set.has(v.id));
   }, [user]);
@@ -118,7 +118,7 @@ export function Overview({ user }: Props) {
     const opening = await loadOpeningAuditIds();
     if (opening.error) console.warn('[overview] opening counts not identified', opening.error);
     const inScope = ((auditRows ?? []) as KountAudit[]).filter(a => {
-      if (isOrgWide(user.role) || user.venueIds === 'all') return true;
+      if (isOrgWide(user) || user.venueIds === 'all') return true;
       return Array.isArray(user.venueIds) && user.venueIds.includes(a.venue_id);
     });
     // v0.73: a venue's opening count has nothing to compare against -- its variance is the opening

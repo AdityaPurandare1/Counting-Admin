@@ -60,14 +60,14 @@ export function Counts({ user }: Props) {
   const [params, setParams] = useSearchParams();
   const auditParam = params.get('audit');
 
-  const isAdminish = canRunAudits(user.role);
+  const isAdminish = canRunAudits(user);
 
   const [audits, setAudits]       = useState<KountAudit[]>([]);
   const [selectedId, setSelected] = useState<string | null>(auditParam);
   const [showStart, setShowStart] = useState(false);
 
   const filterVisible = useCallback((rows: KountAudit[]) => rows.filter(a => {
-    if (isOrgWide(user.role) || user.venueIds === 'all') return true;
+    if (isOrgWide(user) || user.venueIds === 'all') return true;
     return Array.isArray(user.venueIds) && user.venueIds.includes(a.venue_id);
   }), [user]);
 
@@ -108,7 +108,7 @@ export function Counts({ user }: Props) {
       // Respect venue scope so a manager can't view audits from venues they
       // don't have access to via a hand-crafted URL.
       const visible =
-        isOrgWide(user.role) || user.venueIds === 'all' ||
+        isOrgWide(user) || user.venueIds === 'all' ||
         (Array.isArray(user.venueIds) && user.venueIds.includes(row.venue_id));
       if (!visible) return;
       setAudits(prev => prev.some(a => a.id === row.id) ? prev : [row, ...prev]);
@@ -186,7 +186,7 @@ export function Counts({ user }: Props) {
 /* ────────── Per-audit workspace ────────── */
 
 function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry }) {
-  const isAdminish   = canRunAudits(user.role);
+  const isAdminish   = canRunAudits(user);
   const isReadOnly   = audit.status !== 'active';
 
   const [entries, setEntries] = useState<KountEntry[]>([]);
@@ -1543,7 +1543,7 @@ function StartAuditModal({
   onStarted: (id: string) => void;
 }) {
   const visibleVenues = useMemo(() => {
-    if (isOrgWide(user.role) || user.venueIds === 'all') return VENUES;
+    if (isOrgWide(user) || user.venueIds === 'all') return VENUES;
     const set = new Set(Array.isArray(user.venueIds) ? user.venueIds : []);
     return VENUES.filter(v => set.has(v.id));
   }, [user]);

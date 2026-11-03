@@ -95,7 +95,7 @@ export function Reports({ user }: Props) {
   const [openingIds, setOpeningIds] = useState<Set<string>>(new Set());
 
   const visibleVenues = useMemo(() => {
-    if (isOrgWide(user.role) || user.venueIds === 'all') return VENUES;
+    if (isOrgWide(user) || user.venueIds === 'all') return VENUES;
     const set = new Set(Array.isArray(user.venueIds) ? user.venueIds : []);
     return VENUES.filter(v => set.has(v.id));
   }, [user]);
@@ -121,7 +121,7 @@ export function Reports({ user }: Props) {
     setAuditTrunc((auditRows?.length ?? 0) >= AUDIT_LIMIT);
 
     const visibleAudits = ((auditRows ?? []) as KountAudit[]).filter(a =>
-      isOrgWide(user.role) || user.venueIds === 'all' || (Array.isArray(user.venueIds) && user.venueIds.includes(a.venue_id)));
+      isOrgWide(user) || user.venueIds === 'all' || (Array.isArray(user.venueIds) && user.venueIds.includes(a.venue_id)));
     setAudits(visibleAudits);
     const opening = await loadOpeningAuditIds();
     if (opening.error) console.warn('[reports] opening counts not identified', opening.error);

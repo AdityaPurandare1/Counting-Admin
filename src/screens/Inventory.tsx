@@ -13,7 +13,7 @@ import {
 import { parseCSV } from '@/lib/csv';
 import { Card, Eyebrow, Btn, Pill } from '@/components/atoms';
 
-import { hasCorporateAccess } from '@/lib/access';
+import { can } from '@/lib/access';
 /* ───────────────────────────────────────────────────────────────────────
    Inventory upload screen (corporate-only)
 
@@ -99,7 +99,7 @@ export function Inventory({ user }: Props) {
     return c;
   }, [fates]);
 
-  if (!hasCorporateAccess(user.role)) {
+  if (!can(user, 'admin:catalog')) {
     return (
       <>
         <div className="topbar">

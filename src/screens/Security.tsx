@@ -54,7 +54,7 @@ export function Security({ user }: Props) {
   }, [load]);
 
   // Gate in case someone router-nav'd here with the wrong role
-  if (!canManageUsers(user.role)) {
+  if (!canManageUsers(user)) {
     return (
       <>
         <div className="topbar"><div><div className="eyebrow">Security</div><h1>Access control</h1></div></div>
@@ -114,7 +114,7 @@ export function Security({ user }: Props) {
 
 function UserRow({ row, onEdit }: { row: AppUserRow; onEdit: () => void }) {
   const venueLabel = useMemo(() => {
-    if (isOrgWide(row.role)) return 'all';
+    if (isOrgWide(row)) return 'all';
     if (!row.venue_ids || row.venue_ids.length === 0) return '—';
     return row.venue_ids.map(id => VENUES.find(v => v.id === id)?.name ?? id).join(', ');
   }, [row.role, row.venue_ids]);
@@ -251,7 +251,7 @@ function UserFormModal({
           email: emailTrim,
           name: name.trim() || undefined,
           role,
-          venue_ids: isOrgWide(role) ? [] : venueIds,
+          venue_ids: isOrgWide({ role }) ? [] : venueIds,
           // A counter lands on the phone app; everyone else on the desktop.
           redirect_to: signInUrlForRole(role),
         });
@@ -318,7 +318,7 @@ function UserFormModal({
         profileUpdate.role = role;
         hasUpdate = true;
       }
-      const newVenueIds = isOrgWide(role) ? [] : venueIds;
+      const newVenueIds = isOrgWide({ role }) ? [] : venueIds;
       const oldVenueIds = editingRow!.venue_ids ?? [];
       if (JSON.stringify(newVenueIds.slice().sort()) !== JSON.stringify(oldVenueIds.slice().sort())) {
         profileUpdate.venue_ids = newVenueIds;
@@ -494,7 +494,7 @@ function UserFormModal({
           </select>
         </Field>
 
-        {!isOrgWide(role) && (
+        {!isOrgWide({ role }) && (
           <Field label="Venues">
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
               {VENUES.map(v => {

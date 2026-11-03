@@ -6,7 +6,7 @@ import { Btn, Card, Eyebrow, Pill } from '@/components/atoms';
 import { Ic } from '@/components/Icons';
 import { phaseLabel } from '@/lib/auditPhase';
 
-import { hasCorporateAccess } from '@/lib/access';
+import { can } from '@/lib/access';
 /* ───────────────────────────────────────────────────────────────────────
    Stale audits prompt (v0.23)
 
@@ -46,7 +46,7 @@ export function StaleAuditsPrompt({ user }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    if (!hasCorporateAccess(user.role)) return;
+    if (!can(user, 'audit:manage')) return;
     if (sessionStorage.getItem(SESSION_DISMISS_KEY) === '1') return;
 
     const cutoffIso = new Date(Date.now() - STALE_THRESHOLD_HOURS * 60 * 60 * 1000).toISOString();

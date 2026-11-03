@@ -1,64 +1,19 @@
 import { NavLink } from 'react-router-dom';
 import { APP_VERSION } from '@/lib/version';
 
-const NAV_AUDIT = [
-  { to: '/overview',      label: 'Overview' },
-  { to: '/venues',        label: 'Venues' },
-  { to: '/variance',      label: 'Variance' },
-  { to: '/item-history',  label: 'Item history' },
-  { to: '/counts',        label: 'Counts' },
-  { to: '/recount',       label: 'Recount' },
-  { to: '/summary',       label: 'Summary' },
-];
-
-const NAV_TEAM = [
-  { to: '/issues', label: 'Issues tracker' },
-  { to: '/ai',     label: 'Ask AI' },
-];
-
-// `viewer` rows are the only Admin-group links a venue_manager (read-only
-// "Venue Management" role) may see. All other rows stay admin/manager-gated.
-const NAV_ADMIN = [
-  { to: '/approvals',      label: 'Approvals',      manager: true,  viewer: true  },
-  { to: '/stock',          label: 'Stock on hand',  manager: true,  viewer: true  },
-  { to: '/food',           label: 'Food count',     manager: true,  viewer: false },
-  { to: '/reports',        label: 'Reports',        manager: true,  viewer: true  },
-  { to: '/transfers',      label: 'Transfers',      manager: true,  viewer: true  },
-  // v0.72: Inventory archived (not needed for now). Restore this row and the /inventory route in App.tsx.
-  // { to: '/inventory',      label: 'Inventory',      manager: false, viewer: false },
-  { to: '/catalog',        label: 'Catalog',        manager: false, viewer: false },
-  { to: '/venue-settings', label: 'Venue settings', manager: false, viewer: false },
-  { to: '/security',       label: 'Security',       manager: false, viewer: false, adminOnly: true },
-];
-
-// v0.79: Purchasing — org-wide money data, admin + corporate only (routes and RLS enforce the same).
-const NAV_PURCHASING = [
-  { to: '/order-tracker',   label: 'Order tracker' },
-  { to: '/order-prices',    label: 'Order prices' },
-  { to: '/purchase-prices', label: 'Liquor & wine prices' },
-];
-
-const ROLE_LABELS: Record<string, string> = {
-  corporate:     'Corporate',
-  admin:         'Admin',
-  manager:       'Manager',
-  counter:       'Counter',
-  venue_manager: 'Venue Management',
-};
+import type { AccessEntry } from '@/lib/access';
+import { navFor } from '@/lib/routes';
+import { roleLabel } from '@/lib/permissions';
 
 interface Props {
-  userName?: string;
-  userRole?: string;
+  user: AccessEntry;
   onSignOut: () => void;
 }
 
-export function Sidebar({ userName, userRole, onSignOut }: Props) {
-  const isPlatformAdmin = userRole === 'admin';
-  const isAdmin    = userRole === 'admin' || userRole === 'corporate';
-  const isManager  = userRole === 'manager';
-  const isVenueMgr = userRole === 'venue_manager';
-  // The GM tier runs counts now, so /counts is a live link for it.
-  const auditLinks = NAV_AUDIT;
+/** v0.96: the links are the screens this person's permissions open (src/lib/routes.ts), by group. */
+export function Sidebar({ user, onSignOut }: Props) {
+  const userName = user.name;
+  const userRole = user.role;
   return (
     <aside className="sidebar">
       <div className="sidebar-head">
@@ -69,32 +24,10 @@ export function Sidebar({ userName, userRole, onSignOut }: Props) {
         </div>
       </div>
 
-      <div className="sidebar-group-label">Audit</div>
-      {auditLinks.map(n => (
-        <NavLink
-          key={n.to}
-          to={n.to}
-          className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}
-        >
-          {n.label}
-        </NavLink>
-      ))}
-
-      <div className="sidebar-group-label">Team</div>
-      {NAV_TEAM.map(n => (
-        <NavLink
-          key={n.to}
-          to={n.to}
-          className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}
-        >
-          {n.label}
-        </NavLink>
-      ))}
-
-      {isAdmin && (
-        <>
-          <div className="sidebar-group-label">Purchasing</div>
-          {NAV_PURCHASING.map(n => (
+      {navFor(user).map(g => (
+        <div key={g.group} style={{ display: 'contents' }}>
+          <div className="sidebar-group-label">{g.group}</div>
+          {g.items.map(n => (
             <NavLink
               key={n.to}
               to={n.to}
@@ -103,23 +36,8 @@ export function Sidebar({ userName, userRole, onSignOut }: Props) {
               {n.label}
             </NavLink>
           ))}
-        </>
-      )}
-
-      {(isAdmin || isManager || isVenueMgr) && (
-        <>
-          <div className="sidebar-group-label">Admin</div>
-          {NAV_ADMIN.filter(n => (n.adminOnly ? isPlatformAdmin : isAdmin) || (isManager && n.manager) || (isVenueMgr && n.viewer)).map(n => (
-            <NavLink
-              key={n.to}
-              to={n.to}
-              className={({ isActive }) => 'sidebar-link' + (isActive ? ' active' : '')}
-            >
-              {n.label}
-            </NavLink>
-          ))}
-        </>
-      )}
+        </div>
+      ))}
 
       <div style={{ flex: 1 }} />
 
@@ -131,7 +49,7 @@ export function Sidebar({ userName, userRole, onSignOut }: Props) {
       }}>
         <div style={{ fontSize: 12, fontWeight: 600 }}>{userName ?? '—'}</div>
         <div style={{ fontSize: 10, color: 'rgba(255, 249, 245, 0.55)', letterSpacing: '0.06em', textTransform: 'uppercase', marginTop: 2 }}>
-          {userRole ? (ROLE_LABELS[userRole] ?? userRole) : ''}
+          {userRole ? roleLabel(userRole) : ''}
         </div>
         <button
           className="sidebar-link"

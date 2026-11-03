@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { VENUES, isOrgWide } from '@/lib/access';
+import { VENUES, can, isOrgWide, type Who } from '@/lib/access';
 import type { AccessEntry } from '@/lib/access';
 import { Card, Eyebrow, Btn, Num, Money, Pill } from '@/components/atoms';
 import {
@@ -51,8 +51,8 @@ interface FoodListRow {
   master_items: { name: string; category: string | null } | { name: string; category: string | null }[] | null;
 }
 
-export function canUseFoodCount(role: AccessEntry['role']): boolean {
-  return isOrgWide(role) || role === 'manager';
+export function canUseFoodCount(u: Who): boolean {
+  return can(u, 'admin:food-count');
 }
 
 const todayIso = () => {
@@ -110,7 +110,7 @@ function download(bytes: ArrayBuffer | Uint8Array, filename: string) {
 
 export function FoodCount({ user }: Props) {
   const visibleVenues = useMemo(() => {
-    if (isOrgWide(user.role) || user.venueIds === 'all') return VENUES;
+    if (isOrgWide(user) || user.venueIds === 'all') return VENUES;
     const set = new Set(Array.isArray(user.venueIds) ? user.venueIds : []);
     return VENUES.filter(v => set.has(v.id));
   }, [user.role, user.venueIds]);
@@ -234,7 +234,7 @@ export function FoodCount({ user }: Props) {
     }
   }, [parsed, runImport, loadListSize, venue]);
 
-  if (!canUseFoodCount(user.role)) {
+  if (!canUseFoodCount(user)) {
     return (
       <div className="content">
         <Card padding={16}>Food counts are available to managers and corporate.</Card>

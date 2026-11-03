@@ -1,5 +1,6 @@
 import type { Role } from './types';
 import { supabase } from './supabase';
+import { templateFor, usesDesktop } from './permissions';
 
 /** Access-list rows mirror the app_users table (0003_app_users.sql).
  *
@@ -12,7 +13,12 @@ import { supabase } from './supabase';
 export interface AccessEntry {
   email: string;
   name: string;
+  /** the PRIMARY role (shown, and what the phone still reads) */
   role: Role;
+  /** all of the person's roles (0148) */
+  roles?: Role[];
+  /** the person's permission keys (0148, src/lib/permissions.ts); absent in a session saved before v0.96 */
+  features?: string[];
   venueIds: 'all' | string[];
 }
 
@@ -87,12 +93,14 @@ interface AppUserRow {
   email: string;
   name: string | null;
   role: Role;
+  roles?: Role[] | null;
+  features?: string[] | null;
   venue_ids: string[];
   is_active: boolean;
 }
 
-/* Role predicates — the single place the hierarchy is written down, so a new
- * tier never has to be chased through twenty screens again.
+/* Permissions (v0.96, 0148): every screen asks `can(user, 'project:feature')`; the keys and what each
+ * role starts with are in src/lib/permissions.ts. The roles, as templates:
  *
  *   admin          everything, and the only role that can grant access
  *   corporate      org-wide operations, but cannot manage users
@@ -100,6 +108,15 @@ interface AppUserRow {
  *   manager        runs counts; third-party crews sit here
  *   counter        phone app only
  */
+
+/** Anything carrying a role and (from v0.96) its permissions: the signed-in user, or an app_users row. */
+export type Who = { role: Role; features?: readonly string[] | null };
+
+/** The person's permissions; a session saved before v0.96 has none stored — its role's template stands in. */
+export const featuresOf = (u: Who): readonly string[] => u.features ?? templateFor([u.role]);
+
+/** Has this permission. */
+export const can = (u: Who, key: string): boolean => featuresOf(u).includes(key);
 
 /* Where each role actually signs in.
  *
@@ -122,42 +139,34 @@ export function signInUrlForRole(role: Role): string {
   return role === 'counter' ? APP_URL.phone : APP_URL.admin;
 }
 
-/** Roles the desktop app admits at all. Counters use the phone.
+/** Uses the desktop app at all: any permission outside the phone's. Counters (phone only) do not.
  *
- *  The ONE list: the login screen and the restored-session check both read it.
- *  v0.58 added 'admin' to App.tsx's copy but not to Login.tsx's hardcoded
- *  ['corporate','manager','venue_manager'], so every admin was signed straight
- *  back out on a fresh password login ("This app is for admins…") while a
- *  restored session still worked. tests/desktopRoles.test.ts guards it. */
-export const DESKTOP_ROLES: readonly Role[] = ['admin', 'corporate', 'manager', 'venue_manager'];
-
-export function isDesktopRole(role: string): boolean {
-  return (DESKTOP_ROLES as readonly string[]).includes(role);
+ *  The ONE check: the login screen and the restored-session check both read it.
+ *  v0.58 added 'admin' to App.tsx's copy of a role list but not to Login.tsx's,
+ *  so every admin was signed straight back out on a fresh password login while
+ *  a restored session still worked. tests/desktopRoles.test.ts guards it. */
+export function isDesktopUser(u: Who): boolean {
+  return usesDesktop(featuresOf(u));
 }
 
 /** Sees every venue rather than a listed subset. */
-export function isOrgWide(role: Role): boolean {
-  return role === 'admin' || role === 'corporate';
+export function isOrgWide(u: Who): boolean {
+  return can(u, 'access:all-venues');
 }
 
-/** Can create, disable, delete users and change roles. Admin alone. */
-export function canManageUsers(role: Role): boolean {
-  return role === 'admin';
+/** Can add users and change their roles, permissions and venues. */
+export function canManageUsers(u: Who): boolean {
+  return can(u, 'access:users');
 }
 
-/** Org-wide operational screens: catalog, inventory, venue settings. */
-export function hasCorporateAccess(role: Role): boolean {
-  return isOrgWide(role);
+/** Opens and runs counts on the desktop: close Count 1, finish, drill into items. */
+export function canRunAudits(u: Who): boolean {
+  return can(u, 'audit:counts');
 }
 
-/** Runs an audit: start, close, approve. */
-export function canRunAudits(role: Role): boolean {
-  return isOrgWide(role) || role === 'venue_manager' || role === 'manager';
-}
-
-/** Corrects a recorded count. Not `manager` — see the Role comment. */
-export function canEditCounts(role: Role): boolean {
-  return isOrgWide(role) || role === 'venue_manager';
+/** Corrects a recorded count (their venues). */
+export function canEditCounts(u: Who): boolean {
+  return can(u, 'audit:edit-counts');
 }
 
 /** The kount_members.role to record for someone joining an audit. That column
@@ -176,11 +185,14 @@ export function memberRoleFor(role: Role): 'corporate' | 'manager' | 'counter' |
 }
 
 function rowToEntry(r: AppUserRow): AccessEntry {
+  const who: Who = { role: r.role, features: r.features ?? null };
   return {
     email: r.email,
     name: r.name ?? r.email,
     role: r.role,
-    venueIds: isOrgWide(r.role) ? 'all' : (r.venue_ids ?? []),
+    roles: r.roles?.length ? r.roles : [r.role],
+    features: [...featuresOf(who)],
+    venueIds: isOrgWide(who) ? 'all' : (r.venue_ids ?? []),
   };
 }
 

@@ -26,7 +26,7 @@ export function Venues({ user }: Props) {
   const nav = useNavigate();
 
   const visibleVenues = useMemo(() => {
-    if (isOrgWide(user.role) || user.venueIds === 'all') return VENUES;
+    if (isOrgWide(user) || user.venueIds === 'all') return VENUES;
     const set = new Set(Array.isArray(user.venueIds) ? user.venueIds : []);
     return VENUES.filter(v => set.has(v.id));
   }, [user]);

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import type { AccessEntry } from '@/lib/access';
-import { VENUES, isOrgWide } from '@/lib/access';
+import { VENUES, can, isOrgWide } from '@/lib/access';
 import { IN_SCOPE_CATEGORIES } from '@/lib/types';
 import { Btn, Card, Eyebrow, Money, Pill } from '@/components/atoms';
 
@@ -69,7 +69,7 @@ export function Transfers({ user }: Props) {
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
 
   const visibleVenues = useMemo(() => {
-    if (isOrgWide(user.role) || user.venueIds === 'all') return VENUES;
+    if (isOrgWide(user) || user.venueIds === 'all') return VENUES;
     const set = new Set(Array.isArray(user.venueIds) ? user.venueIds : []);
     return VENUES.filter(v => set.has(v.id));
   }, [user]);
@@ -96,7 +96,7 @@ export function Transfers({ user }: Props) {
   const shown = useMemo(() => rows.filter(r => {
     const f = r.from_venue_id ? kvByOps.get(r.from_venue_id)?.id : undefined;
     const t = r.to_venue_id ? kvByOps.get(r.to_venue_id)?.id : undefined;
-    if (!(isOrgWide(user.role) || user.venueIds === 'all') && !((f && visibleIds.has(f)) || (t && visibleIds.has(t)))) return false;
+    if (!(isOrgWide(user) || user.venueIds === 'all') && !((f && visibleIds.has(f)) || (t && visibleIds.has(t)))) return false;
     if (venueFilter && f !== venueFilter && t !== venueFilter) return false;
     return true;
   }), [rows, kvByOps, visibleIds, venueFilter, user]);
@@ -108,7 +108,7 @@ export function Transfers({ user }: Props) {
   }), [shown]);
 
   const canDelete = (r: TransferRow) =>
-    user.role === 'admin' || user.role === 'corporate' || (r.created_by_email ?? '').toLowerCase() === user.email.toLowerCase();
+    can(user, 'admin:transfers-manage') || (r.created_by_email ?? '').toLowerCase() === user.email.toLowerCase();
 
   const remove = async (r: TransferRow) => {
     if (!confirm(`Delete this transfer (${r.from_venue_name} → ${r.to_venue_name}, ${r.transfer_date})? The affected variance reports are recomputed.`)) return;

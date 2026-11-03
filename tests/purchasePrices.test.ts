@@ -334,11 +334,13 @@ check('niceTicks small range', niceTicks(20, 24, 4).join() === '20,21,22,23,24',
 
 // ── wiring ─────────────────────────────────────────────────────────────
 const src = (p: string) => readFileSync(join(process.cwd(), p), 'utf8');
-const app = src('src/App.tsx'); const side = src('src/components/Sidebar.tsx'); const screen = src('src/screens/PurchasePrices.tsx');
-check('route gated to admin + corporate', app.includes('<Route path="/purchase-prices" element={hasCorporateAccess(user.role) ? <PurchasePrices user={user} />'));
+const app = src('src/App.tsx'); const side = src('src/lib/routes.ts'); const screen = src('src/screens/PurchasePrices.tsx');
+const perms = src('src/lib/permissions.ts');
+check('route gated by purchasing:liquor-wine', app.includes(`<Route path="/purchase-prices" element={gate('purchasing:liquor-wine', <PurchasePrices user={user} />)} />`));
 // v0.79: moved into the Purchasing section, which only admin + corporate see.
-check('nav row in the Purchasing section, rendered for admin + corporate only',
-  /NAV_PURCHASING = \[[\s\S]*\{ to: '\/purchase-prices', label: 'Liquor & wine prices' \}/.test(side) && /\{isAdmin && \(\s*<>\s*<div className="sidebar-group-label">Purchasing<\/div>/.test(side));
+check('nav row in the Purchasing section, by its permission (admin + corporate start with it)',
+  /group: 'Purchasing'[\s\S]*\{ to: '\/purchase-prices', label: 'Liquor & wine prices', key: 'purchasing:liquor-wine' \}/.test(side)
+  && /corporate: ALL\.filter\(k => k !== 'access:users'\)/.test(perms) && !/manager: \[[^\]]*purchasing/.test(perms));
 check('loads through the 0107 RPC', screen.includes("supabase.rpc('kount_bev_purchase_lines', { p_from: from, p_to: to })"));
 check('prices ALL lines before filtering (cross-venue references)', /const priced = useMemo\(\(\) => \(raw \? priceLines\(raw\) : \[\]\), \[raw\]\);/.test(screen));
 // At least the version that shipped Purchase prices (an exact pin broke on the next bump).

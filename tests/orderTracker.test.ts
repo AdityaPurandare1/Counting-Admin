@@ -390,10 +390,11 @@ check('"other" documents change nothing', statusAfterDocument('ORDERED', 'other'
 // ── wiring ─────────────────────────────────────────────────────────────
 const src = (p: string) => readFileSync(join(process.cwd(), p), 'utf8');
 const app = src('src/App.tsx'); const side = src('src/components/Sidebar.tsx');
-check('order tracker route gated to admin + corporate', app.includes('<Route path="/order-tracker"   element={hasCorporateAccess(user.role) ? <OrderTracker user={user} />'));
-check('order prices route gated to admin + corporate', app.includes('<Route path="/order-prices"    element={hasCorporateAccess(user.role) ? <OrderPrices user={user} />'));
-check('Purchasing section lists the three tabs', /NAV_PURCHASING = \[\s*\{ to: '\/order-tracker',\s+label: 'Order tracker' \},\s*\{ to: '\/order-prices',\s+label: 'Order prices' \},\s*\{ to: '\/purchase-prices', label: 'Liquor & wine prices' \},\s*\];/.test(side));
-check('Purchasing section rendered only for admin + corporate', side.includes("const isAdmin    = userRole === 'admin' || userRole === 'corporate';") && /\{isAdmin && \(\s*<>\s*<div className="sidebar-group-label">Purchasing<\/div>/.test(side));
+check('order tracker route gated by purchasing:order-tracker', app.includes(`<Route path="/order-tracker"   element={gate('purchasing:order-tracker', <OrderTracker user={user} />)} />`));
+check('order prices route gated by purchasing:order-prices', app.includes(`<Route path="/order-prices"    element={gate('purchasing:order-prices', <OrderPrices user={user} />)} />`));
+const routesSrc = src('src/lib/routes.ts');
+check('Purchasing section lists the three tabs', /group: 'Purchasing', items: \[\s*\{ to: '\/order-tracker', label: 'Order tracker', key: 'purchasing:order-tracker' \},\s*\{ to: '\/order-prices', label: 'Order prices', key: 'purchasing:order-prices' \},\s*\{ to: '\/purchase-prices', label: 'Liquor & wine prices', key: 'purchasing:liquor-wine' \},\s*\] \}/.test(routesSrc));
+check('the sidebar draws only the screens a person may open', /navFor\(user\)\.map\(g =>/.test(side) && /items: g\.items\.filter\(i => can\(u, i\.key\)\)/.test(routesSrc));
 check('documents read through the admin/corporate-gated function', src('src/lib/orderTrackerData.ts').includes("supabase.functions.invoke('kount-read-purchase-doc'"));
 check('a reload never re-reads the PDF (read keyed on the file / inbox row only)', /readDocument\(file\)[\s\S]*?\}, \[file, inbox\?\.id\]\);/.test(src('src/components/orderTracker/DocumentReview.tsx')));
 
@@ -1009,7 +1010,7 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   check('ask: never over the budget (sections drop, lines are never cut)', small.length <= 900 && /^PURCHASING/.test(small) && !/\n$/.test(small), small.length);
   check('ask: bibles with no text copy yet say so', /none has a searchable text copy yet/.test(buildOrdersContext({ question: 'bible', data, bibles: [{ venue_id: 'v1', title: 'x', text_index: null }], venues: V, today: '2026-11-03', inboxWaiting: 0 })));
   const ai = readFileSync(join(process.cwd(), 'src/screens/AskAI.tsx'), 'utf8');
-  check('Ask AI: orders & bibles only for admin / corporate, built from the last questions', /const canOrders = isOrgWide\(user\.role\)/.test(ai) && /const recent = history\.filter\(m => m\.role === 'user'\)\.slice\(-3\)/.test(ai) && /buildOrdersContext\(\{ question: recent/.test(ai));
+  check('Ask AI: orders & bibles only for admin / corporate, built from the last questions', /const canOrders = can\(user, 'team:ask-ai-orders'\)/.test(ai) && /const recent = history\.filter\(m => m\.role === 'user'\)\.slice\(-3\)/.test(ai) && /buildOrdersContext\(\{ question: recent/.test(ai));
   check('Ask AI fits ask-ai\'s 8,000 characters: variance only when asked about, orders get the rest',
     /const variance = useVenueData && context && \(!withOrders \|\| asksVariance\(recent\)\)/.test(ai) && /budget: ordersBudget\(head\.length \+ 2\)/.test(ai)
     && asksVariance('what are our biggest shortages?') && !asksVariance('where is the mints order?') && ordersBudget(1200) === 6760 && ordersBudget(9000) === 0);

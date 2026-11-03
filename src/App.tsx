@@ -18,12 +18,14 @@ import { Reports } from '@/screens/Reports';
 // v0.72: Inventory archived -- screen kept in src/screens/Inventory.tsx, route redirects.
 import { Transfers } from '@/screens/Transfers';
 import { StockOnHand } from '@/screens/StockOnHand';
-import { FoodCount, canUseFoodCount } from '@/screens/FoodCount';
+import { FoodCount } from '@/screens/FoodCount';
+import { UserAccess } from '@/screens/UserAccess';
 import { PurchasePrices } from '@/screens/PurchasePrices';
 import { OrderTracker } from '@/screens/OrderTracker';
 import { OrderPrices } from '@/screens/OrderPrices';
 import { AskAI } from '@/screens/AskAI';
-import { refreshAccessList, refreshVenues, resolveAccess, canRunAudits, canManageUsers, hasCorporateAccess, isDesktopRole } from '@/lib/access';
+import { refreshAccessList, refreshVenues, resolveAccess, can, isDesktopUser } from '@/lib/access';
+import { firstRoute } from '@/lib/routes';
 import { refreshVenueLookups } from '@/lib/venueMap';
 import type { AccessEntry } from '@/lib/access';
 import { NotificationProvider } from '@/lib/notifications';
@@ -133,7 +135,7 @@ async function runPasswordRecoveryFlow(
     await supabase.auth.signOut().catch(() => {});
     return;
   }
-  if (!isDesktopRole(profile.role)) {
+  if (!isDesktopUser(profile)) {
     alert('Password set, but the desktop app is for admins, corporate, managers and venue management only. Counters use the phone app instead.');
     await supabase.auth.signOut().catch(() => {});
     return;
@@ -167,11 +169,11 @@ export default function App() {
       ]);
       if (!user) return;
       const live = resolveAccess(user.email);
-      if (!live || !isDesktopRole(live.role)) {
+      if (!live || !isDesktopUser(live)) {
         setUser(null);
         nav('/');
-      } else if (live.role !== user.role) {
-        // Role/scope changes propagate in-place rather than forcing a sign-out.
+      } else if (JSON.stringify([live.role, live.roles, live.features, live.venueIds]) !== JSON.stringify([user.role, user.roles, user.features, user.venueIds])) {
+        // Role / permission / venue changes propagate in-place rather than forcing a sign-out.
         setUser(live);
       }
     })();
@@ -235,15 +237,17 @@ export default function App() {
   }, [nav]);
 
   if (!user) {
-    return <Login onSignedIn={(u) => { setUser(u); nav('/variance'); }} />;
+    return <Login onSignedIn={(u) => { setUser(u); nav(firstRoute(u)); }} />;
   }
+
+  const home = firstRoute(user);
+  const gate = (key: string, el: JSX.Element) => (can(user, key) ? el : <Navigate to={home} replace />);
 
   return (
     <NotificationProvider user={user}>
       <div className="app-shell">
         <Sidebar
-          userName={user.name}
-          userRole={user.role}
+          user={user}
           onSignOut={() => {
             // Invalidate the Supabase Auth session too. signOut() fires
             // SIGNED_OUT which our auth-state effect picks up and clears
@@ -258,31 +262,32 @@ export default function App() {
         />
         <main className="main">
           <Routes>
-            <Route path="/"         element={<Navigate to="/overview" replace />} />
-            <Route path="/overview" element={canRunAudits(user.role) ? <Overview user={user} /> : <Navigate to="/variance" replace />} />
-            <Route path="/venues"   element={<Venues user={user} />} />
-            <Route path="/variance" element={<Variance user={user} />} />
-            <Route path="/item-history" element={<ItemHistory user={user} />} />
-            <Route path="/counts"   element={canRunAudits(user.role) ? <Counts user={user} /> : <Navigate to="/variance" replace />} />
-            <Route path="/recount"  element={<Recount user={user} />} />
-            <Route path="/summary"  element={<Summary user={user} />} />
-            <Route path="/reports"  element={canRunAudits(user.role) ? <Reports user={user} /> : <Navigate to="/variance" replace />} />
-            <Route path="/issues"   element={<Issues user={user} />} />
-            <Route path="/ai"       element={<AskAI user={user} />} />
-            <Route path="/approvals" element={canRunAudits(user.role) ? <Approvals user={user} /> : <Navigate to="/variance" replace />} />
-            <Route path="/catalog"   element={hasCorporateAccess(user.role) ? <Catalog user={user} /> : <Navigate to="/variance" replace />} />
-            {/* v0.74: org-wide financial data — admin + corporate only (the RPC enforces the same). */}
-            <Route path="/purchase-prices" element={hasCorporateAccess(user.role) ? <PurchasePrices user={user} /> : <Navigate to="/variance" replace />} />
-            {/* v0.79: Purchasing — admin + corporate only (the kount_ot_* RLS and the reader function enforce the same). */}
-            <Route path="/order-tracker"   element={hasCorporateAccess(user.role) ? <OrderTracker user={user} /> : <Navigate to="/variance" replace />} />
-            <Route path="/order-prices"    element={hasCorporateAccess(user.role) ? <OrderPrices user={user} /> : <Navigate to="/variance" replace />} />
-            <Route path="/inventory" element={<Navigate to="/variance" replace />} />
-            <Route path="/transfers" element={canRunAudits(user.role) ? <Transfers user={user} /> : <Navigate to="/variance" replace />} />
-            <Route path="/stock"     element={canRunAudits(user.role) ? <StockOnHand user={user} /> : <Navigate to="/variance" replace />} />
-            <Route path="/food"      element={canUseFoodCount(user.role) ? <FoodCount user={user} /> : <Navigate to="/variance" replace />} />
-            <Route path="/security"  element={canManageUsers(user.role) ? <Security user={user} /> : <Navigate to="/variance" replace />} />
-            <Route path="/venue-settings" element={hasCorporateAccess(user.role) ? <VenueSettings user={user} /> : <Navigate to="/variance" replace />} />
-            <Route path="*"         element={<Navigate to="/variance" replace />} />
+            {/* v0.96: every screen by its permission (src/lib/permissions.ts); without it, the first screen the person has */}
+            <Route path="/"         element={<Navigate to={home} replace />} />
+            <Route path="/overview" element={gate('audit:overview', <Overview user={user} />)} />
+            <Route path="/venues"   element={gate('audit:view', <Venues user={user} />)} />
+            <Route path="/variance" element={gate('audit:view', <Variance user={user} />)} />
+            <Route path="/item-history" element={gate('audit:view', <ItemHistory user={user} />)} />
+            <Route path="/counts"   element={gate('audit:counts', <Counts user={user} />)} />
+            <Route path="/recount"  element={gate('audit:view', <Recount user={user} />)} />
+            <Route path="/summary"  element={gate('audit:view', <Summary user={user} />)} />
+            <Route path="/reports"  element={gate('admin:reports', <Reports user={user} />)} />
+            <Route path="/issues"   element={gate('team:issues', <Issues user={user} />)} />
+            <Route path="/ai"       element={gate('team:ask-ai', <AskAI user={user} />)} />
+            <Route path="/approvals" element={gate('admin:approvals', <Approvals user={user} />)} />
+            <Route path="/catalog"   element={gate('admin:catalog', <Catalog user={user} />)} />
+            {/* org-wide money data: the RPC / the kount_ot_* RLS check the same permissions (0149) */}
+            <Route path="/purchase-prices" element={gate('purchasing:liquor-wine', <PurchasePrices user={user} />)} />
+            <Route path="/order-tracker"   element={gate('purchasing:order-tracker', <OrderTracker user={user} />)} />
+            <Route path="/order-prices"    element={gate('purchasing:order-prices', <OrderPrices user={user} />)} />
+            <Route path="/inventory" element={<Navigate to={home} replace />} />
+            <Route path="/transfers" element={gate('admin:transfers', <Transfers user={user} />)} />
+            <Route path="/stock"     element={gate('admin:stock', <StockOnHand user={user} />)} />
+            <Route path="/food"      element={gate('admin:food-count', <FoodCount user={user} />)} />
+            <Route path="/security"  element={gate('access:users', <Security user={user} />)} />
+            <Route path="/user-access" element={gate('access:users', <UserAccess user={user} onChanged={(live: AccessEntry | null) => { if (live) setUser(live); }} />)} />
+            <Route path="/venue-settings" element={gate('admin:venue-settings', <VenueSettings user={user} />)} />
+            <Route path="*"         element={<Navigate to={home} replace />} />
           </Routes>
         </main>
         <NotificationBell />

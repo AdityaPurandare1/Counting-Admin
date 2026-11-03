@@ -58,7 +58,7 @@ function saveFilter(s: Set<string>) {
 
 function venueVisibleToUser(user: AccessEntry | null, venueId: string): boolean {
   if (!user) return false;
-  if (isOrgWide(user.role) || user.venueIds === 'all') return true;
+  if (isOrgWide(user) || user.venueIds === 'all') return true;
   return Array.isArray(user.venueIds) && user.venueIds.includes(venueId);
 }
 

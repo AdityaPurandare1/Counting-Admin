@@ -9,7 +9,7 @@ import { csvCell } from '@/lib/csv';
 import { isOpenIssue, issueLabel } from '@/lib/issues';
 import { finalCells, recountsAheadOfReport, summarizeByItem, zoneBreakdown, WHOLE_ITEM_ZONE, type RecountRow } from '@/lib/summaryByItem';
 
-import { isOrgWide, hasCorporateAccess, canRunAudits } from '@/lib/access';
+import { can, isOrgWide, canRunAudits } from '@/lib/access';
 /* ───────────────────────────────────────────────────────────────────────
    Summary screen (v0.8)
 
@@ -59,7 +59,7 @@ export function Summary({ user }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(auditParam);
   const [venueFilter, setVenueFilter] = useState<string>('');
   const [sweepBusy, setSweepBusy] = useState(false);
-  const canSweep = hasCorporateAccess(user.role);
+  const canSweep = can(user, 'audit:manage');
   // Submitted is the more common review case (closed-out audits) so it's
   // the default. Cancelled is its own bucket — bad audits, mistakes, walk-
   // aways. "All" stays available because the cross-cutting view is useful
@@ -67,7 +67,7 @@ export function Summary({ user }: Props) {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('submitted');
 
   const filterVisible = useCallback((rows: KountAudit[]) => rows.filter(a => {
-    if (isOrgWide(user.role) || user.venueIds === 'all') return true;
+    if (isOrgWide(user) || user.venueIds === 'all') return true;
     return Array.isArray(user.venueIds) && user.venueIds.includes(a.venue_id);
   }), [user]);
 
@@ -184,7 +184,7 @@ export function Summary({ user }: Props) {
      The DELETE itself is a single round trip with .in('id', ids) and a
      status='cancelled' guard so a parallel Reactivate wins. */
   const sweepCancelled = async () => {
-    if (!hasCorporateAccess(user.role)) return; // defense-in-depth: read-only roles can't sweep
+    if (!can(user, 'audit:manage')) return; // defense-in-depth: read-only roles can't sweep
     if (!canSweep) return;
     setSweepBusy(true);
     try {
@@ -429,9 +429,9 @@ function SummaryDetail({
   // the audits and need to filter live to see how each zone / counter is
   // progressing — without drill-down there's no real filter available
   // and the audit-state cards become decorative.
-  const canDrill      = canRunAudits(user.role);
-  const canReactivate = hasCorporateAccess(user.role);
-  const canDelete     = hasCorporateAccess(user.role);
+  const canDrill      = canRunAudits(user);
+  const canReactivate = can(user, 'audit:manage');
+  const canDelete     = can(user, 'audit:manage');
 
   const load = useCallback(async () => {
     // kount_entries paginated past the 1000-row cap so the CSV export
@@ -487,7 +487,7 @@ function SummaryDetail({
      non-null, which is contradictory state the phone's flow doesn't
      handle cleanly. */
   const reactivate = async () => {
-    if (!hasCorporateAccess(user.role)) return; // defense-in-depth: read-only roles can't reactivate
+    if (!can(user, 'audit:manage')) return; // defense-in-depth: read-only roles can't reactivate
     if (!audit || !canReactivate) return;
     if (audit.status !== 'cancelled') return;
     if (!confirm(
@@ -530,7 +530,7 @@ function SummaryDetail({
      function also refuses when the venue already has an active audit or the
      audit has recounts, and when the caller is not corporate/admin. */
   const reopen = async () => {
-    if (!hasCorporateAccess(user.role)) return; // defense-in-depth: the RPC re-checks
+    if (!can(user, 'audit:manage')) return; // defense-in-depth: the RPC re-checks
     if (!audit || !canReactivate) return;
     if (audit.status !== 'submitted') return;
     if (!confirm(
@@ -561,7 +561,7 @@ function SummaryDetail({
      entries case (the StaleAuditsPrompt cleanup workflow) gets a softer
      message because there's nothing to lose. */
   const deleteAudit = async () => {
-    if (!hasCorporateAccess(user.role)) return; // defense-in-depth: read-only roles can't delete
+    if (!can(user, 'audit:manage')) return; // defense-in-depth: read-only roles can't delete
     if (!audit || !canDelete) return;
     if (audit.status !== 'cancelled') return;
     if (entriesError) {

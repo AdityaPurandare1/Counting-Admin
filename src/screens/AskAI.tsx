@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { VENUES, isOrgWide } from '@/lib/access';
+import { VENUES, can, isOrgWide } from '@/lib/access';
 import type { AccessEntry } from '@/lib/access';
 import { Card, Btn } from '@/components/atoms';
 import { baseSystemPrompt, buildVarianceContext } from '@/lib/askAiContext';
@@ -35,7 +35,7 @@ interface Msg { role: 'user' | 'assistant'; content: string }
 
 export function AskAI({ user }: Props) {
   const visibleVenues = useMemo(() => {
-    if (isOrgWide(user.role) || user.venueIds === 'all') return VENUES;
+    if (isOrgWide(user) || user.venueIds === 'all') return VENUES;
     const set = new Set(Array.isArray(user.venueIds) ? user.venueIds : []);
     return VENUES.filter(v => set.has(v.id));
   }, [user]);
@@ -43,7 +43,7 @@ export function AskAI({ user }: Props) {
   const [venue, setVenue] = useState<string>('');
   const [useVenueData, setUseVenueData] = useState(true);
   // the order tracker + bibles are admin + corporate data (their RLS says the same)
-  const canOrders = isOrgWide(user.role);
+  const canOrders = can(user, 'team:ask-ai-orders');
   const [useOrders, setUseOrders] = useState(canOrders);
   const [orders, setOrders] = useState<{ data: TrackerData; bibles: AskBible[]; inboxWaiting: number } | null>(null);
   const [ordersNote, setOrdersNote] = useState('');

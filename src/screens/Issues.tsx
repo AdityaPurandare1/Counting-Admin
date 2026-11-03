@@ -46,7 +46,7 @@ export function Issues({ user }: Props) {
   const [status,   setStatus]   = useState<StatusChoice>('open');
 
   const visibleVenues = useMemo(() => {
-    if (isOrgWide(user.role) || user.venueIds === 'all') return VENUES;
+    if (isOrgWide(user) || user.venueIds === 'all') return VENUES;
     const set = new Set(Array.isArray(user.venueIds) ? user.venueIds : []);
     return VENUES.filter(v => set.has(v.id));
   }, [user]);
@@ -71,7 +71,7 @@ export function Issues({ user }: Props) {
     // company-wide looked like it had none.
     const venueScope = venue
       ? [venue]
-      : isOrgWide(user.role) ? null : visibleVenues.map(v => v.id);
+      : isOrgWide(user) ? null : visibleVenues.map(v => v.id);
     let q = supabase
       .from('kount_entries')
       .select(venueScope ? '*, kount_audits!inner(venue_id)' : '*')
@@ -107,7 +107,7 @@ export function Issues({ user }: Props) {
     const filtered = rows.filter(r => {
       const a = auditMap.get(r.audit_id);
       if (!a) return false;
-      if (!isOrgWide(user.role) && !visibleIds.has(a.venue_id)) return false;
+      if (!isOrgWide(user) && !visibleIds.has(a.venue_id)) return false;
       return true;
     });
     setEntries(filtered);
