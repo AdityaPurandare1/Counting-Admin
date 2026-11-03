@@ -2,7 +2,7 @@ import { Fragment, useMemo, useState } from 'react';
 import { Btn, Card, Eyebrow, Pill } from '@/components/atoms';
 import { VENUES } from '@/lib/access';
 import {
-  isStorageLine, orderVenues, planStorageLine, releasesByVenue, stockRows, storageMoveRows,
+  EE_WAREHOUSE, isStorageLine, itemLocation, orderVenues, planStorageLine, releasesByVenue, stockRows, storageMoveRows,
   type OtItem, type OtLine, type OtOrder, type StockRow, type StoragePlan,
 } from '@/lib/orderTracker';
 import { addMove, deleteMove, recordStorageLine, saveItem, skipStorageLine, type ItemDraft, type TrackerData } from '@/lib/orderTrackerData';
@@ -17,8 +17,10 @@ type Action = { itemId: string; kind: 'release' | 'count' } | null;
 export function WarehouseView({ data, today, venueName, onReload }: {
   data: TrackerData; today: string; venueName: (id: string | null) => string; onReload: () => void;
 }) {
+  // by where the stock is kept (0146): E&E's warehouse first, then corporate and any other place
   const rows = useMemo(() => stockRows(data.items, data.moves, data.lines, data.orders, today)
-    .sort((a, b) => rank(a.state) - rank(b.state) || a.item.name.localeCompare(b.item.name)), [data, today]);
+    .sort((a, b) => placeRank(itemLocation(a.item)) - placeRank(itemLocation(b.item)) || itemLocation(a.item).localeCompare(itemLocation(b.item))
+      || rank(a.state) - rank(b.state) || a.item.name.localeCompare(b.item.name)), [data, today]);
   const untracked = data.items.filter(i => i.is_active && !i.track_stock);
   const venues = useMemo(() => orderVenues(VENUES), []);
   const [action, setAction] = useState<Action>(null);
@@ -73,8 +75,14 @@ export function WarehouseView({ data, today, venueName, onReload }: {
                 <th style={thR}>Used / month</th><th style={thR}>Cover</th><th style={th}>Reorder by</th><th style={th}>Status</th><th style={th} />
               </tr></thead>
               <tbody>
-                {rows.map(r => (
+                {rows.map((r, ri) => (
                   <Fragment key={r.item.id}>
+                    {(ri === 0 || itemLocation(rows[ri - 1].item) !== itemLocation(r.item)) && (
+                      <tr><td colSpan={8} style={{ ...td, background: 'var(--surface-alt)', fontWeight: 700, fontSize: 12, letterSpacing: '.04em', textTransform: 'uppercase' }}>
+                        {itemLocation(r.item)} <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, color: 'var(--fg-muted)' }}>
+                          · {rows.filter(x => itemLocation(x.item) === itemLocation(r.item)).length} items{itemLocation(r.item) === EE_WAREHOUSE ? ' · E&E delivery charges draw from here' : ''}</span>
+                      </td></tr>
+                    )}
                     <tr style={rowBorder}>
                       <td style={{ ...td, maxWidth: 280 }}>
                         <button style={linkBtn} onClick={() => setOpenHist(openHist === r.item.id ? null : r.item.id)}>{r.item.name}</button>
@@ -236,6 +244,7 @@ function StorageQueue({ data, today, venues, venueName, busy, run }: {
   );
 }
 
+const placeRank = (p: string) => (p === EE_WAREHOUSE ? 0 : p === 'Corporate' ? 1 : 2);
 const rank = (s: StockRow['state']) => ({ 'reorder now': 0, 'reorder soon': 1, ok: 2, 'no usage yet': 3 })[s];
 
 function ItemHistory({ itemId, data, today, venueName, onDelete }: {
@@ -271,6 +280,7 @@ function ItemForm({ item, onDone, onCancel }: { item: OtItem | null; onDone: () 
     name: item?.name ?? '', sku: item?.sku ?? '', vendor: item?.vendor_name ?? '', category: item?.category ?? '', unit: item?.unit ?? 'case',
     pack: item?.pack_size != null ? String(item.pack_size) : '', lead: item?.lead_time_days != null ? String(item.lead_time_days) : '',
     rp: item?.reorder_point != null ? String(item.reorder_point) : '', track: item?.track_stock ?? true, notes: item?.notes ?? '',
+    location: item ? itemLocation(item) : EE_WAREHOUSE,
   });
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -285,7 +295,7 @@ function ItemForm({ item, onDone, onCancel }: { item: OtItem | null; onDone: () 
     const draft: ItemDraft = {
       name: f.name.trim(), sku: f.sku.trim() || null, vendor_name: f.vendor.trim() || null, category: f.category.trim() || null,
       unit: f.unit.trim() || 'case', pack_size: numOrNull(f.pack), lead_time_days: f.lead.trim() ? Math.round(Number(f.lead)) : null,
-      reorder_point: numOrNull(f.rp), track_stock: f.track, notes: f.notes.trim() || null,
+      reorder_point: numOrNull(f.rp), track_stock: f.track, notes: f.notes.trim() || null, location: f.location.trim() || EE_WAREHOUSE,
     };
     try { await saveItem(item?.id ?? null, draft); onDone(); } catch (e) { setErr(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
   };
@@ -302,6 +312,8 @@ function ItemForm({ item, onDone, onCancel }: { item: OtItem | null; onDone: () 
         <label style={lbl}>Pieces per unit<input style={picker} inputMode="decimal" value={f.pack} onChange={e => set('pack', e.target.value)} /></label>
         <label style={lbl}>Lead time (days)<input style={picker} inputMode="numeric" value={f.lead} onChange={e => set('lead', e.target.value)} placeholder="e.g. 84" /></label>
         <label style={lbl}>Reorder point<input style={picker} inputMode="decimal" value={f.rp} onChange={e => set('rp', e.target.value)} placeholder="auto" /></label>
+        <label style={lbl}>Kept at<input style={picker} list="ot-locations" value={f.location} onChange={e => set('location', e.target.value)} />
+          <datalist id="ot-locations"><option value={EE_WAREHOUSE} /><option value="Corporate" /><option value="Community Provisions warehouse" /></datalist></label>
       </div>
       <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, marginTop: 10 }}>
         <input type="checkbox" checked={f.track} onChange={e => set('track', e.target.checked)} /> Track warehouse stock for this item

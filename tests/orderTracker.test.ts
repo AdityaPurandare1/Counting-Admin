@@ -10,7 +10,7 @@ import {
   onHand, receivedForLine, stockRows, releasesByVenue, validateNewOrder, similarity, addDays, sameVendor,
   planDocRows, planDocumentSave, documentChecks, decideMailDocument, extractTracking, trackingUrl, orderForEmail, venueForDoc, filterByVenue, sortOrders, orderVenueIds,
   planStorageLine, storageMoveRows, isStorageLine, autoOrderNumber, lineOutsideSubtotal, orderForReferences,
-  keepOtherAttachment, isSpreadsheet, sheetUpdates,
+  keepOtherAttachment, isSpreadsheet, sheetUpdates, itemLocation, EE_WAREHOUSE,
   type ReadDoc, type MailSource,
   type OtItem, type OtLine, type OtMove, type OtOrder, type OtDocument, type DocLine, type DocReview,
 } from '../src/lib/orderTracker';
@@ -1020,6 +1020,24 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
     { height: 20, cells: [{ text: '', image: 'xl/media/image1.png' }, { text: 'Red Wine' }, { text: 'Webstaurant', link: 'https://w.co' }, { text: '' }].map(c => ({ style: {}, link: null, image: null, rowSpan: 1, colSpan: 1, covered: false, ...c })) },
   ] }] });
   check('bible text copy: header row found, title row left out, empty columns dropped', JSON.stringify(bt.sheets[0]) === JSON.stringify({ name: 'Glassware', header: ['Image', 'Item', 'Link'], rows: [['', 'Red Wine', 'Webstaurant']] }), bt.sheets[0]);
+}
+
+// ── where stock is kept (0146): E&E's warehouse, corporate, … ────────
+{
+  const V = [{ id: 'v1', name: 'Delilah LA' }, { id: 'v2', name: 'Delilah Miami' }];
+  const corp = item({ name: 'Delilah Mints', sku: null, category: 'Delilah', location: 'Corporate' });
+  const ee = item({ name: 'Delilah Gloss Eurotote Bag', sku: 'SHUR8180', category: 'Delilah', location: 'E&E warehouse' });
+  const old = item({ name: 'Delilah Love Napkin', sku: 'DELI-LOVE', category: 'Delilah' });               // made before 0146: no location
+  const moves = [move(corp.id, 'count', 5, '2026-11-03'), move(ee.id, 'count', 18, '2026-10-07'), move(old.id, 'count', 6, '2026-11-03')];
+  const o = order({ venue_id: 'v1' });
+  const mints = planStorageLine({ description: 'Delilah LA delivery - 11/04/2026 - 2cs mints', venue_id: null }, o, [corp, ee, old], moves, V);
+  check('location: E&E\'s delivery never draws the stock kept at corporate', mints.problem !== null && !mints.draws.length, mints);
+  const napkin = planStorageLine({ description: 'Delilah LA delivery - 11/04/2026 - 1 CASE DELI-LOVE', venue_id: null }, o, [corp, ee, old], moves, V);
+  check('location: an item from before locations is at E&E\'s warehouse', itemLocation(old) === EE_WAREHOUSE && napkin.problem === null && napkin.draws[0]?.itemId === old.id, napkin);
+  check('location: blank = the E&E warehouse', itemLocation({ location: '  ' }) === 'E&E warehouse' && itemLocation({ location: 'Corporate' }) === 'Corporate');
+  const wv = readFileSync(join(process.cwd(), 'src/components/orderTracker/WarehouseView.tsx'), 'utf8');
+  check('Warehouse: stock grouped by where it is kept, E&E first; the item form has Kept at',
+    /placeRank\(itemLocation\(a\.item\)\) - placeRank\(itemLocation\(b\.item\)\)/.test(wv) && /itemLocation\(rows\[ri - 1\]\.item\) !== itemLocation\(r\.item\)/.test(wv) && /Kept at<input/.test(wv));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

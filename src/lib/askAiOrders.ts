@@ -86,7 +86,7 @@ const TOPIC = {
   late: /\b(late|overdue|behind|delay|delayed|eta|arriv|deliver)/i,
   unpaid: /\b(unpaid|not paid|owe|outstanding|payment|pay|paid|invoice)/i,
   stubs: /\b(stub|stubs|remittance|check|cheque|proof)/i,
-  stock: /\b(warehouse|stock|on hand|reorder|storage|e&e|draw|release)/i,
+  stock: /\b(warehouse|stock|on hand|reorder|storage|e&e|draw|release|corporate|inventory|how many cases)/i,
   inbox: /\b(inbox|waiting|review|unread)/i,
 };
 
@@ -160,8 +160,8 @@ export function buildOrdersContext(p: OrdersContextInput): string {
   }
   if (TOPIC.stock.test(q)) {
     const rows = stockRows(data.items, data.moves, data.lines, data.orders, today);
-    add([`WAREHOUSE STOCK (E&E; on hand / used per month / state):`]);
-    add(rows.map(r => `- ${r.item.name}: ${r.onHand} ${r.item.unit}, ${Math.round(r.monthlyUse * 10) / 10}/month, ${r.state}${r.incoming ? `, ${r.incoming} incoming` : ''}`));
+    add([`STOCK ON HAND (by where it is kept; on hand / used per month / state):`]);
+    add(rows.map(r => `- [${r.item.location?.trim() || 'E&E warehouse'}] ${r.item.name}${r.item.sku ? ` (${r.item.sku})` : ''}: ${r.onHand} ${r.item.unit}, ${Math.round(r.monthlyUse * 10) / 10}/month, ${r.state}${r.incoming ? `, ${r.incoming} incoming` : ''}`));
   }
   if (TOPIC.inbox.test(q)) add([`INBOX: ${p.inboxWaiting} documents wait for a person (Order tracker → Inbox).`]);
 
