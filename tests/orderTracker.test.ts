@@ -9,7 +9,7 @@ import {
   statusRank, headlineStatus, orderState, isLate, statusAfterDocument, matchDocLines, matchItem, matchOrder,
   onHand, receivedForLine, stockRows, releasesByVenue, validateNewOrder, similarity, addDays, sameVendor,
   planDocRows, planDocumentSave, documentChecks, decideMailDocument, extractTracking, trackingUrl, orderForEmail, venueForDoc, filterByVenue, sortOrders, orderVenueIds,
-  planStorageLine, storageMoveRows, isStorageLine, autoOrderNumber,
+  planStorageLine, storageMoveRows, isStorageLine, autoOrderNumber, lineOutsideSubtotal,
   type ReadDoc, type MailSource,
   type OtItem, type OtLine, type OtMove, type OtOrder, type OtDocument, type DocLine, type DocReview,
 } from '../src/lib/orderTracker';
@@ -334,7 +334,10 @@ check('"other" documents change nothing', statusAfterDocument('ORDERED', 'other'
   check('mail: matched by PO # from the same vendor', byPo.state === 'applied' && byPo.reason.includes('PO #'), byPo);
   const otherVendor = decideMailDocument(inv({ vendor_name: 'Uline' }), src(), data, '2026-10-30', fmt);
   check('mail: same thread but another vendor -> waits', otherVendor.state === 'pending', otherVendor);
-  const extra = decideMailDocument(inv({ lines: [...inv().lines, dl({ description: 'MEPRA - WINE COOLER', sku: '200680', qty: 10, unit_price: 313.88, line_total: 3138.8 })] }), src(), data, '2026-10-30', fmt);
+  // (an extra item is in the printed subtotal, as on a real invoice)
+  const extra = decideMailDocument(inv({ subtotal: 2235.27 + 3138.8, total: 2397.33 + 3138.8, lines: [...inv().lines, dl({ description: 'MEPRA - WINE COOLER', sku: '200680', qty: 10, unit_price: 313.88, line_total: 3138.8 })] }), src(), data, '2026-10-30', fmt);
+  const option = decideMailDocument(inv({ lines: [...inv().lines, dl({ description: 'Volume Pricing: 100C', sku: '', qty: 10, unit_price: 313.88, line_total: 3138.8 })] }), src(), data, '2026-10-30', fmt);
+  check('mail: a line outside the printed subtotal (price option) -> waits for a person, never auto-saved', option.state === 'pending' && option.reason.includes('not in the printed subtotal'), option);
   check('mail: an item not on the order -> waits', extra.state === 'pending' && extra.reason.includes('not on'), extra);
   const qty = decideMailDocument(inv({ lines: [dl({ qty: 5, line_total: 344.2 })], subtotal: 344.2 }), src(), data, '2026-10-30', fmt);
   check('mail: a review warning (qty differs) -> waits, with the warning', qty.state === 'pending' && qty.reason.includes('the document says 5'), qty);
@@ -606,6 +609,35 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   check('order #: a custom (branded) item -> next CUS', autoOrderNumber([nl('Bird Streets eurotote bag')], 'EE Mercantile', { orders, items }) === 'CUS-0043');
   check('order #: anything else -> next OSE', autoOrderNumber([nl('LIBBEY - CONTOUR GOBLET GLASS 16 OZ/ 12')], 'EE Mercantile', { orders, items }) === 'OSE-0036');
   check('order #: a series starts at 0001', autoOrderNumber([nl('Mepra wine cooler')], 'EE Mercantile', { orders: [], items: [] }) === 'OSE-0001');
+}
+
+// ── a price option printed like a line (Alphabet Eurototes quote Q-2026-1021-5051, 11/3) ──
+{
+  const pl = (description: string, qty: number, unit_price: number, line_kind: DocLine['line_kind'] = 'product'): DocLine =>
+    ({ line_kind, description, sku: '', qty, unit: 'case', unit_price, line_total: Math.round(qty * unit_price * 100) / 100, pack_size: 100 });
+  const lines = [pl('Eurotote Bag - via air (100/CS) 16x9x12" C1S 200 gsm print 3C', 10, 550.8), pl('Eurotote Bag - via sea (100/CS) 16x9x12" C1S 200 gsm print 3C', 90, 214.8),
+                 pl('Volume Pricing: 100C', 100, 198), { ...pl('TAX', 0, 0, 'tax'), line_total: 1800.9 }];
+  const printed = { subtotal: 24840, total: 26640.9, lines };
+  check('outside the subtotal: the one line whose removal makes it add up ("Volume Pricing")', lineOutsideSubtotal(lines, 24840) === 2);
+  check('outside the subtotal: none when the lines already add up, or no single line explains it',
+    lineOutsideSubtotal(lines.slice(0, 2), 24840) === null && lineOutsideSubtotal(lines, 20000) === null && lineOutsideSubtotal(lines, 0) === null);
+  const rows = planDocRows(lines, [], [], 'quote', false, 24840);
+  check('review: the price option starts unticked and says why; the air + sea lines stay ticked',
+    rows[2].include === false && rows[2].outside === true && rows[0].include && rows[1].include && !rows[0].outside);
+  const checks = documentChecks({ kind: 'quote', vendor: 'EE Mercantile', docNumber: 'Q-2026-1021-5051', order: null, orderLines: [], rows }, printed,
+    { documents: [], lines: [], orders: [] }, x => '$' + x.toFixed(2));
+  check('review: no red "lines add up to $44,640" warning for it', !checks.some(c => /add up/.test(c)), checks);
+  check('review: a genuinely missing line still warns', documentChecks({ kind: 'quote', vendor: 'EE', docNumber: 'Q', order: null, orderLines: [], rows },
+    { ...printed, subtotal: 30000 }, { documents: [], lines: [], orders: [] }, x => '$' + x.toFixed(2)).some(c => /add up/.test(c)));
+  const saved = planDocumentSave({ docId: 'd', kind: 'quote', vendor: 'EE Mercantile', docNumber: 'Q-2026-1021-5051', docDate: '2026-10-21', orderNumber: '', expected: '', tracking: '',
+    order: null, orderLines: [], deliverTo: 'warehouse', venueId: 'v12', rows, today: '2026-11-03', fileName: 'q.pdf', storagePath: 'p', total: 26640.9, parsed: {} });
+  check('saved: 10 cs air + 90 cs sea = $24,840, not 200 cases', saved.new_lines.length === 2 && saved.new_lines.reduce((s, l) => s + l.qty * (l.unit_price ?? 0), 0) === 24840);
+  const ui = (p: string) => readFileSync(join(process.cwd(), p), 'utf8');
+  check('Inbox: a saved item leaves the list at once (not after the minute-long re-check)',
+    /setInbox\(list => list\.filter\(i => i\.id !== done\)\)[\s\S]{0,200}void reload\(\);[\s\S]{0,200}redecideInbox\(\)/.test(ui('src/screens/OrderTracker.tsx')));
+  check('review: opened again after saving = "Already saved on …", no second save',
+    /alreadySaved = data\.documents\.find\(d => d\.id === docId\)/.test(ui('src/components/orderTracker/DocumentReview.tsx')) && /saved \|\| !!alreadySaved/.test(ui('src/components/orderTracker/DocumentReview.tsx')));
+  check('review: a new order saved with no number gets the next one', /new_order\.order_number = autoOrderNumber\(/.test(ui('src/components/orderTracker/DocumentReview.tsx')));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

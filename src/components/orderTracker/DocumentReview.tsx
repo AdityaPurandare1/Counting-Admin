@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Btn, Card, Eyebrow, Pill } from '@/components/atoms';
 import { VENUES } from '@/lib/access';
 import {
-  DOC_KIND_LABEL, STATUS_LABEL, documentChecks, matchOrder, orderVenues, planDocRows, planDocumentSave, statusAfterDocument, headlineStatus,
+  DOC_KIND_LABEL, STATUS_LABEL, autoOrderNumber, documentChecks, matchOrder, orderVenues, planDocRows, planDocumentSave, statusAfterDocument, headlineStatus,
   type DocKind, type DocRowPlan, type LineStatus,
 } from '@/lib/orderTracker';
 import {
@@ -37,6 +37,8 @@ export function DocumentReview({ file, inbox = null, data, today, onDone, onCanc
   // second save of it, so a retry after a dropped connection cannot double-count.
   // An inbox document keeps the id the pull gave it (it is the inbox row's id).
   const docId = useMemo(() => inbox?.id ?? crypto.randomUUID(), [file, inbox?.id]);
+  // opened again after it was saved (the Inbox list hadn't refreshed yet): say where it went, don't offer a 2nd save
+  const alreadySaved = data.documents.find(d => d.id === docId) ?? null;
 
   // 1. read the PDF — once per file (each read is a paid AI call; a data reload must not repeat it)
   useEffect(() => {
@@ -77,7 +79,7 @@ export function DocumentReview({ file, inbox = null, data, today, onDone, onCanc
   //    document type changes, so a background reload never wipes the person's ticks and choices
   useEffect(() => {
     if (!doc) return;
-    setRows(planDocRows(doc.lines, orderLines, data.items, kind, doc.is_credit === true));
+    setRows(planDocRows(doc.lines, orderLines, data.items, kind, doc.is_credit === true, doc.subtotal));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc, target, kind]);
 
@@ -101,6 +103,8 @@ export function DocumentReview({ file, inbox = null, data, today, onDone, onCanc
         docId, kind, vendor, docNumber, docDate, orderNumber, expected, tracking, order, orderLines, deliverTo, venueId,
         rows, today, fileName: inbox?.file_name || file?.name || 'document.pdf', storagePath: path, total: doc.total, parsed: doc,
       });
+      // every order has a number (the user's tracker): a new one left blank gets the next WHS / CUS / OSE
+      if (payload.new_order && !payload.new_order.order_number) payload.new_order.order_number = autoOrderNumber(payload.new_lines, vendor, data);
       if (inbox) {
         payload.inbox_id = inbox.id;
         payload.decision = 'Saved from the inbox.';
@@ -192,8 +196,13 @@ export function DocumentReview({ file, inbox = null, data, today, onDone, onCanc
             {target !== 'new' && <Pill tone="positive" size="sm">matched by {normMatchReason(orderNumber, docNumber, data, target)}</Pill>}
           </div>
 
-          {checks.length > 0 && <div style={errBox}>{checks.map((c, i) => <div key={i}>⚠ {c}</div>)}</div>}
-          {checks.length === 0 && <div style={okBox}>The lines agree with the printed totals.</div>}
+          {alreadySaved ? (
+            <div style={okBox}>Already saved on {data.orders.find(o => o.id === alreadySaved.order_id)?.order_number ?? 'its order'} — nothing more to do here.{' '}
+              {alreadySaved.order_id && <Btn variant="secondary" size="sm" onClick={() => onDone(alreadySaved.order_id!)}>Open the order</Btn>}</div>
+          ) : <>
+            {checks.length > 0 && <div style={errBox}>{checks.map((c, i) => <div key={i}>⚠ {c}</div>)}</div>}
+            {checks.length === 0 && <div style={okBox}>The lines agree with the printed totals.</div>}
+          </>}
 
           <div style={{ overflowX: 'auto', marginTop: 8 }}>
             <table style={{ ...tbl, minWidth: 980 }}>
@@ -208,6 +217,7 @@ export function DocumentReview({ file, inbox = null, data, today, onDone, onCanc
                     <td style={{ ...td, maxWidth: 300 }}>
                       <div style={{ fontWeight: 600 }}>{r.doc.description}</div>
                       <div style={subTxt}>{[r.doc.line_kind !== 'product' && r.doc.line_kind, r.doc.sku, r.doc.pack_size > 0 && `${r.doc.pack_size} per ${r.doc.unit || 'unit'}`].filter(Boolean).join(' · ') || ' '}</div>
+                      {r.outside && <div style={{ ...subTxt, color: 'var(--fg-primary)' }}>Not in the printed subtotal — a price option or note, so it is left out. Tick it if it was really bought.</div>}
                     </td>
                     <td style={tdNum}>{r.doc.qty} <span style={subTxt}>{r.doc.unit}</span></td>
                     <td style={tdNum}>{fmtMoney(r.doc.unit_price)}</td>
@@ -241,7 +251,7 @@ export function DocumentReview({ file, inbox = null, data, today, onDone, onCanc
           </div>
           {saveErr && <div style={errBox}>{saveErr}</div>}
           <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
-            <Btn variant="primary" size="sm" onClick={() => void save()} disabled={saving || saved}>{saving ? 'Saving…' : 'Save to order'}</Btn>
+            <Btn variant="primary" size="sm" onClick={() => void save()} disabled={saving || saved || !!alreadySaved}>{saving ? 'Saving…' : 'Save to order'}</Btn>
             <Btn variant="ghost" size="sm" onClick={onCancel} disabled={saving}>Cancel</Btn>
           </div>
         </>

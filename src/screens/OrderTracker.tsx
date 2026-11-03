@@ -115,7 +115,12 @@ export function OrderTracker({ today: todayProp, load = loadTracker, loadMail = 
           <DocumentReview key={reviewing.id} file={null} inbox={reviewing} data={data} today={today}
             onCancel={() => setReviewing(null)}
             onDone={orderId => {
+              // off the Inbox at once (it was saved), and the lists refreshed now — not after the re-check below,
+              // which can take most of a minute and left the item looking unsaved
+              const done = reviewing.id;
+              setInbox(list => list.filter(i => i.id !== done));
               setReviewing(null); setFocusOrder(orderId); setView('orders');
+              void reload();
               // other waiting documents of this order (its invoice, a tracking email) may now go in by themselves
               void redecideInbox().catch(() => undefined).finally(() => void reload());
             }} />
