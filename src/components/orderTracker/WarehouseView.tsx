@@ -1,8 +1,11 @@
 import { Fragment, useMemo, useState } from 'react';
 import { Btn, Card, Eyebrow, Pill } from '@/components/atoms';
 import { VENUES } from '@/lib/access';
-import { releasesByVenue, stockRows, type OtItem, type StockRow } from '@/lib/orderTracker';
-import { addMove, deleteMove, saveItem, type ItemDraft, type TrackerData } from '@/lib/orderTrackerData';
+import {
+  isStorageLine, orderVenues, planStorageLine, releasesByVenue, stockRows, storageMoveRows,
+  type OtItem, type OtLine, type OtOrder, type StockRow, type StoragePlan,
+} from '@/lib/orderTracker';
+import { addMove, deleteMove, recordStorageLine, saveItem, skipStorageLine, type ItemDraft, type TrackerData } from '@/lib/orderTrackerData';
 import { errBox, fmtQty, headRow, lbl, linkBtn, picker, rowBorder, shortDate, smallInput, subTxt, tbl, td, tdNum, th, thR } from './shared';
 
 const STATE_TONE: Record<StockRow['state'], 'critical' | 'caution' | 'positive' | 'ghost'> = {
@@ -17,6 +20,7 @@ export function WarehouseView({ data, today, venueName, onReload }: {
   const rows = useMemo(() => stockRows(data.items, data.moves, data.lines, data.orders, today)
     .sort((a, b) => rank(a.state) - rank(b.state) || a.item.name.localeCompare(b.item.name)), [data, today]);
   const untracked = data.items.filter(i => i.is_active && !i.track_stock);
+  const venues = useMemo(() => orderVenues(VENUES), []);
   const [action, setAction] = useState<Action>(null);
   const [qty, setQty] = useState('');
   const [day, setDay] = useState(today);
@@ -56,6 +60,7 @@ export function WarehouseView({ data, today, venueName, onReload }: {
 
       {editing && <ItemForm item={editing === 'new' ? null : editing} onDone={() => { setEditing(null); onReload(); }} onCancel={() => setEditing(null)} />}
       {err && <div style={errBox}>{err}</div>}
+      <StorageQueue data={data} today={today} venues={venues} venueName={venueName} busy={busy} run={run} />
 
       <Card flush padding={0}>
         {rows.length === 0 ? (
@@ -97,7 +102,7 @@ export function WarehouseView({ data, today, venueName, onReload }: {
                             <>to
                               <select style={smallInput} value={venue} onChange={e => setVenue(e.target.value)}>
                                 <option value="">Venue…</option>
-                                {VENUES.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                                {venues.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
                               </select>
                             </>
                           )}
@@ -129,6 +134,105 @@ export function WarehouseView({ data, today, venueName, onReload }: {
         </div>
       )}
     </>
+  );
+}
+
+/** E&E's delivery / return / receiving fee lines not yet in stock. The morning pull records the ones it
+ *  can read; these are the rest (or new since), each with what was read and a form for what wasn't. */
+function StorageQueue({ data, today, venues, venueName, busy, run }: {
+  data: TrackerData; today: string; venues: Array<{ id: string; name: string }>; venueName: (id: string | null) => string;
+  busy: boolean; run: (fn: () => Promise<void>) => Promise<void>;
+}) {
+  const pending = useMemo(() => {
+    const orders = new Map(data.orders.map(o => [o.id, o]));
+    const drawn = new Set(data.moves.map(m => m.line_id).filter(Boolean));
+    return data.lines
+      .filter(l => !l.stock_draw && !drawn.has(l.id) && orders.has(l.order_id) && isStorageLine(l, orders.get(l.order_id)!.vendor_name))
+      .map(l => { const o = orders.get(l.order_id)!; return { l, o, plan: planStorageLine(l, o, data.items, data.moves, venues) }; })
+      .sort((a, b) => (b.plan.day ?? b.l.invoice_date ?? '').localeCompare(a.plan.day ?? a.l.invoice_date ?? ''));
+  }, [data, venues]);
+  const stock = useMemo(() => data.items.filter(i => i.is_active && i.track_stock).sort((a, b) => a.name.localeCompare(b.name)), [data.items]);
+  const [form, setForm] = useState<{ lineId: string; kind: StoragePlan['kind']; itemId: string; qty: string; venue: string; day: string } | null>(null);
+  const [formErr, setFormErr] = useState<string | null>(null);
+  if (!pending.length) return null;
+
+  const dayOf = (p: { l: OtLine; o: OtOrder; plan: StoragePlan }) => p.plan.day ?? p.l.invoice_date ?? p.o.ordered_on ?? today;
+  const record = (p: { l: OtLine; o: OtOrder; plan: StoragePlan }) => run(() => recordStorageLine(p.l.id, storageMoveRows(p.plan, p.l, dayOf(p))));
+  const ready = pending.filter(p => !p.plan.problem);
+  const open = (p: { l: OtLine; o: OtOrder; plan: StoragePlan }) => {
+    setFormErr(null);
+    setForm({ lineId: p.l.id, kind: p.plan.kind, itemId: p.plan.draws[0]?.itemId ?? '', qty: p.plan.draws[0] ? String(p.plan.draws[0].qty) : '', venue: p.plan.venueId ?? '', day: dayOf(p) });
+  };
+  const save = (p: { l: OtLine; o: OtOrder; plan: StoragePlan }) => {
+    if (!form) return;
+    const q = Number(form.qty);
+    if (!form.itemId) { setFormErr('Pick the item.'); return; }
+    if (!Number.isFinite(q) || q <= 0) { setFormErr('Enter how many cases.'); return; }
+    if (form.kind === 'release' && !form.venue) { setFormErr('Pick the venue it went to.'); return; }
+    void run(async () => {
+      await recordStorageLine(p.l.id, [{
+        item_id: form.itemId, moved_on: form.day || today, kind: form.kind, qty: q, venue_id: form.kind === 'release' ? form.venue : null,
+        line_id: p.l.id, note: `E&E: ${p.l.description}`.slice(0, 500),
+      }]);
+      setForm(null);
+    });
+  };
+  const said = (plan: StoragePlan) => plan.draws.map(d => `${plan.kind === 'release' ? '−' : '+'}${d.qty} ${d.name}`).join(', ')
+    + (plan.kind === 'release' && plan.venueId ? ` → ${venueName(plan.venueId)}` : plan.kind === 'receipt' ? ' into the warehouse' : '');
+
+  return (
+    <Card padding={16} style={{ marginBottom: 12 }}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div style={{ fontWeight: 700 }}>E&amp;E deliveries to put in stock <Pill tone="gold" size="sm">{pending.length}</Pill></div>
+        <span style={subTxt}>Orders filled from E&amp;E's warehouse come only as a delivery fee line. The morning pull records the ones it can read; pick the item for the rest.</span>
+        <div style={{ flex: 1 }} />
+        {ready.length > 1 && <Btn variant="secondary" size="sm" disabled={busy} onClick={() => void run(async () => { for (const p of ready) await recordStorageLine(p.l.id, storageMoveRows(p.plan, p.l, dayOf(p))); })}>Record all {ready.length} read</Btn>}
+      </div>
+      <table style={{ ...tbl, marginTop: 8 }}>
+        <tbody>
+          {pending.map(p => (
+            <Fragment key={p.l.id}>
+              <tr style={rowBorder}>
+                <td style={{ ...td, maxWidth: 380 }}>{p.l.description}
+                  <div style={subTxt}>{[p.o.order_number, p.l.invoice_number, p.l.invoice_date && `invoiced ${shortDate(p.l.invoice_date)}`].filter(Boolean).join(' · ')}</div></td>
+                <td style={{ ...td, fontSize: 12 }}>
+                  {p.plan.problem ? <span style={{ color: 'var(--fg-muted)' }}>{p.plan.problem}</span> : <><b>{said(p.plan)}</b><div style={subTxt}>{shortDate(dayOf(p))}</div></>}
+                </td>
+                <td style={{ ...td, whiteSpace: 'nowrap', textAlign: 'right' }}>
+                  {!p.plan.problem && <><Btn variant="primary" size="sm" disabled={busy} onClick={() => void record(p)}>Record</Btn>{' '}</>}
+                  <Btn variant="secondary" size="sm" onClick={() => open(p)}>{p.plan.problem ? 'Pick item' : 'Change'}</Btn>{' '}
+                  <Btn variant="ghost" size="sm" disabled={busy} title="It moved none of our stock, or the stock count already has it" onClick={() => void run(() => skipStorageLine(p.l.id))}>Not stock</Btn>
+                </td>
+              </tr>
+              {form?.lineId === p.l.id && (
+                <tr><td colSpan={3} style={{ ...td, background: 'var(--surface-alt)' }}>
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', fontSize: 12 }}>
+                    <select style={smallInput} value={form.kind} onChange={e => setForm({ ...form, kind: e.target.value as StoragePlan['kind'] })}>
+                      <option value="release">Went out</option><option value="receipt">Came in</option>
+                    </select>
+                    <input style={{ ...smallInput, width: 70 }} inputMode="decimal" placeholder="cases" value={form.qty} onChange={e => setForm({ ...form, qty: e.target.value })} />
+                    <select style={{ ...smallInput, maxWidth: 260 }} value={form.itemId} onChange={e => setForm({ ...form, itemId: e.target.value })}>
+                      <option value="">Item…</option>
+                      {stock.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
+                    </select>
+                    {form.kind === 'release' && (
+                      <>to <select style={smallInput} value={form.venue} onChange={e => setForm({ ...form, venue: e.target.value })}>
+                        <option value="">Venue…</option>
+                        {venues.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                      </select></>
+                    )}
+                    on <input type="date" style={smallInput} value={form.day} onChange={e => setForm({ ...form, day: e.target.value })} />
+                    <Btn variant="primary" size="sm" disabled={busy} onClick={() => save(p)}>Save</Btn>
+                    <Btn variant="ghost" size="sm" onClick={() => setForm(null)}>Cancel</Btn>
+                    {formErr && <span style={{ color: 'var(--raspberry-500, #c0392b)' }}>{formErr}</span>}
+                  </div>
+                </td></tr>
+              )}
+            </Fragment>
+          ))}
+        </tbody>
+      </table>
+    </Card>
   );
 }
 

@@ -118,6 +118,24 @@ export async function addMove(move: Omit<OtMove, 'id' | 'created_at'>): Promise<
   if (error) fail('Stock not updated', error);
 }
 
+/** Record an E&E storage line once (0141): claim it, then write its stock moves (undoing the claim if they fail). */
+export async function recordStorageLine(lineId: string, moves: Array<Omit<OtMove, 'id' | 'created_at'> & { created_at?: string }>): Promise<void> {
+  const { data, error } = await supabase.from('kount_ot_lines').update({ stock_draw: 'recorded' }).eq('id', lineId).is('stock_draw', null).select('id');
+  if (error) fail('Delivery not recorded', error);
+  if (!data?.length) throw new Error('This delivery was already recorded — reload.');
+  const { error: mErr } = await supabase.from('kount_ot_stock_moves').insert(moves);
+  if (mErr) {
+    await supabase.from('kount_ot_lines').update({ stock_draw: null }).eq('id', lineId);
+    fail('Delivery not recorded', mErr);
+  }
+}
+
+/** An E&E storage line that moved no stock of ours (or is already in a count). */
+export async function skipStorageLine(lineId: string): Promise<void> {
+  const { error } = await supabase.from('kount_ot_lines').update({ stock_draw: 'none' }).eq('id', lineId);
+  if (error) fail('Delivery not updated', error);
+}
+
 export async function deleteMove(id: string): Promise<void> {
   const { error } = await supabase.from('kount_ot_stock_moves').delete().eq('id', id);
   if (error) fail('Stock entry not removed', error);

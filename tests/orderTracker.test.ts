@@ -9,6 +9,7 @@ import {
   statusRank, headlineStatus, orderState, isLate, statusAfterDocument, matchDocLines, matchItem, matchOrder,
   onHand, receivedForLine, stockRows, releasesByVenue, validateNewOrder, similarity, addDays, sameVendor,
   planDocRows, planDocumentSave, documentChecks, decideMailDocument, extractTracking, trackingUrl, orderForEmail, venueForDoc, filterByVenue, sortOrders, orderVenueIds,
+  planStorageLine, storageMoveRows, isStorageLine,
   type ReadDoc, type MailSource,
   type OtItem, type OtLine, type OtMove, type OtOrder, type OtDocument, type DocLine, type DocReview,
 } from '../src/lib/orderTracker';
@@ -519,6 +520,64 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   check('sort: order # in number order', nums(sortOrders(rows, 'number', vn)) === 'CUS-0003,OSE-0002,OSE-0010');
   check('sort: venue A-Z (an order serving several sorts by its first venue)', nums(sortOrders(rows, 'venue', vn)) === 'OSE-0010,OSE-0002,CUS-0003', nums(sortOrders(rows, 'venue', vn)));
   check('sort never changes the list it was given', nums(rows) === 'OSE-0002,OSE-0010,CUS-0003');
+}
+
+// ── E&E storage deliveries → stock draws (the real lines of Oct 2026) ───
+{
+  const V = [{ id: 'v1', name: 'Delilah LA' }, { id: 'v2', name: 'Delilah Miami' }, { id: 'v3', name: 'The Nice Guy' }, { id: 'v4', name: 'The Birdstreet Club' },
+             { id: 'v11', name: 'Little Luck' }, { id: 'v14', name: 'Lady Delilah' }, { id: 'x:Delilah Dallas', name: 'Delilah Dallas' }];
+  const st = (name: string, sku: string | null, category: string) => item({ name, sku, category, pack_size: null, lead_time_days: null });
+  const napkin = st('TNG Custom Napkin /1000', 'TNG-NAPKIN', 'The Nice Guy'), tngEuro = st('TNG Eurotote Bag', 'TNG-EURO', 'The Nice Guy');
+  const pizza = st('TNG Pizza Box', 'SPTNGPZBX2', 'The Nice Guy'), paso = st('Paso Robles Pizza Box', null, 'Paso Robles');
+  const taco = st('BS Taco Wrap 6x7', 'SPBSTACOW', 'Bird Streets'), bsEuro = st('BS Eurotote Bag', 'SPBS-EURO', 'Bird Streets');
+  const gloss = st('Delilah Gloss Eurotote Bag', 'SHUR8180', 'Delilah'), medium = st('Delilah Medium Eurotote Bag', null, 'Delilah');
+  const pag = st('PAG Black Unbranded Eurotote Bags / 100', 'SHUR8123', 'h.wood'), soap = st("Hwood Mrs. Meyer's Hand Soap", 'SPHW8452', 'h.wood');
+  const items = [napkin, tngEuro, pizza, paso, taco, bsEuro, gloss, medium, pag, soap];
+  const moves = [move(gloss.id, 'count', 18, '2026-10-07'), move(napkin.id, 'count', 37, '2026-10-07'), move(pag.id, 'count', 0, '2026-10-07')];
+  const whs = order({ order_number: 'WHS-0001', venue_id: 'x:Multiple venues' }), bsc = order({ order_number: 'WHS-0007', venue_id: 'v4' });
+  const plan = (description: string, o = bsc, venue_id: string | null = null) => planStorageLine({ description, venue_id }, o, items, moves, V);
+  const draws = (p: ReturnType<typeof plan>) => p.draws.map(d => `${d.qty} ${d.name}`).join(' + ');
+
+  const a = plan('TNG delivery - 10/12/2026 - 3 CASES TNG-EURO / 2 CASES TNG-PIZZAB');
+  check('storage: two items on one line, venue from the text (not the BSC order it sits on), the day written on it',
+    a.problem === null && a.kind === 'release' && a.venueId === 'v3' && a.day === '2026-10-12' && draws(a) === '3 TNG Eurotote Bag + 2 TNG Pizza Box', a);
+  check('storage: a cut-off SKU still finds the item by its words, and only among the venue\'s brand (not Paso Robles)', a.draws[1]?.itemId === pizza.id);
+  const b = plan('TNG delivery - 10/07/2026 - 3 CASES TNG-NAPKIN', whs, 'v3');
+  check('storage: SKU written on the line', b.problem === null && draws(b) === '3 TNG Custom Napkin /1000' && b.day === '2026-10-07');
+  const c = plan('BSC delivery - 10/22/2026 - 2cs taco wrap');
+  check('storage: "2cs taco wrap" = 2 cases of BS Taco Wrap for Bird Streets', c.problem === null && c.venueId === 'v4' && draws(c) === '2 BS Taco Wrap 6x7');
+  const d = plan('Delilah Miami delivery - 10/05/2026 - 5 CASES OF BAGS SHIPPED VIA UPS', whs, 'v2');
+  check('storage: "bags" for Delilah = the Delilah bag we hold stock of (gloss counted, medium never)', d.problem === null && d.venueId === 'v2' && draws(d) === '5 Delilah Gloss Eurotote Bag', d);
+  const e = plan('Delilah Dallas delivery - 10/05/2026 - 2cs of bags via UPS', whs, 'x:Delilah Dallas');
+  check('storage: an order-only venue (Delilah Dallas) is read from the text too', e.problem === null && e.venueId === 'x:Delilah Dallas' && draws(e) === '2 Delilah Gloss Eurotote Bag');
+  const f = planStorageLine({ description: 'Delilah LA delivery - 10/05/2026 - 2cs of bags via UPS', venue_id: 'v1' }, whs, items, [], V);
+  check('storage: two equal matches and stock of neither = asked, not guessed', f.problem !== null && /could be/.test(f.problem) && !f.draws.length, f.problem);
+  const g = plan('TNG delivery - 10/19/2026 - 6 CASES / UBER PICK UP');
+  check('storage: cases with no item named = asked which item', g.problem !== null && /which item the 6 cases/.test(g.problem) && g.venueId === 'v3', g.problem);
+  check('storage: a date with nothing else = asked', /no item or quantity/.test(plan('BSC delivery - 10/13/2026').problem ?? ''));
+  const h = plan('Receiving and Warehousing - TNG napkins - 1pallet', whs, 'v3');
+  check('storage: receiving = stock coming in; a pallet asks how many cases', h.kind === 'receipt' && /how many cases of TNG Custom Napkin \/1000 the pallet/.test(h.problem ?? ''), h.problem);
+  const i2 = plan('Delilah Miami UPS returns CS 1', order({ venue_id: 'v2' }));
+  check('storage: a return is stock coming back; "CS 1" is 1 case, the item still has to be named', i2.kind === 'receipt' && /which item the 1 cases/.test(i2.problem ?? ''), i2.problem);
+  check('storage: a delivery with no venue written and a several-venue order = asked which venue',
+    /which venue/.test(plan('delivery - 11/02/2026 - 2 cs hand soap', whs).problem ?? ''));
+  check('storage: two venues on one line = asked', /more than one venue/.test(plan('Delilah LA / Delilah Miami delivery - 11/02/2026 - 2cs bags', whs).problem ?? ''));
+  check('storage: h.wood stock any venue can draw', draws(plan('TNG delivery - 11/02/2026 - 1 cs hand soap')) === "1 Hwood Mrs. Meyer's Hand Soap");
+  check('storage: an item not in stock = asked', /no stock item matches/.test(plan('TNG delivery - 11/02/2026 - 2 cs glass ashtrays').problem ?? ''));
+  const rows = storageMoveRows(a, { id: 'L9', description: 'TNG delivery - 10/12/2026 - 3 CASES TNG-EURO / 2 CASES TNG-PIZZAB' }, '2026-10-20');
+  check('storage moves: one release per item, tied to the line, on the delivery day at noon (a count that day wins)',
+    rows.length === 2 && rows.every(r => r.line_id === 'L9' && r.kind === 'release' && r.venue_id === 'v3' && r.moved_on === '2026-10-12' && r.created_at === '2026-10-12T19:00:00Z'));
+  check('storage moves: no day on the line = the invoice day', storageMoveRows(plan('TNG delivery 3 cases tng-euro'), { id: 'L', description: 'x' }, '2026-10-20')[0]?.moved_on === '2026-10-20');
+  const counted = [move(napkin.id, 'count', 37, '2026-10-07', { created_at: '2026-10-07T21:42:58Z' }),
+                   ...storageMoveRows(b, { id: 'L1', description: 'x' }, '2026-10-14').map(r => ({ ...r, id: 'm-x', item_id: r.item_id } as OtMove)),
+                   ...storageMoveRows(plan('TNG delivery - 10/12/2026 - 3 CASES TNG-NAPKIN'), { id: 'L2', description: 'x' }, '2026-10-20').map(r => ({ ...r, id: 'm-y' } as OtMove))];
+  check('storage moves: a same-day draw is inside the count; a later one comes off it', onHand(counted) === 34);
+  check('storage line = an E&E delivery / return / receiving fee line, nothing else',
+    isStorageLine({ description: 'TNG delivery - 10/07/2026 - 3 CASES', item_id: null }, 'EE Mercantile')
+    && isStorageLine({ description: 'Receiving and Warehousing - TNG napkins', item_id: null }, 'E&E Mercantile Co.')
+    && !isStorageLine({ description: 'TNG delivery - 10/07/2026', item_id: null }, 'Uline')
+    && !isStorageLine({ description: 'Delilah to-go bags', item_id: null }, 'EE Mercantile')
+    && !isStorageLine({ description: 'Delivery fee', item_id: 'i1' }, 'EE Mercantile'));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
