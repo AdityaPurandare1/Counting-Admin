@@ -31,7 +31,10 @@ interface Props {
 }
 
 export async function loadPurchaseLines(from: string, to: string): Promise<PurchaseLine[]> {
-  const { data, error } = await supabase.rpc('kount_bev_purchase_lines', { p_from: from, p_to: to });
+  let { data, error } = await supabase.rpc('kount_bev_purchase_lines', { p_from: from, p_to: to });
+  // v0.99: the first read after a quiet spell can pass the 8 s statement limit (4.3 s alone, more beside other
+  // screens loading); the second is warm (~1.7 s) — one retry, as the morning pull does for R365
+  if (error?.code === '57014') ({ data, error } = await supabase.rpc('kount_bev_purchase_lines', { p_from: from, p_to: to }));
   if (error) throw new Error(error.message);
   return Array.isArray(data) ? (data as PurchaseLine[]) : [];
 }
