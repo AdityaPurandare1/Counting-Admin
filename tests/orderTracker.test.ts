@@ -1141,5 +1141,12 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
     /before insert or update of status, delivered_on on public\.kount_ot_lines/.test(mig) && /not was_delivered/.test(mig));
 }
 
+// v0.98: a bible of a venue Kount no longer counts (Harriet's, inactive) still gets its venue chip
+{
+  const bv = src('src/components/orderTracker/BibleView.tsx');
+  check('Bibles: every venue with a bible is listed, closed ones by their name', /from\('kount_venues'\)\.select\('id,name'\)/.test(bv)
+    && /filter\(id => !venues\.some\(v => v\.id === id\)\)/.test(bv) && /allNames\.get\(id\) \?\? id\.replace/.test(bv));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

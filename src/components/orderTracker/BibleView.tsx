@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { VENUES } from '@/lib/access';
+import { supabase } from '@/lib/supabase';
 import { orderVenues } from '@/lib/orderTracker';
 import { bibleFromCsv, bibleItemColumn, bibleTextIndex, loadBible, type BibleBook, type BibleSheet } from '@/lib/bibleRender';
 import { leadForItem, leadText, productLeadIndex, type ProductLead } from '@/lib/leadTime';
@@ -21,8 +22,18 @@ export function BibleView({ data, today }: { data: TrackerData; today: string })
   const venues = useMemo(() => orderVenues(VENUES), []);
   const reload = () => loadBibles().then(setBibles).catch(e => setErr(e instanceof Error ? e.message : String(e)));
   useEffect(() => { void reload(); }, []);
+  // every venue's name, closed ones too: a bible can belong to a venue Kount no longer counts (Harriet's)
+  const [allNames, setAllNames] = useState<Map<string, string>>(new Map());
+  useEffect(() => {
+    void supabase.from('kount_venues').select('id,name').then(({ data }) => setAllNames(new Map(((data ?? []) as Array<{ id: string; name: string }>).map(v => [v.id, v.name]))));
+  }, []);
 
-  const withBible = useMemo(() => venues.filter(v => bibles?.some(b => b.venue_id === v.id)), [venues, bibles]);
+  const withBible = useMemo(() => {
+    const listed = venues.filter(v => bibles?.some(b => b.venue_id === v.id));
+    const others = [...new Set((bibles ?? []).map(b => b.venue_id))].filter(id => !venues.some(v => v.id === id))
+      .map(id => ({ id, name: allNames.get(id) ?? id.replace(/^x:/, '') }));
+    return [...listed, ...others];
+  }, [venues, bibles, allNames]);
   useEffect(() => { if (!venue && withBible.length) setVenue(withBible[0].id); }, [withBible, venue]);
   const mine = useMemo(() => (bibles ?? []).filter(b => b.venue_id === venue), [bibles, venue]);
   useEffect(() => { if (!mine.some(b => b.id === bibleId)) setBibleId(mine[0]?.id ?? ''); }, [mine, bibleId]);
