@@ -1202,5 +1202,23 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
     /before insert or update of description, deliver_to on public\.kount_ot_lines/.test(mig) && /when 'sea' then 'warehouse' else 'venue'/.test(mig) && /if v_n = 1 then new\.item_id := v_hit/.test(mig));
 }
 
+// v1.02: an item with no reorder point showed OK at 0 cases (Delilah Gloss Eurotote: 0 on hand, 9 a month)
+{
+  const today = '2026-11-04';
+  const it = (over: Partial<OtItem>) => item({ reorder_point: null, lead_time_days: null, ...over });
+  const used = (id: string, perMonth: number) => [move(id, 'release', perMonth * 3, '2026-08-20')];   // 90-day window
+  const bag = it({ name: 'Delilah Gloss Eurotote Bag' });
+  const st = (i: OtItem, mv: OtMove[], extra: { lines?: OtLine[]; orders?: OtOrder[] } = {}) => stockRows([i], mv, extra.lines ?? [], extra.orders ?? [], today)[0];
+  check('status: no reorder point, nothing left = reorder now', st(bag, [move(bag.id, 'count', 0, '2026-11-03'), ...used(bag.id, 9)]).state === 'reorder now');
+  const wrap = it({ name: 'BS Taco Wrap 6x7' });
+  check('status: no reorder point, about a month left = reorder soon', st(wrap, [move(wrap.id, 'count', 2, '2026-11-03'), ...used(wrap.id, 2)]).state === 'reorder soon');
+  const towel = it({ name: 'BS Towel' });
+  check('status: no reorder point, months left = ok', st(towel, [move(towel.id, 'count', 23, '2026-11-03'), ...used(towel.id, 2)]).state === 'ok');
+  const o = order({ deliver_to: 'warehouse', expected_on: null });
+  const coming = line(o, { item_id: bag.id, qty: 40, status: 'SHIPPED' });
+  check('status: what is on order counts (0 left, 40 coming at 9 a month = ok)',
+    st(bag, [move(bag.id, 'count', 0, '2026-11-03'), ...used(bag.id, 9)], { lines: [coming], orders: [o] }).state === 'ok');
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
