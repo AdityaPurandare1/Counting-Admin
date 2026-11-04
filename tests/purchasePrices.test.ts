@@ -343,7 +343,7 @@ check('nav row in the Purchasing section, by its permission (admin + corporate s
   && /corporate: ALL\.filter\(k => k !== 'access:users'\)/.test(perms) && !/manager: \[[^\]]*purchasing/.test(perms));
 check('loads through the 0107 RPC', screen.includes("supabase.rpc('kount_bev_purchase_lines', { p_from: from, p_to: to })"));
 // v0.99 (diagnostics 2026-11-03): a cold first read passed the 8 s limit beside other screens loading -> one retry
-check('a statement timeout (57014) is retried once', /if \(error\?\.code === '57014'\) \(\{ data, error \} = await supabase\.rpc\('kount_bev_purchase_lines'/.test(screen));
+check('a statement timeout (57014) is retried once', /if \(error\?\.code === '57014'\) \{\s*const again = await supabase\.rpc\('kount_bev_purchase_lines'/.test(screen));
 check('prices ALL lines before filtering (cross-venue references)', /const priced = useMemo\(\(\) => \(raw \? priceLines\(raw\) : \[\]\), \[raw\]\);/.test(screen));
 // At least the version that shipped Purchase prices (an exact pin broke on the next bump).
 check('version >= 0.74', (() => {
