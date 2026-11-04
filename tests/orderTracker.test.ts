@@ -10,7 +10,7 @@ import {
   onHand, receivedForLine, stockRows, releasesByVenue, validateNewOrder, similarity, addDays, sameVendor,
   planDocRows, planDocumentSave, documentChecks, decideMailDocument, extractTracking, trackingUrl, orderForEmail, venueForDoc, filterByVenue, sortOrders, orderVenueIds,
   planStorageLine, storageMoveRows, isStorageLine, autoOrderNumber, lineOutsideSubtotal, orderForReferences,
-  keepOtherAttachment, isSpreadsheet, sheetUpdates, itemLocation, EE_WAREHOUSE,
+  keepOtherAttachment, isSpreadsheet, sheetUpdates, itemLocation, EE_WAREHOUSE, linePack, qtyInItemUnits,
   type ReadDoc, type MailSource,
   type OtItem, type OtLine, type OtMove, type OtOrder, type OtDocument, type DocLine, type DocReview,
 } from '../src/lib/orderTracker';
@@ -1146,6 +1146,31 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   const bv = src('src/components/orderTracker/BibleView.tsx');
   check('Bibles: every venue with a bible is listed, closed ones by their name', /from\('kount_venues'\)\.select\('id,name'\)/.test(bv)
     && /filter\(id => !venues\.some\(v => v\.id === id\)\)/.test(bv) && /allNames\.get\(id\) \?\? id\.replace/.test(bv));
+}
+
+// v1.00: incoming / received in the stock item's units — Bird Streets chopsticks by sea come 1,500 to a case,
+// the warehouse counts cases of 1,000 (CUS-0022: 14 cases = 21,000 = 21 warehouse cases)
+{
+  check('case size read from the line: CS/1500, CS 1500, (1500/CS), 1500/CS; none -> null',
+    linePack({ description: 'BS Chopsticks … (SKU BSCHOPSTCK), CS/1500 — via sea' }) === 1500 && linePack({ description: 'Lady Delilah Engraved Chopsticks via sea CS 1500' }) === 1500
+    && linePack({ description: 'Little Luck Chopsticks via sea (1500/CS) 7.4*7.7*240mm' }) === 1500 && linePack({ description: 'Delilah to-go bags' }) === null);
+  const chop = item({ name: 'BS Chopsticks', sku: 'BSCHOPSTCK', pack_size: 1000, unit: 'case' });
+  check('14 cases of 1,500 = 21 warehouse cases of 1,000; same size or unknown: as written',
+    qtyInItemUnits({ description: 'CS/1500 — via sea', qty: 14 }, chop) === 21 && qtyInItemUnits({ description: 'CS/1000 — via air', qty: 10 }, chop) === 10
+    && qtyInItemUnits({ description: 'no size', qty: 7 }, chop) === 7 && qtyInItemUnits({ description: 'CS/1500', qty: 4 }, null) === 4);
+  const o1 = order({ deliver_to: 'warehouse', venue_id: 'v4', expected_on: null });
+  const o2 = order({ deliver_to: 'warehouse', venue_id: 'v4', expected_on: null });
+  const sea1 = line(o1, { item_id: chop.id, description: 'BS Chopsticks CS/1500 — via sea', qty: 14, status: 'PAID' });
+  const sea2 = line(o2, { item_id: chop.id, description: 'BS Chopsticks CS/1500 — via sea', qty: 10, status: 'SHIPPED' });
+  const air = line(o2, { item_id: null, description: 'BS Chopsticks CS/1000 — via air', qty: 10, status: 'DELIVERED' });
+  const counted = move(chop.id, 'count', 6, '2026-11-03');
+  const row = stockRows([chop], [counted], [sea1, sea2, air], [o1, o2], '2026-11-03')[0];
+  check('incoming = 36 warehouse cases (21 + 15), the unlinked air line not counted', row.incoming === 36 && row.onHand === 6, row);
+  const part = stockRows([chop], [counted, move(chop.id, 'receipt', 21, '2026-11-20', { line_id: sea1.id })], [sea1, sea2, air], [o1, o2], '2026-11-20')[0];
+  check('receiving the 21,000 leaves 15 incoming and 27 on hand', part.incoming === 15 && part.onHand === 27, part);
+  const d = orderDraft(o1, [sea1], '2026-11-20');
+  const plan = planOrderSave(o1, [sea1], { ...d, lines: d.lines.map(l => ({ ...l, status: 'RECEIVED' as const })) }, { items: [chop], received: () => 0 });
+  check('ticking Received puts 21 warehouse cases into stock, not 14', plan.receipts.length === 1 && plan.receipts[0].qty === 21, plan.receipts);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

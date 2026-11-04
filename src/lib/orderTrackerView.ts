@@ -6,7 +6,7 @@
    Kept apart from orderTracker.ts, whose copy the morning pull runs.
    ─────────────────────────────────────────────────────────────────────── */
 import {
-  MULTIPLE_VENUES, STATUSES, isLate, isStorageLine, lineTotal, orderState, receivedForLine, statusRank, stockRows,
+  MULTIPLE_VENUES, STATUSES, isLate, isStorageLine, lineTotal, orderState, qtyInItemUnits, receivedForLine, statusRank, stockRows,
   type LineStatus, type OtDocument, type OtItem, type OtLine, type OtMove, type OtOrder,
 } from './orderTracker';
 
@@ -279,7 +279,7 @@ export function planOrderSave(o: OtOrder | null, lines: OtLine[], d: OrderDraft,
     }
     // ticked received: what is still to come of a stocked item goes into the warehouse
     if (patch.status === 'RECEIVED' && item_id && (o?.deliver_to ?? d.deliver_to) === 'warehouse' && ctx.items.find(i => i.id === item_id)?.track_stock) {
-      const left = Math.max(0, row.qty - ctx.received(was.id));
+      const left = Math.max(0, qtyInItemUnits({ description: row.description, qty: row.qty }, ctx.items.find(i => i.id === item_id)) - ctx.received(was.id));
       if (left > 0) plan.receipts.push({ line_id: was.id, item_id, qty: left });
     }
     if (Object.keys(patch).length) plan.updates.push({ id: was.id, patch });
