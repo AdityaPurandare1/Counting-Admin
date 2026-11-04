@@ -145,6 +145,16 @@ check('phone permissions alone do not open the desktop', !usesDesktop(['phone:co
     check('0148 seeds the same catalog as permissions.ts', feats.join() === FEATURES.map(f => f.key).join(), feats);
     check('0148 seeds the same role templates as permissions.ts', tpl.join() === want.join());
   }
+  // the phone (counting-app.html v2.32) keeps its own copy of the templates for the keys it reads
+  const phone = sibling('counting-app.html');
+  if (phone) {
+    const m = phone.match(/var PHONE_ROLE_TEMPLATES = \{([\s\S]*?)\n\};/);
+    const tpl = m ? Object.fromEntries([...m[1].matchAll(/(\w+):\s*\[([^\]]*)\]/g)].map(r => [r[1], [...r[2].matchAll(/'([a-z]+:[a-z0-9-]+)'/g)].map(k => k[1]).sort()])) : {};
+    const keys = new Set(Object.values(tpl).flat());
+    const diff = ROLES.filter(r => JSON.stringify(tpl[r] ?? null) !== JSON.stringify(templateFor([r]).filter(k => keys.has(k)).sort()));
+    check('the phone\'s role templates match permissions.ts for every key it reads', !!m && keys.size >= 7 && diff.length === 0, { diff, tpl });
+    check('the phone asks permissions, not roles', /function userCan\(key\)/.test(phone) && !/role === 'corporate'|role === 'venue_manager'|role !== 'corporate'/.test(phone));
+  }
   const fn = sibling('supabase', 'functions', 'admin-user-mgmt', 'index.ts');
   if (fn) check('admin-user-mgmt: set_access, for whoever has access:users', /case 'set_access':/.test(fn) && /'access:users'/.test(fn));
 }
