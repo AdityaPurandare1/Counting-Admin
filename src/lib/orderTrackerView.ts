@@ -163,6 +163,8 @@ export interface LineDraft {
   item_id: string | null; description: string; sku: string; qty: string; unit: string; unit_price: string;
   expected_on: string; status: LineStatus; invoice_number: string; invoice_date: string; quote_number: string | null;
   venue_id: string | null;
+  /** '' = the order's destination; 'warehouse' / 'venue' = this line's own (0151) */
+  deliver_to: '' | 'warehouse' | 'venue';
   removed: boolean;
 }
 export interface OrderDraft {
@@ -183,7 +185,7 @@ export function lineDraft(l: OtLine | null, status: LineStatus = 'REQUESTED'): L
     key: l?.id ?? `new-${++draftKey}`, id: l?.id ?? null, item_id: l?.item_id ?? null, description: l?.description ?? '', sku: l?.sku ?? '',
     qty: l ? numText(l.qty) : '', unit: l?.unit ?? '', unit_price: l ? numText(l.unit_price) : '', expected_on: l?.expected_on ?? '',
     status: l?.status ?? status, invoice_number: l?.invoice_number ?? '', invoice_date: l?.invoice_date ?? '', quote_number: l?.quote_number ?? null,
-    venue_id: l?.venue_id ?? null, removed: false,
+    venue_id: l?.venue_id ?? null, deliver_to: l?.deliver_to ?? '', removed: false,
   };
 }
 export function orderDraft(o: OtOrder | null, lines: OtLine[], today: string): OrderDraft {
@@ -225,7 +227,7 @@ export interface OrderSavePlan {
   /** units to receive into the warehouse (a stocked item, delivered to the warehouse, ticked received) */
   receipts: Array<{ line_id: string; item_id: string; qty: number }>;
   adds: Array<{ item_id: string | null; description: string; sku: string | null; qty: number; unit: string | null; unit_price: number | null;
-    status: LineStatus; invoice_number: string | null; invoice_date: string | null; expected_on: string | null }>;
+    status: LineStatus; invoice_number: string | null; invoice_date: string | null; expected_on: string | null; deliver_to: 'warehouse' | 'venue' | null }>;
   removes: string[];
   backward: number;
 }
@@ -264,6 +266,8 @@ export function planOrderSave(o: OtOrder | null, lines: OtLine[], d: OrderDraft,
     const row = {
       item_id, description: l.description.trim(), sku: txt(l.sku), qty: Number(l.qty), unit: txt(l.unit), unit_price: l.unit_price.trim() === '' ? null : Number(l.unit_price),
       status: l.status, invoice_number: txt(l.invoice_number), invoice_date: l.invoice_date || null, expected_on: l.expected_on || null,
+      // empty on a new line: the database sets it from the text (sea -> warehouse, air -> venue)
+      deliver_to: l.deliver_to || null,
     };
     const was = l.id ? old.get(l.id) : undefined;
     if (!was) { plan.adds.push(row); continue; }
@@ -278,7 +282,7 @@ export function planOrderSave(o: OtOrder | null, lines: OtLine[], d: OrderDraft,
       patch.delivered_on = d.delivered_on; patch.delivered_source = 'manual';
     }
     // ticked received: what is still to come of a stocked item goes into the warehouse
-    if (patch.status === 'RECEIVED' && item_id && (o?.deliver_to ?? d.deliver_to) === 'warehouse' && ctx.items.find(i => i.id === item_id)?.track_stock) {
+    if (patch.status === 'RECEIVED' && item_id && (row.deliver_to ?? o?.deliver_to ?? d.deliver_to) === 'warehouse' && ctx.items.find(i => i.id === item_id)?.track_stock) {
       const left = Math.max(0, qtyInItemUnits({ description: row.description, qty: row.qty }, ctx.items.find(i => i.id === item_id)) - ctx.received(was.id));
       if (left > 0) plan.receipts.push({ line_id: was.id, item_id, qty: left });
     }

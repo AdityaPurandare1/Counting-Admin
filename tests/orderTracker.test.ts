@@ -10,7 +10,7 @@ import {
   onHand, receivedForLine, stockRows, releasesByVenue, validateNewOrder, similarity, addDays, sameVendor,
   planDocRows, planDocumentSave, documentChecks, decideMailDocument, extractTracking, trackingUrl, orderForEmail, venueForDoc, filterByVenue, sortOrders, orderVenueIds,
   planStorageLine, storageMoveRows, isStorageLine, autoOrderNumber, lineOutsideSubtotal, orderForReferences,
-  keepOtherAttachment, isSpreadsheet, sheetUpdates, itemLocation, EE_WAREHOUSE, linePack, qtyInItemUnits,
+  keepOtherAttachment, isSpreadsheet, sheetUpdates, itemLocation, EE_WAREHOUSE, linePack, qtyInItemUnits, lineDeliversTo,
   type ReadDoc, type MailSource,
   type OtItem, type OtLine, type OtMove, type OtOrder, type OtDocument, type DocLine, type DocReview,
 } from '../src/lib/orderTracker';
@@ -1171,6 +1171,35 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   const d = orderDraft(o1, [sea1], '2026-11-20');
   const plan = planOrderSave(o1, [sea1], { ...d, lines: d.lines.map(l => ({ ...l, status: 'RECEIVED' as const })) }, { items: [chop], received: () => 0 });
   check('ticking Received puts 21 warehouse cases into stock, not 14', plan.receipts.length === 1 && plan.receipts[0].qty === 21, plan.receipts);
+}
+
+// v1.01 (0151): "any custom item, if its coming by sea goes to the warehouse, if by air comes to the venue" —
+// the LINE's destination; one order can hold both (CUS-0011: air to Bird Streets, sea to E&E)
+{
+  const chop = item({ name: 'BS Chopsticks', sku: 'BSCHOPSTCK', pack_size: 1000, unit: 'case' });
+  const o = order({ deliver_to: 'venue', venue_id: 'v4', expected_on: null });
+  const sea = line(o, { item_id: chop.id, description: 'BS Chopsticks CS/1500 — via sea', qty: 10, status: 'SHIPPED', deliver_to: 'warehouse' });
+  const air = line(o, { item_id: chop.id, description: 'BS Chopsticks CS/1000 — via air', qty: 10, status: 'SHIPPED', deliver_to: 'venue' });
+  const plain = line(o, { item_id: chop.id, description: 'BS Chopsticks', qty: 5, status: 'SHIPPED' });
+  const row = stockRows([chop], [], [sea, air, plain], [o], '2026-11-03')[0];
+  check('route: a venue order\'s sea line is incoming to the warehouse; its air line and plain lines are not', row.incoming === 15, row.incoming);
+  const wo = order({ deliver_to: 'warehouse', expected_on: null });
+  const airOnW = line(wo, { item_id: chop.id, description: 'via air', qty: 10, status: 'SHIPPED', deliver_to: 'venue' });
+  check('route: an air line on a warehouse order goes to the venue (not incoming)', stockRows([chop], [], [airOnW], [wo], '2026-11-03')[0].incoming === 0);
+  check('route: no destination of its own = the order\'s', lineDeliversTo({ deliver_to: null }, { deliver_to: 'warehouse' }) === 'warehouse' && lineDeliversTo({ deliver_to: 'warehouse' }, { deliver_to: 'venue' }) === 'warehouse');
+  const d = orderDraft(o, [sea], '2026-11-03');
+  const recv = planOrderSave(o, [sea], { ...d, lines: d.lines.map(l => ({ ...l, status: 'RECEIVED' as const })) }, { items: [chop], received: () => 0 });
+  check('route: Received on a venue order\'s sea line puts it into the warehouse (15 cases of 1,000)', recv.receipts.length === 1 && recv.receipts[0].qty === 15, recv.receipts);
+  const added = planOrderSave(o, [sea], { ...d, lines: [...d.lines, { ...lineDraft(null), description: 'More napkins via sea', qty: '3' }] }, { items: [], received: () => 0 });
+  check('route: a new line leaves its destination to the database (sea/air from the text)', added.adds.length === 1 && added.adds[0].deliver_to === null, added.adds);
+  const moved = planOrderSave(o, [sea], { ...d, lines: d.lines.map(l => ({ ...l, deliver_to: 'venue' as const })) }, { items: [], received: () => 0 });
+  check('route: a destination changed in the panel is saved', moved.updates[0]?.patch.deliver_to === 'venue', moved.updates);
+  const dr = src('src/components/orderTracker/OrderDrawer.tsx'), ov = src('src/components/orderTracker/OrdersView.tsx');
+  check('route: the panel has each line\'s "Goes to", the list says the sea part goes to the warehouse',
+    /aria-label="Goes to"/.test(dr) && /stock: \$\{data\.items\.find/.test(dr) && /'sea part to the warehouse'/.test(ov));
+  const mig = sibling('supabase', 'migrations', '0151_kount_ot_line_route.sql');
+  if (mig) check('route: 0151 sets sea -> warehouse / air -> venue on a line with none, and links a warehouse line by SKU',
+    /before insert or update of description, deliver_to on public\.kount_ot_lines/.test(mig) && /when 'sea' then 'warehouse' else 'venue'/.test(mig) && /if v_n = 1 then new\.item_id := v_hit/.test(mig));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

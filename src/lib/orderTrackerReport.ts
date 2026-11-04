@@ -60,7 +60,7 @@ export function buildReportRows(inp: ReportInput): ReportSheets {
         ...ls.map(l => l.tracking_number).filter((x): x is string => !!x)])].join(', '), lastUpdate.slice(0, 10)]);
     for (const l of ls) {
       const item = l.item_id ? itemById.get(l.item_id) : undefined;
-      const tracked = item?.track_stock && o.deliver_to === 'warehouse';
+      const tracked = item?.track_stock && (l.deliver_to ?? o.deliver_to) === 'warehouse';
       lines.push([o.order_number ?? '', o.vendor_name, inp.venueName(l.venue_id ?? o.venue_id), item?.name ?? l.description, l.sku ?? item?.sku ?? '', l.qty, l.unit ?? item?.unit ?? '',
         l.unit_price, l.unit_price != null ? r2(lineTotal(l)) : null, STATUS_LABEL[l.status], l.status_at.slice(0, 10),
         l.quote_number ?? '', l.invoice_number ?? '', l.invoice_date ?? '', l.tracking_number ?? '', l.expected_on ?? o.expected_on ?? '',

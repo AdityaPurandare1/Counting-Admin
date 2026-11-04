@@ -146,7 +146,8 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
                       onKeyDown={e => { if (e.key === 'Enter') setOpenId(o.id); }}>
                       <td><div className="t1">{o.vendor_name}</div><div className="t2 mono">{o.order_number || '—'}</div></td>
                       <td className="venue">{o.venue_id === MULTIPLE_VENUES ? vIds.map(v => venueName(v)).join(', ') : o.venue_id ? venueName(o.venue_id) : 'Warehouse stock'}
-                        <div className="t2">{[orderCategory(o.order_number), st !== 'open' && st].filter(Boolean).join(' · ') || (o.deliver_to === 'warehouse' ? 'to the warehouse' : 'to the venue')}</div></td>
+                        <div className="t2">{[orderCategory(o.order_number), st !== 'open' && st,
+                          o.deliver_to === 'venue' && ls.some(l => l.deliver_to === 'warehouse' && l.status !== 'CANCELLED') && 'sea part to the warehouse'].filter(Boolean).join(' · ') || (o.deliver_to === 'warehouse' ? 'to the warehouse' : 'to the venue')}</div></td>
                       <td>
                         {ful ? <span className={`ot-pill ${FUL_TONE[ful] ?? ''}`}>{ful}</span> : <span className="faint">No lines</span>}
                         {step >= 0 && <div className="ot-steps" aria-hidden="true">{FULFILLMENT.map((f, i) =>

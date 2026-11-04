@@ -179,7 +179,13 @@ export function OrderDrawer({ order, lines, docs, data, today, venueName, onClos
                               {ALL_STATUSES.map(s => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
                             </select>
                             <input style={{ width: 132 }} className="mono" value={l.invoice_number} disabled={l.removed} onChange={e => setLine(l.key, { invoice_number: e.target.value })} placeholder="Invoice #" aria-label="Invoice #" />
-                            {[l.sku, l.quote_number && `quote ${l.quote_number}`, l.venue_id && draft.venue_id === MULTIPLE_VENUES && venueName(l.venue_id)].filter(Boolean).join(' · ')}
+                            <select value={l.deliver_to} disabled={l.removed} onChange={e => setLine(l.key, { deliver_to: e.target.value as LineDraft['deliver_to'] })} aria-label="Goes to"
+                              title="Where this line goes. Custom items by sea go to the warehouse, by air to the venue (set from the line's text).">
+                              <option value="">{draft.deliver_to === 'warehouse' ? 'to the warehouse (order)' : 'to the venue (order)'}</option>
+                              <option value="warehouse">to the warehouse</option><option value="venue">to the venue</option>
+                            </select>
+                            {[l.sku, l.quote_number && `quote ${l.quote_number}`, l.venue_id && draft.venue_id === MULTIPLE_VENUES && venueName(l.venue_id),
+                              l.item_id && `stock: ${data.items.find(i => i.id === l.item_id)?.name ?? 'item'}`].filter(Boolean).join(' · ')}
                           </div>
                         </td>
                         <td><input className="ot-inp num" inputMode="decimal" value={l.qty} disabled={l.removed} onChange={e => setLine(l.key, { qty: e.target.value })} aria-label="Quantity" /></td>
