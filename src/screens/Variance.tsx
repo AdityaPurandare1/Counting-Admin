@@ -405,22 +405,17 @@ function AuditDetail({ auditId, user, onClosed }: { auditId: string; user: Acces
 
   const closeCount1 = async () => {
     if (!audit || closing) return;
-    // Closing from the desktop does NOT build kount_recounts — only the
-    // phone's close flow generates the recount list. Keep the action
-    // available (corporate may need it) but make sure it's informed.
-    if (!confirm(
-      `Close Count 1 for ${audit.join_code} (${audit.venue_name})?\n\n` +
-      'WARNING: closing from the desktop will NOT generate the recount list — ' +
-      'that only happens when the counting manager closes Count 1 on the phone. ' +
-      'Count 2 will start without a recount list.\n\nProceed anyway?'
-    )) return;
+    // v1.02: the database builds the recount list now (KevaOS migration 520261103192326):
+    // kount_close_count1 closes, computes this audit's own AVT, and kount_build_recounts scores it.
+    // Closing here gives the same list as closing on the phone.
+    if (!confirm(`Close Count 1 for ${audit.join_code} (${audit.venue_name})?\n\nThis computes the variance and builds the recount list.`)) return;
     setClosing(true);
-    const { error } = await supabase
-      .from('kount_audits')
-      .update({ count_phase: 'review', count1_closed_at: new Date().toISOString() })
-      .eq('id', audit.id);
+    const { data, error } = await supabase.rpc('kount_close_count1', { p_audit_id: audit.id });
     setClosing(false);
-    if (error) { alert('Close Count 1 failed: ' + error.message); return; }
+    if (error) { alert('Close Count 1 failed: ' + error.message.replace(/^kount_close_count1: /, '')); return; }
+    const res = (data ?? {}) as { recounts?: number; avt_error?: string | null };
+    if (res.avt_error) alert('Count 1 closed, but the variance didn\'t compute yet — the recount list fills in when it does.');
+    else if (typeof res.recounts === 'number') alert(`Count 1 closed. ${res.recounts} zone count${res.recounts === 1 ? '' : 's'} to recount.`);
     onClosed();
   };
 
