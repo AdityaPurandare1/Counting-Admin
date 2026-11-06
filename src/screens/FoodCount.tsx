@@ -266,7 +266,7 @@ export function FoodCount({ user }: Props) {
 
       {mode === 'type' && venue && (
         <div className="content">
-          <FoodEntry key={venue} venue={venue} venueName={venueName} />
+          <FoodEntry key={venue + '|' + user.email} venue={venue} venueName={venueName} userEmail={user.email} />
         </div>
       )}
 

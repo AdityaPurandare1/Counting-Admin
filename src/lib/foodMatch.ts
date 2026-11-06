@@ -17,12 +17,18 @@
 
 const STOP = new Set(['and', 'the', 'of', 'a', 'w', 'with', 'for', 'in', 'x']);
 
-// Combining accents (U+0300..U+036F) built from char codes: written as escapes, an editor can turn them into
-// the invisible characters themselves (same reason as FoodCount.tsx's INVISIBLE).
-const COMBINING = new RegExp('[' + String.fromCharCode(0x300) + '-' + String.fromCharCode(0x36f) + ']', 'g');
+// Exactly the accents SQL kount_food_key translates (its translate() list); any other non a-z0-9 character
+// becomes a space on both sides, so "Koshō" and "½" give the same key here as in the database.
+const ACCENTED = 'áàâäãåéèêëíìîïóòôöõúùûüçñ';
+const PLAIN    = 'aaaaaaeeeeiiiiooooouuuucn';
 
 function stripAccents(s: string): string {
-  return s.normalize('NFKD').replace(COMBINING, '');
+  let out = '';
+  for (const ch of s) {
+    const i = ACCENTED.indexOf(ch);
+    out += i >= 0 ? PLAIN[i] : ch;
+  }
+  return out;
 }
 
 function singular(t: string): string {
@@ -133,10 +139,31 @@ export function rankMatches<T extends MatchCandidate>(typed: string, candidates:
 
 /* ───────────────────────── quantities ───────────────────────── */
 
-/** A typed quantity: "" -> not counted (null); "0" -> counted zero; "1.5" / "1,5" -> 1.5; junk -> NaN. */
+/** A typed quantity: "" -> not counted (null); "0" -> counted zero; "1.5" -> 1.5; anything else -> NaN.
+ *  A comma is refused, not guessed: "1,250" could be one thousand or one and a quarter. */
 export function parseQty(s: string): number | null {
-  const t = s.trim().replace(',', '.');
+  const t = s.trim();
   if (t === '') return null;
   if (!/^\d*\.?\d+$|^\d+\.$/.test(t)) return NaN;
   return Number(t);
+}
+
+/** Whether a spelling typed while adding an item is worth remembering for the venue: at least two words, and
+ *  not just a partial search for the item picked ("olive oil" -> "Olive Oil, Extra Virgin" is a search; "ap
+ *  flour" -> "Flour, All Purpose" is a real other name). Same key = nothing to remember. */
+export function worthRemembering(typed: string, itemName: string): boolean {
+  const t = foodKey(typed), n = foodKey(itemName);
+  if (!t || t === n) return false;
+  const tw = t.split(' ');
+  if (tw.length < 2) return false;
+  const nw = new Set(n.split(' '));
+  return tw.some(w => !nw.has(w));
+}
+
+/** The text to search the catalog with for a typed word: plural endings off, so "cherries" finds Cherry and
+ *  Cherries alike (the key's "cherry" would miss "Cherries"). */
+export function searchStem(word: string): string {
+  const w = word.toLowerCase();
+  const stem = w.replace(/(ies|es|s)$/, '');
+  return stem.length >= 3 ? stem : w;
 }

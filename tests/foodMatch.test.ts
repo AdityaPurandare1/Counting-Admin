@@ -7,7 +7,7 @@
  *
  * Run with:  npm test
  */
-import { foodKey, parseQty, rankMatches, unitLabel } from '../src/lib/foodMatch.ts';
+import { foodKey, parseQty, rankMatches, searchStem, unitLabel, worthRemembering } from '../src/lib/foodMatch.ts';
 
 let passed = 0;
 let failed = 0;
@@ -28,6 +28,8 @@ check('accents: Crème Fraîche = creme fraiche', foodKey('Crème Fraîche') ===
 check('-ies plural: Cherries -> cherry', foodKey('Cherries') === 'cherry');
 check('-ss / -us words kept: Asparagus, Watercress', foodKey('Asparagus') === 'asparagus' && foodKey('Watercress') === 'watercress');
 check('empty / null', foodKey('') === '' && foodKey(null) === '');
+check('accents outside the SQL list are separators, as in SQL: Koshō -> kosh', foodKey('Yuzu Koshō') === 'kosh yuzu', foodKey('Yuzu Koshō'));
+check('½ is a separator, as in SQL: Butter ½ lb -> butter lb', foodKey('Butter ½ lb') === 'butter lb', foodKey('Butter ½ lb'));
 
 console.log('unitLabel (Little Luck spellings)');
 const u = (s: string, p?: number | null) => unitLabel(s, p).text;
@@ -60,8 +62,18 @@ check('nothing typed -> no suggestions', rankMatches('  ', cands).length === 0);
 console.log('parseQty');
 check('blank = not counted (null)', parseQty('') === null && parseQty('  ') === null);
 check('0 is a real count', parseQty('0') === 0);
-check('decimals with . or ,', parseQty('1.5') === 1.5 && parseQty('1,5') === 1.5 && parseQty('.5') === 0.5 && parseQty('2.') === 2);
+check('decimals with a dot', parseQty('1.5') === 1.5 && parseQty('.5') === 0.5 && parseQty('2.') === 2);
+check('a comma is refused, never guessed (1,250 is not 1.25)', Number.isNaN(parseQty('1,250') as number) && Number.isNaN(parseQty('1,5') as number));
 check('junk is NaN, never 0', Number.isNaN(parseQty('abc') as number) && Number.isNaN(parseQty('1-2') as number) && Number.isNaN(parseQty('-1') as number));
+
+console.log('worthRemembering / searchStem');
+check('a partial search is not remembered: olive oil -> Olive Oil, Extra Virgin', !worthRemembering('olive oil', 'Olive Oil, Extra Virgin'));
+check('one word is not remembered: oil -> Olive Oil', !worthRemembering('oil', 'Olive Oil'));
+check('the same item spelled differently is not remembered (same key)', !worthRemembering('unsalted butter', 'Butter, Unsalted'));
+check('a real other name is remembered: ap flour -> Flour, All Purpose', worthRemembering('ap flour', 'Flour, All Purpose'));
+check('cherries searches cherr (finds Cherry and Cherries)', searchStem('cherries') === 'cherr');
+check('avocados searches avocado', searchStem('avocados') === 'avocado');
+check('short words keep their ending: gas', searchStem('gas') === 'gas');
 
 console.log(`\nfoodMatch: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

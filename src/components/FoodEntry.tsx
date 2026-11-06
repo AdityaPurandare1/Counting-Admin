@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { Card, Eyebrow, Btn, Num, Money, Pill } from '@/components/atoms';
 import { FOOD_SHEETS, sheetForCategory, type FoodRow, type FoodSheetKey } from '@/lib/foodImport';
-import { foodKey, parseQty, rankMatches, unitLabel, UNIT_CHOICES } from '@/lib/foodMatch';
+import { foodKey, parseQty, rankMatches, searchStem, unitLabel, worthRemembering, UNIT_CHOICES } from '@/lib/foodMatch';
 
 /* ───────────────────────────────────────────────────────────────────────
    Food count → Type counts. The chef opens the venue's food list, types a
@@ -23,7 +23,7 @@ import { foodKey, parseQty, rankMatches, unitLabel, UNIT_CHOICES } from '@/lib/f
      (0155), prices NOT sent: typing a count never rewrites the venue's costs.
    ─────────────────────────────────────────────────────────────────────── */
 
-interface Props { venue: string; venueName: string }
+interface Props { venue: string; venueName: string; userEmail: string }
 
 interface ListItem {
   key: string;                       // master_item_id, or "new:<n>" for an item added on screen
@@ -46,7 +46,7 @@ interface Draft { qty: Record<string, string>; extras: Extra[]; savedAt: string 
 interface ImportResult {
   ok: boolean; committed: boolean; has_counts: boolean; venue_name: string; audit_id: string | null;
   rows_in_sheet: number; matched: number; matched_by?: Record<string, number>; unmatched: string[];
-  masters_created: number; rows_with_qty: number; entries_written: number;
+  masters_created: number; rows_with_qty: number; entries_written: number; already_recorded?: boolean;
 }
 
 interface CatalogHit { id: string; name: string; category: string | null }
@@ -64,19 +64,24 @@ const todayIso = () => {
 const countedAtFor = (dateStr: string) =>
   dateStr === todayIso() ? new Date().toISOString() : new Date(`${dateStr}T23:59:00`).toISOString();
 
-const draftKey = (venue: string) => `kount.foodDraft.v1.${venue}`;
-function readDraft(venue: string): Draft | null {
+/** A draft belongs to one person at one venue (a kitchen PC is shared) and is dropped after two days, so last
+ *  week's half-finished count never refills the screen. */
+const DRAFT_MAX_AGE_MS = 2 * 24 * 60 * 60 * 1000;
+const draftKey = (venue: string, who: string) => `kount.foodDraft.v2.${venue}.${who.toLowerCase()}`;
+function readDraft(venue: string, who: string): Draft | null {
   try {
-    const raw = localStorage.getItem(draftKey(venue));
+    const raw = localStorage.getItem(draftKey(venue, who));
     if (!raw) return null;
     const d = JSON.parse(raw) as Draft;
-    return d && typeof d === 'object' && d.qty ? { qty: d.qty, extras: Array.isArray(d.extras) ? d.extras : [], savedAt: d.savedAt } : null;
+    if (!d || typeof d !== 'object' || !d.qty) return null;
+    if (!(Date.now() - new Date(d.savedAt).getTime() < DRAFT_MAX_AGE_MS)) { localStorage.removeItem(draftKey(venue, who)); return null; }
+    return { qty: d.qty, extras: Array.isArray(d.extras) ? d.extras : [], savedAt: d.savedAt };
   } catch { return null; }
 }
-function writeDraft(venue: string, d: Draft | null) {
+function writeDraft(venue: string, who: string, d: Draft | null) {
   try {
-    if (d === null) localStorage.removeItem(draftKey(venue));
-    else localStorage.setItem(draftKey(venue), JSON.stringify(d));
+    if (d === null) localStorage.removeItem(draftKey(venue, who));
+    else localStorage.setItem(draftKey(venue, who), JSON.stringify(d));
   } catch { /* private mode / blocked storage: the count still works, it just isn't kept across reloads */ }
 }
 
@@ -84,9 +89,9 @@ const one = <T,>(v: T | T[] | null | undefined): T | null => (Array.isArray(v) ?
 const sheetTitle = (k: string) => FOOD_SHEETS.find(s => s.key === k)?.title ?? k;
 const isSheet = (s: string | null | undefined): s is FoodSheetKey => FOOD_SHEETS.some(f => f.key === s);
 
-export function FoodEntry({ venue, venueName }: Props) {
+export function FoodEntry({ venue, venueName, userEmail }: Props) {
   // FoodCount mounts this with key={venue}, so the draft is read once, before the first save can overwrite it.
-  const [initial]                 = useState(() => readDraft(venue));
+  const [initial]                 = useState(() => readDraft(venue, userEmail));
   const [base, setBase]           = useState<ListItem[] | null>(null);
   const [lastOn, setLastOn]       = useState<string | null>(null);
   const [loadErr, setLoadErr]     = useState('');
@@ -155,8 +160,8 @@ export function FoodEntry({ venue, venueName }: Props) {
   /* ── draft: save every change for this venue ── */
   useEffect(() => {
     const any = Object.values(qty).some(v => v.trim() !== '') || extras.length > 0;
-    writeDraft(venue, any ? { qty, extras, savedAt: new Date().toISOString() } : null);
-  }, [qty, extras, venue]);
+    writeDraft(venue, userEmail, any ? { qty, extras, savedAt: new Date().toISOString() } : null);
+  }, [qty, extras, venue, userEmail]);
 
   const items: ListItem[] = useMemo(() => {
     const listed = base ?? [];
@@ -233,16 +238,20 @@ export function FoodEntry({ venue, venueName }: Props) {
     return out;
   }, [items, parsed, blanksZero]);
 
+  // The moment the count is stamped at is fixed when Review is pressed and reused by Record, so a retry after a
+  // lost response sends the same moment and the import answers "already recorded" instead of writing it twice.
+  const stamp = useRef<string>('');
   const run = useCallback(async (commit: boolean) => {
     const { data, error: rpcErr } = await supabase.rpc('kount_import_food_count', {
-      p_venue_id: venue, p_rows: rowsToSend(), p_counted_at: countedAtFor(countedOn), p_commit: commit, p_create_missing: true,
+      p_venue_id: venue, p_rows: rowsToSend(), p_counted_at: stamp.current, p_commit: commit, p_create_missing: true,
     });
     if (rpcErr) throw new Error(rpcErr.message);
     return data as ImportResult;
-  }, [venue, rowsToSend, countedOn]);
+  }, [venue, rowsToSend]);
 
   const review = async () => {
     setBusy('preview'); setError(''); setResult(null);
+    stamp.current = countedAtFor(countedOn);
     try { setPreview(await run(false)); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(''); }
@@ -251,16 +260,20 @@ export function FoodEntry({ venue, venueName }: Props) {
     setBusy('commit'); setError('');
     try {
       const r = await run(true);
+      const notWritten = new Set((r.unmatched ?? []).map(n => n.toLowerCase()));
       // Spellings the chef typed for catalog items they then actually counted: remembered for the venue only now,
       // so a wrong pick that was removed or left blank never becomes a match.
       for (const it of items) {
         const q = parsed.get(it.key);
-        if (it.added && it.masterId && it.typed && (q !== null || blanksZero) && foodKey(it.typed) !== foodKey(it.name)) {
+        if (it.added && it.masterId && it.typed && (q !== null || blanksZero) && worthRemembering(it.typed, it.name)) {
           void rememberSpelling(venue, it.typed, it.masterId);
         }
       }
-      setResult(r); setPreview(null);
-      setQty({}); setExtras([]); writeDraft(venue, null); setRestored(null);
+      setResult(r); setPreview(null); setRestored(null);
+      // Anything the import could not place keeps its typed number on screen (and in the draft) instead of vanishing.
+      const keep = items.filter(it => notWritten.has(it.name.toLowerCase()));
+      setQty(Object.fromEntries(keep.map(it => [it.key, qty[it.key] ?? ''])));
+      setExtras(extras.filter(x => keep.some(k => k.key === x.key)));
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(''); }
   };
@@ -273,6 +286,7 @@ export function FoodEntry({ venue, venueName }: Props) {
     if (x.masterId && extras.some(e => e.masterId === x.masterId)) { setFilter(x.name); return; }
     const key = x.masterId ?? `new:${Date.now()}`;
     setExtras(es => [...es, { ...x, key, typed: typed.trim() || undefined }]);
+    setPreview(null);                   // a review never covers an item added after it
   };
 
   if (base === null) return <Card padding={16}>Loading {venueName}'s food list…</Card>;
@@ -395,14 +409,23 @@ export function FoodEntry({ venue, venueName }: Props) {
         {preview && (
           <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 6, background: 'var(--inform-bg)', fontSize: 13, lineHeight: 1.6 }}>
             This records a <strong>food count</strong> for {venueName} on <strong>{countedOn}</strong>: {preview.rows_with_qty} items, about <Money value={value} bold={false} size={13} /> at current prices.
-            {preview.unmatched.length > 0 && <> {preview.unmatched.length} new item{preview.unmatched.length === 1 ? '' : 's'} will be added to the catalog: {preview.unmatched.slice(0, 8).join(', ')}{preview.unmatched.length > 8 ? '…' : ''}.</>}
+            {preview.unmatched.length > 0 && <> {preview.unmatched.length} item{preview.unmatched.length === 1 ? " isn't" : "s aren't"} in the catalog yet and will be added as new: {preview.unmatched.slice(0, 8).join(', ')}{preview.unmatched.length > 8 ? '…' : ''}.</>}
             {' '}Prices are not changed.
           </div>
         )}
         {result && (
           <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 6, background: 'var(--positive-bg)', fontSize: 13 }}>
-            Food count recorded for <strong>{result.venue_name}</strong>: {result.entries_written} items.
+            {result.already_recorded
+              ? <>This count was already recorded for <strong>{result.venue_name}</strong> ({result.entries_written} items) — nothing was written twice.</>
+              : <>Food count recorded for <strong>{result.venue_name}</strong>: {result.entries_written} items.</>}
             {result.masters_created > 0 && <> {result.masters_created} new catalog item{result.masters_created === 1 ? '' : 's'} added.</>}
+          </div>
+        )}
+        {result && !result.already_recorded && result.entries_written < result.rows_with_qty && (
+          <div style={{ marginTop: 8, padding: '10px 12px', borderRadius: 6, background: 'var(--caution-bg)', fontSize: 13 }}>
+            {result.rows_with_qty - result.entries_written} item{result.rows_with_qty - result.entries_written === 1 ? ' was' : 's were'} <strong>not recorded</strong>
+            {result.unmatched.length > 0 && <> ({result.unmatched.slice(0, 8).join(', ')}{result.unmatched.length > 8 ? '…' : ''})</>}: the name matches an
+            archived duplicate in the catalog. The numbers are still on screen: pick the right item under "Add an item" and record again.
           </div>
         )}
         {error && <div style={{ marginTop: 12, fontSize: 13, color: 'var(--danger)' }}>{error}</div>}
@@ -431,13 +454,13 @@ function AddItem({ venueItems, onAdd }: {
   const [sheet, setSheet] = useState<FoodSheetKey>('Grocery');
 
   useEffect(() => {
-    const words = foodKey(q).split(' ').filter(w => w.length >= 3).sort((a, b) => b.length - a.length);
+    const words = q.toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length >= 3).sort((a, b) => b.length - a.length);
     if (words.length === 0) { setHits([]); return; }
     let live = true;
     const t = setTimeout(async () => {
-      const term = words[0].replace(/[\\%_]/g, m => '\\' + m);
+      const term = searchStem(words[0]).replace(/[\\%_]/g, m => '\\' + m);
       const { data, error } = await supabase.from('master_items').select('id,name,category')
-        .eq('is_active', true).is('merged_into_id', null).ilike('name', '%' + term + '%').limit(60);
+        .eq('is_active', true).ilike('name', '%' + term + '%').limit(60);
       if (!live) return;
       if (error) { console.error('[food] item search', error); setHits([]); return; }
       setHits(((data ?? []) as CatalogHit[]).filter(h => FOOD_CATEGORY_RE.test(h.category ?? '')));
