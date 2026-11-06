@@ -32,13 +32,15 @@ interface ListItem {
   unit: string | null;
   pack: number | null;
   sheet: FoodSheetKey;
-  sort: number;
+  sort: number;                      // display order only
+  listSort: number | null;           // the list's own sort_order -- the only value ever sent back
   price: number | null;
   last: number | null;
   added: boolean;
+  typed?: string;                    // what the chef typed when adding it (remembered on record)
 }
 
-interface Extra { key: string; masterId: string | null; name: string; unit: string; pack: number | null; sheet: FoodSheetKey }
+interface Extra { key: string; masterId: string | null; name: string; unit: string; pack: number | null; sheet: FoodSheetKey; typed?: string }
 interface Draft { qty: Record<string, string>; extras: Extra[]; savedAt: string }
 
 interface ImportResult {
@@ -48,6 +50,9 @@ interface ImportResult {
 }
 
 interface CatalogHit { id: string; name: string; category: string | null }
+
+/** A row as sent to kount_import_food_count: FoodRow, but sort may be null and the item may be named outright (0155). */
+type SendRow = Omit<FoodRow, 'sort'> & { sort: number | null; master_item_id?: string };
 
 const FOOD_CATEGORY_RE = /(meat|seafood|fish|poultry|dairy|egg|cheese|produce|grocery|dry|bakery|frozen|food|pantry|spice|oil|bread)/i;
 
@@ -80,11 +85,13 @@ const sheetTitle = (k: string) => FOOD_SHEETS.find(s => s.key === k)?.title ?? k
 const isSheet = (s: string | null | undefined): s is FoodSheetKey => FOOD_SHEETS.some(f => f.key === s);
 
 export function FoodEntry({ venue, venueName }: Props) {
+  // FoodCount mounts this with key={venue}, so the draft is read once, before the first save can overwrite it.
+  const [initial]                 = useState(() => readDraft(venue));
   const [base, setBase]           = useState<ListItem[] | null>(null);
   const [lastOn, setLastOn]       = useState<string | null>(null);
   const [loadErr, setLoadErr]     = useState('');
-  const [qty, setQty]             = useState<Record<string, string>>({});
-  const [extras, setExtras]       = useState<Extra[]>([]);
+  const [qty, setQty]             = useState<Record<string, string>>(() => initial?.qty ?? {});
+  const [extras, setExtras]       = useState<Extra[]>(() => initial?.extras ?? []);
   const [filter, setFilter]       = useState('');
   const [countedOn, setCountedOn] = useState(todayIso());
   const [blanksZero, setBlanksZero] = useState(false);
@@ -92,16 +99,13 @@ export function FoodEntry({ venue, venueName }: Props) {
   const [result, setResult]       = useState<ImportResult | null>(null);
   const [busy, setBusy]           = useState<'' | 'preview' | 'commit'>('');
   const [error, setError]         = useState('');
-  const [restored, setRestored]   = useState<string | null>(null);
-  const loadedFor = useRef<string>('');
+  const [restored, setRestored]   = useState<string | null>(() =>
+    initial && (Object.values(initial.qty).some(v => String(v).trim() !== '') || initial.extras.length > 0) ? initial.savedAt : null);
 
   /* ── load the list, prices and the last food count ── */
   useEffect(() => {
     let live = true;
     setBase(null); setLoadErr(''); setPreview(null); setResult(null); setError('');
-    const d = readDraft(venue);
-    setQty(d?.qty ?? {}); setExtras(d?.extras ?? []); setRestored(d && Object.keys(d.qty).length ? d.savedAt : null);
-    loadedFor.current = venue;
     (async () => {
       const [list, costs, audits] = await Promise.all([
         supabase.from('kount_venue_food_items')
@@ -139,7 +143,7 @@ export function FoodEntry({ venue, venueName }: Props) {
           key: r.master_item_id, masterId: r.master_item_id, name: m?.name ?? '(unnamed item)',
           unit: r.count_unit, pack: r.units_per_case === null ? null : Number(r.units_per_case),
           sheet: isSheet(r.sheet_category) ? r.sheet_category : sheetForCategory(m?.category),
-          sort: r.sort_order ?? 100000 + i, price: price.get(r.master_item_id) ?? null,
+          sort: r.sort_order ?? 100000 + i, listSort: r.sort_order, price: price.get(r.master_item_id) ?? null,
           last: last.get(r.master_item_id) ?? null, added: false,
         };
       });
@@ -150,7 +154,6 @@ export function FoodEntry({ venue, venueName }: Props) {
 
   /* ── draft: save every change for this venue ── */
   useEffect(() => {
-    if (loadedFor.current !== venue) return;
     const any = Object.values(qty).some(v => v.trim() !== '') || extras.length > 0;
     writeDraft(venue, any ? { qty, extras, savedAt: new Date().toISOString() } : null);
   }, [qty, extras, venue]);
@@ -161,9 +164,15 @@ export function FoodEntry({ venue, venueName }: Props) {
     const added = extras
       .filter(x => !x.masterId || !onList.has(x.masterId))
       .map((x, i): ListItem => ({ key: x.key, masterId: x.masterId, name: x.name, unit: x.unit, pack: x.pack, sheet: x.sheet,
-                                  sort: 900000 + i, price: null, last: null, added: true }));
+                                  sort: 900000 + i, listSort: null, price: null, last: null, added: true, typed: x.typed }));
     return [...listed, ...added];
   }, [base, extras]);
+
+  const removeExtra = (key: string) => {
+    setExtras(es => es.filter(x => x.key !== key));
+    setQty(q => { const { [key]: _gone, ...rest } = q; return rest; });
+    setPreview(null);
+  };
 
   const parsed = useMemo(() => {
     const m = new Map<string, number | null>();
@@ -207,14 +216,16 @@ export function FoodEntry({ venue, venueName }: Props) {
   const setOne = (key: string, v: string) => { setQty(q => ({ ...q, [key]: v })); setPreview(null); setResult(null); };
 
   /* ── record ── */
-  const rowsToSend = useCallback((): Array<FoodRow & { master_item_id?: string }> => {
-    const out: Array<FoodRow & { master_item_id?: string }> = [];
+  const rowsToSend = useCallback((): SendRow[] => {
+    const out: SendRow[] = [];
     for (const it of items) {
       let q = parsed.get(it.key) ?? null;
       if (q === null && blanksZero) q = 0;
       if (q === null || Number.isNaN(q)) continue;
-      const row: FoodRow & { master_item_id?: string } = {
-        item: it.name, unit: it.unit ?? '', pack: it.pack, qty: q, price: null, sheet: it.sheet, sort: it.sort,
+      // sort: only the list's own order goes back (the import keeps the existing one when it is null);
+      // the display order of unsorted / added items is never written into the venue's list.
+      const row: SendRow = {
+        item: it.name, unit: it.unit ?? '', pack: it.pack, qty: q, price: null, sheet: it.sheet, sort: it.listSort,
       };
       if (it.masterId) row.master_item_id = it.masterId;
       out.push(row);
@@ -240,6 +251,14 @@ export function FoodEntry({ venue, venueName }: Props) {
     setBusy('commit'); setError('');
     try {
       const r = await run(true);
+      // Spellings the chef typed for catalog items they then actually counted: remembered for the venue only now,
+      // so a wrong pick that was removed or left blank never becomes a match.
+      for (const it of items) {
+        const q = parsed.get(it.key);
+        if (it.added && it.masterId && it.typed && (q !== null || blanksZero) && foodKey(it.typed) !== foodKey(it.name)) {
+          void rememberSpelling(venue, it.typed, it.masterId);
+        }
+      }
       setResult(r); setPreview(null);
       setQty({}); setExtras([]); writeDraft(venue, null); setRestored(null);
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
@@ -251,9 +270,9 @@ export function FoodEntry({ venue, venueName }: Props) {
       setFilter(x.name);                // already on the list: show it instead of adding a second row
       return;
     }
+    if (x.masterId && extras.some(e => e.masterId === x.masterId)) { setFilter(x.name); return; }
     const key = x.masterId ?? `new:${Date.now()}`;
-    setExtras(es => [...es, { ...x, key }]);
-    if (x.masterId && foodKey(typed) !== foodKey(x.name)) void rememberSpelling(venue, typed, x.masterId);
+    setExtras(es => [...es, { ...x, key, typed: typed.trim() || undefined }]);
   };
 
   if (base === null) return <Card padding={16}>Loading {venueName}'s food list…</Card>;
@@ -316,6 +335,10 @@ export function FoodEntry({ venue, venueName }: Props) {
                         <td style={td}>
                           {it.name}{' '}
                           {it.added && <Pill tone={it.masterId ? 'inform' : 'caution'} size="sm">{it.masterId ? 'added' : 'new item'}</Pill>}
+                          {it.added && (
+                            <button onClick={() => removeExtra(it.key)} title="Remove this added item"
+                                    style={{ marginLeft: 6, border: 'none', background: 'none', cursor: 'pointer', color: 'var(--fg-muted)' }}>✕</button>
+                          )}
                         </td>
                         <td style={{ ...td, whiteSpace: 'nowrap' }}>
                           <strong>{u.unit}</strong>{u.detail && <span style={{ color: 'var(--fg-muted)' }}> · {u.detail}</span>}
