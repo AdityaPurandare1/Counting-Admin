@@ -2,15 +2,19 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { VENUES, can, isOrgWide, type Who } from '@/lib/access';
 import type { AccessEntry } from '@/lib/access';
-import { Card, Eyebrow, Btn, Num, Money, Pill } from '@/components/atoms';
+import { Card, Eyebrow, Btn, Num, Money, Pill, Segment } from '@/components/atoms';
+import { FoodEntry } from '@/components/FoodEntry';
 import {
   buildFoodTemplate, parseFoodWorkbook,
   type ParsedFoodWorkbook, type TemplateItem,
 } from '@/lib/foodImport';
 
 /* ───────────────────────────────────────────────────────────────────────
-   Food count — download the venue's food inventory workbook, upload it
-   filled in, and record it.
+   Food count — two ways in:
+     Type counts      (v1.03) the chef types a quantity next to each item on
+                      the venue's list (components/FoodEntry.tsx)
+     Upload workbook  download the venue's food inventory workbook, upload it
+                      filled in, and record it.
 
    The server does the work (kount_import_food_count, migrations 0081 + 0088):
    it matches names to the catalog, writes the venue's costs and food list,
@@ -115,6 +119,7 @@ export function FoodCount({ user }: Props) {
     return VENUES.filter(v => set.has(v.id));
   }, [user.role, user.venueIds]);
 
+  const [mode, setMode]               = useState<'type' | 'upload'>('type');
   const [venue, setVenue]             = useState<string>('');
   const [listSize, setListSize]       = useState<number | null>(null);
   const [countedOn, setCountedOn]     = useState<string>(todayIso());
@@ -250,6 +255,8 @@ export function FoodCount({ user }: Props) {
           <h1>Food count</h1>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <Segment value={mode} onChange={setMode}
+            options={[{ value: 'type', label: 'Type counts' }, { value: 'upload', label: 'Upload workbook' }]} />
           <select value={venue} onChange={e => setVenue(e.target.value)} style={pickerStyle}>
             {visibleVenues.length === 0 && <option value="">No venues</option>}
             {visibleVenues.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
@@ -257,7 +264,13 @@ export function FoodCount({ user }: Props) {
         </div>
       </div>
 
-      <div className="content" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {mode === 'type' && venue && (
+        <div className="content">
+          <FoodEntry key={venue} venue={venue} venueName={venueName} />
+        </div>
+      )}
+
+      {mode === 'upload' && <div className="content" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         <Card padding={16}>
           <Eyebrow>1 · Download the template</Eyebrow>
           <div style={{ marginTop: 8, fontSize: 13, color: 'var(--fg-secondary)', lineHeight: 1.5 }}>
@@ -357,7 +370,7 @@ export function FoodCount({ user }: Props) {
             <div style={{ marginTop: 12, fontSize: 13, color: 'var(--danger)' }}>{error}</div>
           )}
         </Card>
-      </div>
+      </div>}
     </>
   );
 }
