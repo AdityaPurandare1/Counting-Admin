@@ -357,9 +357,24 @@ check('"other" documents change nothing', statusAfterDocument('ORDERED', 'other'
   check('mail: a credit memo always waits', credit.state === 'pending' && credit.reason.includes('credit memo'), credit);
   const other = decideMailDocument(inv({ doc_kind: 'other', doc_number: '' }), src(), data, '2026-10-30', fmt);
   check('mail: not a purchasing document -> ignored', other.state === 'ignored', other);
-  const savedInv: OtDocument = { ...quoteDoc, id: 'd9', kind: 'invoice', doc_number: 'INV-2026-086418', created_at: '2026-10-29T22:00:00Z' };
+  const savedInv: OtDocument = { ...quoteDoc, id: 'd9', kind: 'invoice', doc_number: 'INV-2026-086418', total: inv().total, created_at: '2026-10-29T22:00:00Z' };
   const again = decideMailDocument(inv(), src(), { ...data, documents: [quoteDoc, savedInv] }, '2026-10-30', fmt);
-  check('mail: an invoice already saved (forwarded again by AP) -> ignored', again.state === 'ignored' && again.reason.startsWith('Already saved'), again);
+  check('mail: an invoice already saved (forwarded again by AP, same total) -> ignored', again.state === 'ignored' && again.reason.startsWith('Already saved'), again);
+  // E&E reuses numbers: one "Job Reference Number" per project (582 = every Delilah Dallas smallware quote).
+  // A number match with another total was dropped as "already saved" 4 times (10/14-11/08); it must wait for a person.
+  const reused = decideMailDocument(inv({ total: inv().total + 9000 }), src({ conversation_id: 'NEW-THREAD' }),
+    { ...data, documents: [quoteDoc, savedInv] }, '2026-10-30', fmt);
+  check('mail: same number, different total -> never skipped, waits for a person', reused.state === 'pending' && /different total/.test(reused.reason), reused);
+  check('mail: the reason names both totals and the earlier order', reused.state === 'pending' && reused.reason.includes(fmt(inv().total + 9000)) && reused.reason.includes(fmt(inv().total)), reused);
+  const noTotal = decideMailDocument(inv(), src({ conversation_id: 'NEW-THREAD' }),
+    { ...data, documents: [quoteDoc, { ...savedInv, total: null }] }, '2026-10-30', fmt);
+  check('mail: same number but the saved one has no total -> waits, not skipped', noTotal.state === 'pending', noTotal);
+  const ee582 = decideMailDocument(inv({ doc_kind: 'quote', doc_number: '582', total: 11516.4, subtotal: 11516.4 }), src({ conversation_id: 'NEW-THREAD' }),
+    { ...data, documents: [{ ...quoteDoc, id: 'q582', kind: 'quote', doc_number: '582', total: 2710.41, created_at: '2026-11-03T00:00:00Z' }] }, '2026-11-08', fmt);
+  check('mail: E&E quote 582 for $11,516.40 is not "already saved" as the $2,710.41 quote 582', ee582.state !== 'ignored', ee582);
+  const resend582 = decideMailDocument(inv({ doc_kind: 'quote', doc_number: '582', total: 2710.41, subtotal: 2710.41 }), src({ conversation_id: 'NEW-THREAD' }),
+    { ...data, documents: [{ ...quoteDoc, id: 'q582', kind: 'quote', doc_number: '582', total: 2710.41, created_at: '2026-11-03T00:00:00Z' }] }, '2026-11-08', fmt);
+  check('mail: the same quote 582 sent again (same total) is still skipped', resend582.state === 'ignored', resend582);
   const o2 = order({ vendor_name: 'EE Mercantile' });
   const twoOrders = decideMailDocument(inv(), src(), { ...data, orders: [o, o2], documents: [quoteDoc, { ...quoteDoc, id: 'q2', order_id: o2.id, doc_number: 'Q-2' }] }, '2026-10-30', fmt);
   check('mail: a thread that spans two orders is not trusted', twoOrders.state === 'pending', twoOrders);
