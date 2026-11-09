@@ -209,7 +209,7 @@ function MailCard({ onChanged }: { onChanged: () => void }) {
           {run && (
             <div style={{ ...subTxt, marginTop: 6 }}>
               Last pull {new Date(run.finished_at ?? run.started_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} ({run.trigger}):
-              {' '}{run.new_pdfs} new PDF{run.new_pdfs === 1 ? '' : 's'}, {run.applied} applied, {run.tracking ? `${run.tracking} tracking, ` : ''}{run.paid ? `${run.paid} paid (R365), ` : ''}{run.pending} waiting, {run.ignored} skipped
+              {' '}{run.new_pdfs} new PDF{run.new_pdfs === 1 ? '' : 's'}, {run.applied} applied, {run.tracking ? `${run.tracking} tracking, ` : ''}{run.paid ? `${run.paid} paid (R365), ` : ''}{run.approved ? `${run.approved} quote line${run.approved === 1 ? '' : 's'} approved, ` : ''}{run.pending} waiting, {run.ignored} skipped
               {run.failed ? `, ${run.failed} not read` : ''}{run.remaining ? `, ${run.remaining} still to read` : ''}.
             </div>
           )}

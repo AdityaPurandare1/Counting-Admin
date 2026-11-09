@@ -172,6 +172,8 @@ export function OrderTracker({ today: todayProp, load = loadTracker, loadMail = 
                 <span className="hint">{kpis.onOrderOrders} order{kpis.onOrderOrders === 1 ? '' : 's'} not delivered yet</span></button>
               <button type="button" className={`ot-kpi${kpis.unpaid$ ? ' warn' : ''}`} onClick={() => kpi('invoiced')}><span className="lbl">Invoiced, not paid</span><span className="val">{fmtMoney0(kpis.unpaid$)}</span>
                 <span className="hint">{kpis.unpaidInvoices ? `${kpis.unpaidInvoices} invoice${kpis.unpaidInvoices === 1 ? '' : 's'} · oldest ${kpis.oldestUnpaidDays}d` : 'no invoices waiting'}</span></button>
+              <button type="button" className={`ot-kpi${kpis.approve ? ' warn' : ' good'}`} onClick={() => kpi('approve')} title="Quoted lines stay here until you e-mail the vendor the go-ahead (approved / good to go / yes)"><span className="lbl">Quotes to approve</span><span className="val">{kpis.approve || 'None'}</span>
+                <span className="hint">{kpis.approve ? `${kpis.approveLines} line${kpis.approveLines === 1 ? '' : 's'} · no approval e-mail yet` : 'every quote answered'}</span></button>
               <button type="button" className={`ot-kpi${kpis.reorder ? ' warn' : ' good'}`} onClick={() => kpi('warehouse')}><span className="lbl">Warehouse</span><span className="val">{kpis.reorder ? `${kpis.reorder} to reorder` : 'OK'}</span>
                 <span className="hint">{kpis.reorder ? 'at or below reorder point' : kpis.soon ? `${kpis.soon} within 30 days` : 'no reorders due'}</span></button>
             </div>

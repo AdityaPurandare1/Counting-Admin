@@ -38,6 +38,8 @@ export interface MailRun {
   trigger: string; started_at: string; finished_at?: string;
   messages: number; new_pdfs: number; read: number; applied: number; pending: number; ignored: number; failed: number;
   tracking?: number; paid?: number;
+  /** Quoted lines whose approval e-mail the pull found (0157) */
+  approved?: number; approval_error?: string;
   remaining?: number; error: string | null; reconnect: boolean;
 }
 
@@ -97,6 +99,8 @@ export const pullNow = () => invokeMail<{ started: boolean; reason?: string }>({
 /** One invoice / quote by its number, however old (the pull reads only recent mail): its PDF from the vendor's e-mail is read and decided. */
 export interface FindResult { found: number; new_pdfs?: number; applied?: number; pending?: number; ignored?: number; failed?: number; paid?: number; reason?: string }
 export const findInMail = (number: string) => invokeMail<FindResult>({ action: 'find', number });
+/** Look for h.wood's approval e-mails on the Quoted lines now (0157): "I've sent it, check now". */
+export const checkApprovals = () => invokeMail<{ approved: number; error: string | null }>({ action: 'approvals' });
 /** What a find did, in a sentence. */
 export function findSummary(number: string, r: FindResult): string {
   if (r.reason) return r.reason;

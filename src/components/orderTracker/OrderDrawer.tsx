@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { VENUES } from '@/lib/access';
 import {
-  STATUSES, STATUS_LABEL, MULTIPLE_VENUES, ALL_STATUSES, autoOrderNumber, extractTracking, isLate, orderState, orderVenues, receivedForLine, statusRank, trackingUrl,
+  STATUSES, STATUS_LABEL, MULTIPLE_VENUES, ALL_STATUSES, autoOrderNumber, awaitingApproval, extractTracking, isLate, orderState, orderVenues, receivedForLine, statusRank, trackingUrl,
   type LineStatus, type OtDocument, type OtLine, type OtOrder,
 } from '@/lib/orderTracker';
 import {
@@ -13,6 +13,7 @@ import {
   type EventRow, type TrackerData,
 } from '@/lib/orderTrackerData';
 import { SENT_SOURCE, orderTiming, timingText } from '@/lib/leadTime';
+import { checkApprovals } from '@/lib/orderMail';
 import { fmtMoney, shortDate } from './shared';
 import { AttachStubButton, DocChip, Icon, isOtherDoc } from './ui';
 
@@ -77,6 +78,18 @@ export function OrderDrawer({ order, lines, docs, data, today, venueName, onClos
 
   const st = order ? orderState(order, lines) : 'open';
   const late = order ? lines.filter(l => isLate(l, order, today, receivedForLine(data.moves, l.id))) : [];
+  // Quoted lines with no approval e-mail to the vendor yet (0157): flagged until it is sent
+  const toApprove = order && !order.archived_at && !order.completed_at ? lines.filter(awaitingApproval) : [];
+  const quoteNums = [...new Set(toApprove.map(l => l.quote_number).filter((q): q is string => !!q))];
+  const approvals = [...new Map(lines.filter(l => l.status === 'QUOTED' && l.quote_approved_at && !awaitingApproval(l))
+    .map(l => [`${l.quote_approved_for ?? ''}|${l.quote_approved_at}`, l] as const)).values()];
+  const [approvalMsg, setApprovalMsg] = useState<string | null>(null);
+  const checkNow = () => run(async () => {
+    const r = await checkApprovals();
+    if (r.error) throw new Error(`Could not check the mailbox: ${r.error}`);
+    setApprovalMsg(r.approved ? `Found it: ${r.approved} line${r.approved === 1 ? '' : 's'} approved.` : 'No approval e-mail found yet. Reply to the quote e-mail (Approved / good to go ahead), then check again.');
+    if (r.approved) onReload();
+  });
   const stage = draftStage(draft);
   const liveDraft = draft.lines.filter(l => !l.removed);
   // payment from the draft as it stands (unsaved changes included)
@@ -118,6 +131,21 @@ export function OrderDrawer({ order, lines, docs, data, today, venueName, onClos
         </div>
 
         <div className="ot-dr-body">
+          {toApprove.length > 0 && (
+            <div className="ot-note warn" style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <span style={{ flex: '1 1 280px' }}>
+                <b>Approve the quote.</b> {quoteNums.length ? `Quote ${quoteNums.join(', ')}` : `${toApprove.length} quoted line${toApprove.length > 1 ? 's' : ''}`} has no approval
+                e-mail from us yet. Reply to the vendor's quote e-mail ("Approved, good to go ahead"); it stays flagged until that e-mail is sent.
+                {approvalMsg && <><br />{approvalMsg}</>}
+              </span>
+              <button type="button" className="ot-btn sm" disabled={busy} onClick={() => void checkNow()} title="Look in the mailbox for your approval e-mail now (the 9 o'clock pull also checks)">I've sent it, check now</button>
+            </div>
+          )}
+          {approvals.length > 0 && toApprove.length === 0 && (
+            <div className="ot-note" title={approvals.map(l => l.quote_approval_note ?? '').filter(Boolean).join('\n')}>
+              Quote approved by e-mail{approvals.map(l => ` ${l.quote_approved_for ? `${l.quote_approved_for} ` : ''}on ${shortDate((l.quote_approved_at ?? '').slice(0, 10))}${l.quote_approval_note ? `: ${l.quote_approval_note}` : ''}`).join(';')}.
+            </div>
+          )}
           {late.length > 0 && <div className="ot-note crit">{late.length} line{late.length > 1 ? 's are' : ' is'} past ETA. Update the ETA or mark {late.length > 1 ? 'them' : 'it'} received.</div>}
 
           <section className="ot-sec"><div className="ot-grid2">
@@ -184,7 +212,9 @@ export function OrderDrawer({ order, lines, docs, data, today, venueName, onClos
                               <option value="">{draft.deliver_to === 'warehouse' ? 'to the warehouse (order)' : 'to the venue (order)'}</option>
                               <option value="warehouse">to the warehouse</option><option value="venue">to the venue</option>
                             </select>
-                            {[l.sku, l.quote_number && `quote ${l.quote_number}`, l.venue_id && draft.venue_id === MULTIPLE_VENUES && venueName(l.venue_id),
+                            {[l.sku, l.quote_number && `quote ${l.quote_number}`,
+                              was && was.status === 'QUOTED' && (awaitingApproval(was) ? 'no approval e-mail yet' : `approved ${shortDate((was.quote_approved_at ?? '').slice(0, 10))}`),
+                              l.venue_id && draft.venue_id === MULTIPLE_VENUES && venueName(l.venue_id),
                               l.item_id && `stock: ${data.items.find(i => i.id === l.item_id)?.name ?? 'item'}`].filter(Boolean).join(' · ')}
                           </div>
                         </td>

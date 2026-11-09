@@ -11,7 +11,8 @@ import {
   planDocRows, planDocumentSave, documentChecks, decideMailDocument, extractTracking, trackingUrl, orderForEmail, venueForDoc, filterByVenue, sortOrders, orderVenueIds,
   planStorageLine, storageMoveRows, isStorageLine, autoOrderNumber, lineOutsideSubtotal, orderForReferences,
   keepOtherAttachment, isSpreadsheet, sheetUpdates, itemLocation, EE_WAREHOUSE, linePack, qtyInItemUnits, lineDeliversTo,
-  type ReadDoc, type MailSource,
+  awaitingApproval, approvalPhrase, replyText, findApproval, planQuoteApprovals, ordersAwaitingApproval, quoteKey, searchableQuote,
+  type ReadDoc, type MailSource, type MailMessage,
   type OtItem, type OtLine, type OtMove, type OtOrder, type OtDocument, type DocLine, type DocReview,
 } from '../src/lib/orderTracker';
 import { pricePoints, histories, priceMoves, quoteChecks, invoiceRegister, spendByMonth, isInvoiced, priceMovesCsv } from '../src/lib/orderPrices';
@@ -29,7 +30,7 @@ import { inboxGroups, findSummary, type InboxItem } from '../src/lib/orderMail';
 import { existsSync } from 'node:fs';
 
 // the sibling Counting-App repo (the pull, the reader): only on a machine that has both — CI checks out this repo alone
-const sibling = (...parts: string[]) => { const p = join(process.cwd(), '..', 'Counting-App', ...parts); return existsSync(p) ? readFileSync(p, 'utf8') : null; };
+const sibling = (...parts: string[]) => { const p = join(process.env.COUNTING_APP_DIR ?? join(process.cwd(), '..', 'Counting-App'), ...parts); return existsSync(p) ? readFileSync(p, 'utf8') : null; };
 let passed = 0;
 let failed = 0;
 function check(label: string, cond: boolean, detail?: unknown) {
@@ -445,7 +446,7 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   const mail = src('src/lib/orderMail.ts');
   check('the mailbox sign-in never reaches the browser (status RPC only)', mail.includes("supabase.rpc('kount_ot_mail_status')") && !/kount_ot_mail_account|token_get/.test(mail));
   // the pull runs the SAME rules: its copy of this file must not drift
-  const serverCopy = join(process.cwd(), '..', 'Counting-App', 'supabase', 'functions', '_shared', 'orderTracker.ts');
+  const serverCopy = join(process.env.COUNTING_APP_DIR ?? join(process.cwd(), '..', 'Counting-App'), 'supabase', 'functions', '_shared', 'orderTracker.ts');
   if (existsSync(serverCopy)) {
     check('the morning pull runs an identical copy of src/lib/orderTracker.ts', readFileSync(serverCopy, 'utf8') === src('src/lib/orderTracker.ts'),
       'copy src/lib/orderTracker.ts to Counting-App/supabase/functions/_shared/orderTracker.ts and redeploy kount-order-mail');
@@ -1233,6 +1234,109 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   const coming = line(o, { item_id: bag.id, qty: 40, status: 'SHIPPED' });
   check('status: what is on order counts (0 left, 40 coming at 9 a month = ok)',
     st(bag, [move(bag.id, 'count', 0, '2026-11-03'), ...used(bag.id, 9)], { lines: [coming], orders: [o] }).state === 'ok');
+}
+
+// ── quote approval (0157): a quote stays flagged until h.wood e-mails the vendor its go-ahead ─────────
+{
+  const sig = '\n\nThankyou,\nADITYA PURANDARE\nSUPPLY CHAIN OPERATIONS MANAGER\nM. 213.414.8697\nHWOODGROUP.COM\nDELILAH, THE NICE GUY, THE BIRD STREETS CLUB';
+  const approves = [
+    'Hi Anne,\nApproved, good to go ahead.' + sig,
+    'Hi Aleli,\nWe will proceed with the below mentioned ones :\nLinguine and the Rigatoni' + sig,
+    'Hi,\nThis works, can we proceed with invoicing ?' + sig,
+    'Hi Anne,\nYes please!' + sig,
+    'Yes',
+    'Good to go, thanks Anne.',
+    'Please go ahead and place the order.',
+    'You have our approval on Q-2026-1028-9329.',
+    'Hi Jemma,\nPlease proceed once the payment clears.' + sig,
+    'Approved!\n\nFrom: Anne Alvarez <anne@eemercantile.co>\nSent: Tuesday\nPlease approve the quote',
+  ];
+  const doesNot = [
+    'Hi,\nYes, confirming I have received the trackings' + sig,
+    'Hi,\nThat works. Could you please send me the credit memo once issued so that I can send it to our accounting team ?' + sig,
+    'Hi Anne,\nCan you confirm the lead time before we proceed?' + sig,
+    'Not approved yet, the venue is still deciding.',
+    'Please hold off on this order for now, we will approve it next week.',
+    'I will approve this once Jacob signs off.',
+    'Sending this over for approval.',
+    'Hi Anne,\nDo not proceed with the coasters.' + sig,
+    'Is this approved?',
+    'Hi Aleli,\nAny update on the glassware ?' + sig,
+    'Hi,\nPFA the proof of payment for this order. Please let us know the ETA on these items.' + sig,
+    'Hi Anne,\nWe need the approval from finance first.' + sig,
+    "Hi Anne,\nI don't think we can proceed at this price." + sig,
+    'Hi,\nThankyou for the update.' + sig,
+    '',
+  ];
+  for (const t of approves) check(`approval: ${JSON.stringify(t.slice(0, 60))}`, approvalPhrase(t) !== null, approvalPhrase(t));
+  for (const t of doesNot) check(`not an approval: ${JSON.stringify(t.slice(0, 60))}`, approvalPhrase(t) === null, approvalPhrase(t));
+  check('the approving sentence is what is kept (not the greeting or signature)', approvalPhrase('Hi Anne,\nApproved, good to go ahead.' + sig) === 'Approved, good to go ahead.', approvalPhrase('Hi Anne,\nApproved, good to go ahead.' + sig));
+  const curly = String.fromCharCode(0x2019);
+  check('curly apostrophes read as straight ones', approvalPhrase(`Hi,\nWe don${curly}t want to proceed.`) === null && approvalPhrase(`Let${curly}s do it.`) !== null);
+  check('reply text stops at the e-mail it quotes', replyText('Approved\n\nFrom: Anne\nSent: Monday\nOld text') === 'Approved'
+    && replyText('Yes please\n\nOn Tue, Oct 28, 2026 at 6:35 AM Anne Alvarez <anne@eemercantile.co> wrote:\n> proceed?') === 'Yes please');
+  check('quote numbers compare without dashes or case', quoteKey('Q-2026-1028-9329') === quoteKey('q 2026 1028 9329') && quoteKey(null) === '');
+  check('real quote ids are searched, E&E job numbers are not', searchableQuote('Q-2026-1028-9329') && searchableQuote('1789067157316') && !searchableQuote('582') && !searchableQuote('604') && !searchableQuote(null));
+
+  const o = order();
+  check('Quoted with no approval e-mail -> flagged', awaitingApproval(line(o, { status: 'QUOTED', quote_number: '582' })));
+  check('approved for its quote -> not flagged', !awaitingApproval(line(o, { status: 'QUOTED', quote_number: '582', quote_approved_at: '2026-11-05T16:00:00Z', quote_approved_for: '582' })));
+  check('a revised quote (another number) is flagged again', awaitingApproval(line(o, { status: 'QUOTED', quote_number: '583', quote_approved_at: '2026-11-05T16:00:00Z', quote_approved_for: '582' })));
+  check('a line with no quote number, approved -> not flagged', !awaitingApproval(line(o, { status: 'QUOTED', quote_approved_at: '2026-11-05T16:00:00Z' })));
+  check('past Quoted (invoiced, paid) is never flagged', !awaitingApproval(line(o, { status: 'INVOICED', quote_number: '582' })) && !awaitingApproval(line(o, { status: 'ORDERED' })));
+
+  const me = (at: string, body: string, to = 'anne@eemercantile.co', over: Partial<MailMessage> = {}): MailMessage => ({
+    id: id('msg'), sentDateTime: at, from: { emailAddress: { address: 'apurandare@hwoodgroup.com' } }, toRecipients: [{ emailAddress: { address: to } }], uniqueBody: { content: body }, ...over });
+  const vendor = (at: string, mid = id('msg'), body = 'Please find the quote attached.'): MailMessage => ({
+    id: mid, sentDateTime: at, receivedDateTime: at, from: { emailAddress: { address: 'Anne@EEMercantile.co' } }, toRecipients: [{ emailAddress: { address: 'apurandare@hwoodgroup.com' } }], uniqueBody: { content: body } });
+  const q = vendor('2026-10-28T13:35:00Z', 'quote-msg');
+  const thread = [q, me('2026-10-28T10:00:00Z', 'Approved'), me('2026-10-29T18:51:00Z', 'Hi Anne,\nIs there a faster local run?' + sig), me('2026-10-30T16:00:00Z', 'Hi Anne,\nApproved, good to go ahead.' + sig)];
+  const hit = findApproval(thread, Date.parse(q.sentDateTime!));
+  check('the first approving reply after the quote, with who and what', hit?.at === '2026-10-30T16:00:00.000Z' && hit.note === 'Approved, good to go ahead.' && hit.by === 'apurandare@hwoodgroup.com' && !!hit.messageId, hit);
+  check('a note to a colleague is not the go-ahead', findApproval([me('2026-10-30T16:00:00Z', 'Approved', 'cconnor@hwoodgroup.com')], 0) === null);
+  check("the vendor Cc'd counts", findApproval([me('2026-10-30T16:00:00Z', 'Approved', 'cconnor@hwoodgroup.com', { ccRecipients: [{ emailAddress: { address: 'jemma@eemercantile.co' } }] })], 0) !== null);
+  check('a draft is not sent', findApproval([me('2026-10-30T16:00:00Z', 'Approved', undefined, { isDraft: true })], 0) === null);
+  check('the vendor writing "approved" is not our approval', findApproval([vendor('2026-10-30T16:00:00Z', 'v9', 'Approved')], 0) === null);
+  check('a colleague at h.wood approving counts (our end)', findApproval([{ ...me('2026-10-30T16:00:00Z', 'Good to go'), from: { emailAddress: { address: 'cconnor@hwoodgroup.com' } } }], 0)?.by === 'cconnor@hwoodgroup.com');
+  check('the text Graph previews stands in when the body is missing', findApproval([me('2026-10-30T16:00:00Z', '', undefined, { uniqueBody: null, bodyPreview: 'Approved, thanks' })], 0) !== null);
+
+  const o2 = order({ order_number: 'CUS-0042' });
+  const mint = line(o2, { status: 'QUOTED', quote_number: 'Q-2026-1028-9329', status_at: '2026-11-03T18:00:00Z' });
+  const noNumber = line(o2, { status: 'QUOTED', quote_number: null });
+  const invoiced = line(o2, { status: 'INVOICED', quote_number: 'Q-2026-1028-9329' });
+  const qdoc: OtDocument = { id: 'qd1', order_id: o2.id, kind: 'quote', doc_number: 'Q-2026-1028-9329', doc_date: '2026-10-28', vendor_name: 'EE Mercantile', total: 653.25,
+    file_name: 'Q-2026-1028-9329.pdf', storage_path: 'x', created_at: '2026-10-29T16:00:00Z', source_conversation_id: 'c1', source_message_id: 'quote-msg' };
+  const stamps = planQuoteApprovals([mint, noNumber, invoiced], [qdoc], new Map([['c1', thread]]));
+  const mintStamp = stamps.find(s => s.lineIds.includes(mint.id));
+  check("the quote's Quoted lines are stamped with its approval and number", !!mintStamp && mintStamp.lineIds.length === 1 && mintStamp.quoteNumber === 'Q-2026-1028-9329' && mintStamp.approval.at === '2026-10-30T16:00:00.000Z', stamps);
+  check("a Quoted line with no number: the order's thread after the vendor wrote", stamps.some(s => s.lineIds.includes(noNumber.id)), stamps);
+  check('an invoiced line is left alone', !stamps.some(s => s.lineIds.includes(invoiced.id)));
+  check('a go-ahead sent before the quote came in does not count', planQuoteApprovals([mint], [qdoc], new Map([['c1', [q, me('2026-10-28T10:00:00Z', 'Approved')]]])).length === 0);
+  check('no reply yet -> stays flagged', planQuoteApprovals([mint], [qdoc], new Map([['c1', [q]]])).length === 0);
+  check("quote e-mail not in the thread list: counted from the quote's day", planQuoteApprovals([mint], [qdoc], new Map([['c1', [me('2026-10-27T20:00:00Z', 'Approved'), me('2026-10-28T20:00:00Z', 'Approved')]]]))[0]?.approval.at === '2026-10-28T20:00:00.000Z');
+  check('no thread: the e-mails that mention the quote number', planQuoteApprovals([mint], [{ ...qdoc, source_conversation_id: null }], new Map(),
+    new Map([[quoteKey('Q-2026-1028-9329'), [me('2026-10-29T09:00:00Z', 'Yes please')]]])).length === 1);
+  check("a search hit from before the quote's day does not count", planQuoteApprovals([mint], [{ ...qdoc, source_conversation_id: null }], new Map(),
+    new Map([[quoteKey('Q-2026-1028-9329'), [me('2026-10-20T09:00:00Z', 'Approved')]]])).length === 0);
+  check('already approved lines are not stamped again', planQuoteApprovals([{ ...mint, quote_approved_at: 'x', quote_approved_for: mint.quote_number }], [qdoc], new Map([['c1', thread]])).length === 0);
+
+  const waiting = ordersAwaitingApproval([o2, order({ archived_at: '2026-11-01T00:00:00Z' }), order({ completed_at: '2026-11-01T00:00:00Z' })],
+    [mint, invoiced, line(order(), { status: 'QUOTED' })], '2026-11-09');
+  check('open orders waiting on an approval e-mail, with quote numbers and days', waiting.length === 1 && waiting[0].order.id === o2.id
+    && waiting[0].quotes.join() === 'Q-2026-1028-9329' && waiting[0].days === 6 && waiting[0].lines.length === 1, waiting);
+}
+
+// the pull's approval step and its migration (sibling repo; skipped where it is not checked out)
+{
+  const fn = sibling('supabase', 'functions', 'kount-order-mail', 'index.ts');
+  const mig = sibling('supabase', 'migrations', '0157_kount_ot_quote_approval.sql');
+  if (fn && mig) {
+    check('the morning pull looks for quote approvals (after dating the sends)', /await sentPhase\(sb, stats\);\s*await approvalPhase\(sb, stats\);/.test(fn));
+    check('"I\'ve sent it, check now" runs the same step', fn.includes("action === 'approvals'") && fn.includes('planQuoteApprovals(ls, docs, threads, searched)'));
+    check('only lines still Quoted are stamped', fn.includes(".in('id', s.lineIds).eq('status', 'QUOTED')"));
+    check('reads the new text of each reply, as text', fn.includes('uniqueBody') && fn.includes('{ textBody: true }'));
+    check('0157 adds the four line columns', ['quote_approved_at', 'quote_approved_for', 'quote_approval_note', 'quote_approval_message_id'].every(c => mig.includes(`add column if not exists ${c}`)));
+  }
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

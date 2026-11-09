@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  ORDER_SORTS, filterByVenue, headlineStatus, isLate, isoDay, lineTotal, orderState, orderVenueIds, receivedForLine, sortOrders, MULTIPLE_VENUES,
+  ORDER_SORTS, awaitingApproval, filterByVenue, headlineStatus, isLate, isoDay, lineTotal, orderState, orderVenueIds, receivedForLine, sortOrders, MULTIPLE_VENUES,
   type OrderSort, type OrderState, type OtDocument, type OtLine,
 } from '@/lib/orderTracker';
 import { FULFILLMENT, fulfillmentOf, fulfillmentStep, lastUpdate, nextEta, orderCategory, paymentOf, stubsToGet, timeAgo, type PaymentView } from '@/lib/orderTrackerView';
@@ -12,7 +12,7 @@ import { DocChips, DocViewer, Icon, docSort, isOtherDoc, latestByName } from './
 
 type StateFilter = 'open' | 'completed' | 'all' | 'archived';
 /** A KPI tile clicked: the list it stands for (n makes a second click on the same tile count). */
-export interface OrdersPreset { key: 'open' | 'late' | 'onorder' | 'invoiced'; n: number }
+export interface OrdersPreset { key: 'open' | 'late' | 'onorder' | 'invoiced' | 'approve'; n: number }
 
 const FUL_TONE: Record<string, string> = { 'In production': 'info', Shipped: 'info', Delivered: 'ok', Received: 'ok' };
 const PAY_TONE: Record<PaymentView['state'], string> = { none: '', unpaid: 'warn', part: 'warn', paid: 'ok' };
@@ -28,13 +28,14 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
   const [sort, setSort] = useState<OrderSort>('newest');
   const [lateOnly, setLateOnly] = useState(false);
   const [unpaidOnly, setUnpaidOnly] = useState(false);
+  const [approveOnly, setApproveOnly] = useState(false);
   const [openId, setOpenId] = useState<string | null>(focusOrderId);
   const [viewing, setViewing] = useState<OtDocument | null>(null);
   useEffect(() => { if (focusOrderId) setOpenId(focusOrderId); }, [focusOrderId]);
   useEffect(() => { if (newNonce) setOpenId('new'); }, [newNonce]);
   useEffect(() => {
     if (!preset) return;
-    setState('open'); setQ(''); setLateOnly(preset.key === 'late'); setUnpaidOnly(preset.key === 'invoiced');
+    setState('open'); setQ(''); setLateOnly(preset.key === 'late'); setUnpaidOnly(preset.key === 'invoiced'); setApproveOnly(preset.key === 'approve');
   }, [preset]);
 
   const linesByOrder = useMemo(() => {
@@ -63,7 +64,8 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
   const all = useMemo(() => data.orders.map(o => {
     const ls = linesByOrder.get(o.id) ?? [];
     return { o, ls, st: orderState(o, ls) as OrderState, pay: paymentOf(ls, today),
-      late: ls.filter(l => isLate(l, o, today, receivedForLine(data.moves, l.id))).length };
+      late: ls.filter(l => isLate(l, o, today, receivedForLine(data.moves, l.id))).length,
+      toApprove: o.archived_at || o.completed_at ? 0 : ls.filter(awaitingApproval).length };
   }), [data.orders, data.moves, linesByOrder, today]);
   const counts = useMemo(() => ({
     open: all.filter(r => r.st === 'open').length, completed: all.filter(r => r.st === 'completed').length,
@@ -78,6 +80,7 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
       if (vendor && r.o.vendor_name !== vendor) return false;
       if (lateOnly && !r.late) return false;
       if (unpaidOnly && r.pay.state !== 'unpaid') return false;
+      if (approveOnly && !r.toApprove) return false;
       if (!term) return true;
       const hay = [r.o.order_number, r.o.vendor_name, venueName(r.o.venue_id), ...r.ls.flatMap(l => [l.description, l.sku, l.invoice_number, l.quote_number, l.tracking_number]),
         ...data.tracking.filter(t => t.order_id === r.o.id).map(t => t.tracking_number), ...(docsByOrder.get(r.o.id) ?? []).flatMap(d => [d.doc_number, d.file_name])]
@@ -85,9 +88,10 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
       return hay.includes(term);
     });
     return sortOrders(filterByVenue(list, venue), sort, venueName);
-  }, [all, data.tracking, docsByOrder, q, state, vendor, venue, sort, lateOnly, unpaidOnly, venueName]);
+  }, [all, data.tracking, docsByOrder, q, state, vendor, venue, sort, lateOnly, unpaidOnly, approveOnly, venueName]);
 
-  const clearFilters = () => { setQ(''); setVendor(''); setVenue(''); setLateOnly(false); setUnpaidOnly(false); setState('all'); };
+  const clearFilters = () => { setQ(''); setVendor(''); setVenue(''); setLateOnly(false); setUnpaidOnly(false); setApproveOnly(false); setState('all'); };
+  const toApproveCount = all.filter(r => r.toApprove > 0).length;
   const now = Date.now();
   const openOrder = openId && openId !== 'new' ? data.orders.find(o => o.id === openId) ?? null : null;
 
@@ -115,6 +119,8 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
         </select>
         {lateOnly && <span className="ot-fchip">Late lines only<button type="button" onClick={() => setLateOnly(false)} aria-label="Clear late filter"><Icon name="x" /></button></span>}
         {unpaidOnly && <span className="ot-fchip warn">Invoiced, not paid<button type="button" onClick={() => setUnpaidOnly(false)} aria-label="Clear unpaid filter"><Icon name="x" /></button></span>}
+        {approveOnly ? <span className="ot-fchip warn">Quotes to approve<button type="button" onClick={() => setApproveOnly(false)} aria-label="Clear the quotes-to-approve filter"><Icon name="x" /></button></span>
+          : toApproveCount > 0 && <button type="button" className="ot-btn sm" onClick={() => { setApproveOnly(true); setState('open'); }} title="Quoted lines with no approval e-mail to the vendor yet">Quotes to approve <span className="num">{toApproveCount}</span></button>}
         <span className="ot-count num">{rows.length} order{rows.length === 1 ? '' : 's'}</span>
       </div>
 
@@ -132,7 +138,7 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
                 <th>Documents</th><th>Other</th><th className="r">Updated</th>
               </tr></thead>
               <tbody>
-                {rows.map(({ o, ls, st, pay, late }) => {
+                {rows.map(({ o, ls, st, pay, late, toApprove }) => {
                   const head = headlineStatus(ls);
                   const ful = fulfillmentOf(head);
                   const step = fulfillmentStep(head);
@@ -144,7 +150,8 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
                   return (
                     <tr key={o.id} className={`click${openId === o.id ? ' sel' : ''}`} tabIndex={0} onClick={() => setOpenId(o.id)}
                       onKeyDown={e => { if (e.key === 'Enter') setOpenId(o.id); }}>
-                      <td><div className="t1">{o.vendor_name}</div><div className="t2 mono">{o.order_number || '—'}</div></td>
+                      <td><div className="t1">{o.vendor_name}</div><div className="t2 mono">{o.order_number || '—'}</div>
+                        {toApprove > 0 && <span className="ot-pill warn" title="Quoted, and no e-mail to the vendor approving it yet">Approve quote</span>}</td>
                       <td className="venue">{o.venue_id === MULTIPLE_VENUES ? vIds.map(v => venueName(v)).join(', ') : o.venue_id ? venueName(o.venue_id) : 'Warehouse stock'}
                         <div className="t2">{[orderCategory(o.order_number), st !== 'open' && st,
                           o.deliver_to === 'venue' && ls.some(l => l.deliver_to === 'warehouse' && l.status !== 'CANCELLED') && 'sea part to the warehouse'].filter(Boolean).join(' · ') || (o.deliver_to === 'warehouse' ? 'to the warehouse' : 'to the venue')}</div></td>

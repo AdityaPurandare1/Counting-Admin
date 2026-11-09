@@ -67,7 +67,7 @@
 .ot-pop-empty { padding: 18px 10px; color: var(--ot-ink-2); text-align: center; }
 
 /* KPIs */
-.ot-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); background: var(--ot-surface); border: 1px solid var(--ot-line); border-radius: 14px; overflow: hidden; }
+.ot-kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); background: var(--ot-surface); border: 1px solid var(--ot-line); border-radius: 14px; overflow: hidden; }
 .ot-kpi { all: unset; box-sizing: border-box; padding: 16px 18px 15px; border-left: 1px solid var(--ot-line); cursor: pointer; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .ot-kpi:first-child { border-left: 0; }
 .ot-kpi:hover { background: var(--ot-hover); }

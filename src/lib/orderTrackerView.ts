@@ -6,7 +6,7 @@
    Kept apart from orderTracker.ts, whose copy the morning pull runs.
    ─────────────────────────────────────────────────────────────────────── */
 import {
-  MULTIPLE_VENUES, STATUSES, isLate, isStorageLine, lineTotal, orderState, qtyInItemUnits, receivedForLine, statusRank, stockRows,
+  MULTIPLE_VENUES, STATUSES, isLate, ordersAwaitingApproval, isStorageLine, lineTotal, orderState, qtyInItemUnits, receivedForLine, statusRank, stockRows,
   type LineStatus, type OtDocument, type OtItem, type OtLine, type OtMove, type OtOrder,
 } from './orderTracker';
 
@@ -85,6 +85,8 @@ export interface TrackerKpis {
   open: number; openLines: number; late: number; oldestLateDays: number;
   onOrder$: number; onOrderOrders: number; unpaid$: number; unpaidInvoices: number; oldestUnpaidDays: number;
   reorder: number; soon: number;
+  /** open orders with a Quoted line h.wood has not e-mailed its approval for (0157), and those lines */
+  approve: number; approveLines: number;
 }
 interface Data { orders: OtOrder[]; lines: OtLine[]; items: OtItem[]; moves: OtMove[]; documents?: OtDocument[] }
 const byOrder = (lines: OtLine[]) => {
@@ -112,6 +114,7 @@ export function trackerKpis(data: Data, today: string): TrackerKpis {
     unpaid$: pays.reduce((s, p) => s + p.unpaid$, 0), unpaidInvoices: unpaidInvoices.size,
     oldestUnpaidDays: pays.reduce((m, p) => Math.max(m, p.oldestDays ?? 0), 0),
     reorder: stock.filter(r => r.state === 'reorder now').length, soon: stock.filter(r => r.state === 'reorder soon').length,
+    ...(() => { const w = ordersAwaitingApproval(data.orders, data.lines, today); return { approve: w.length, approveLines: w.reduce((s, x) => s + x.lines.length, 0) }; })(),
   };
 }
 
@@ -137,6 +140,12 @@ export function attentionItems(data: Data, today: string, inboxWaiting: number, 
     if (p.state === 'unpaid' && (p.oldestDays ?? 0) >= CHASE_DAYS) {
       out.push({ sev: 'warn', title: `${o.vendor_name} invoice ${p.invoices[0] ?? ''}`.trim(), sub: `${fmt(p.unpaid$)} · ${p.oldestDays} days unpaid · ${o.order_number ?? ''}`.replace(/ · $/, ''), act: { kind: 'order', id: o.id } });
     }
+  }
+  // a quote nobody has said yes to by e-mail: the order sits still until we do (0157)
+  for (const w of ordersAwaitingApproval(data.orders, data.lines, today)) {
+    out.push({ sev: 'warn', title: `Approve the quote: ${w.order.vendor_name} ${w.order.order_number ?? ''}`.trim(),
+      sub: `${w.quotes.length ? `Quote ${w.quotes.join(', ')}` : `${w.lines.length} quoted line${w.lines.length > 1 ? 's' : ''}`} · no approval e-mail yet${w.days ? ` · ${w.days} day${w.days === 1 ? '' : 's'}` : ''}`,
+      act: { kind: 'order', id: w.order.id } });
   }
   if (inboxWaiting > 0) out.push({ sev: 'info', title: `${inboxWaiting} document${inboxWaiting > 1 ? 's' : ''} waiting in the Inbox`, sub: 'quotes / invoices the pull could not place by itself', act: { kind: 'tab', tab: 'inbox' } });
   const orders = new Map(data.orders.map(o => [o.id, o]));
