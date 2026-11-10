@@ -41,6 +41,8 @@ export const PROJECTS: Project[] = [
     { key: 'purchasing:order-tracker', label: 'Order tracker', description: 'Orders, the Inbox, warehouse stock and the bibles' },
     { key: 'purchasing:order-prices', label: 'Order prices', description: 'Prices paid on orders and quotes' },
     { key: 'purchasing:liquor-wine', label: 'Liquor & wine prices', description: 'Liquor and wine bottle prices and spend' },
+    // v1.08 (0167): ticked per person, never part of a role
+    { key: 'purchasing:order-tracker-view', label: 'Order tracker (view)', description: "Their venues' orders, prices, tracking and documents, and the whole warehouse - view only" },
   ] },
   { key: 'access', label: 'Access', features: [
     { key: 'access:all-venues', label: 'All venues', description: 'Sees and runs every venue (corporate access); otherwise only the venues picked' },
@@ -62,7 +64,9 @@ export const ROLES: Array<{ role: Role; label: string }> = [
 ];
 export const roleLabel = (r: string) => ROLES.find(x => x.role === r)?.label ?? r;
 
-const ALL = FEATURES.map(f => f.key);
+/** Permissions only ever ticked per person (0167): in no role's template, not even Admin's. */
+export const PER_PERSON_ONLY = new Set(['purchasing:order-tracker-view']);
+const ALL = FEATURES.map(f => f.key).filter(k => !PER_PERSON_ONLY.has(k));
 const VIEW_TEAM = ['audit:view', 'audit:overview', 'audit:counts', 'team:issues', 'team:ask-ai', 'admin:approvals', 'admin:stock', 'admin:reports', 'admin:transfers'];
 
 /** What each role could do before permissions existed (App.tsx routes, the Sidebar, every screen's checks,

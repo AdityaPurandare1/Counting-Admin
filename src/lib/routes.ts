@@ -23,6 +23,7 @@ export const NAV: Array<{ group: string; items: NavItem[] }> = [
     { to: '/order-tracker', label: 'Order tracker', key: 'purchasing:order-tracker' },
     { to: '/order-prices', label: 'Order prices', key: 'purchasing:order-prices' },
     { to: '/purchase-prices', label: 'Liquor & wine prices', key: 'purchasing:liquor-wine' },
+    { to: '/order-tracker-view', label: 'Order tracker (view)', key: 'purchasing:order-tracker-view' },
   ] },
   { group: 'Admin', items: [
     { to: '/approvals', label: 'Approvals', key: 'admin:approvals' },

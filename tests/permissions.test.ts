@@ -4,7 +4,7 @@
  * exact permissions they have". So every old role check is written down here as it was, and each role's
  * template must answer it the same way.  npm test
  */
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { FEATURES, PROJECTS, ROLE_TEMPLATES, templateFor, usesDesktop, roleLabel } from '../src/lib/permissions';
 import { can, featuresOf, isOrgWide, canManageUsers, canRunAudits, canEditCounts, isDesktopUser, type Who } from '../src/lib/access';
@@ -137,13 +137,22 @@ check('phone permissions alone do not open the desktop', !usesDesktop(['phone:co
   check('the sidebar draws navFor(user)', /navFor\(user\)\.map/.test(side));
   check('User access saves roles, permissions and venues together through admin-user-mgmt', /adminUserMgmt\.setAccess\(\{ email: row\.email, role: draft\.role, roles: draft\.roles, features: draft\.features/.test(ua)
     && /action: 'set_access'/.test(mgmt));
-  const mig = sibling('supabase', 'migrations', '0148_kount_user_permissions.sql');
-  if (mig) {
-    const feats = [...mig.matchAll(/^\s+\('([a-z]+:[a-z0-9-]+)', '([a-z]+)', '[^']*', '((?:[^']|'')*)', '((?:[^']|'')*)', (\d+)\)/gm)].map(m => m[1]);
-    const tpl = [...mig.matchAll(/^\s+\('(admin|corporate|manager|counter|venue_manager)', '([a-z]+:[a-z0-9-]+)'\)/gm)].map(m => `${m[1]}>${m[2]}`).sort();
+  // 0148 seeded the catalog; later migrations add to it (0167: purchasing:order-tracker-view) -- every
+  // applied migration that inserts into kount_features / kount_role_templates, rollbacks left out
+  const migDir = join(process.cwd(), '..', 'Counting-App', 'supabase', 'migrations');
+  const migs = existsSync(migDir)
+    ? readdirSync(migDir).filter(f => /^\d{4}_(?!ROLLBACK).*\.sql$/.test(f)).map(f => readFileSync(join(migDir, f), 'utf8'))
+        .filter(t => /insert into public\.kount_(features|role_templates)/.test(t))
+    : [];
+  if (migs.length) {
+    const all = migs.join('\n');
+    const feats = [...new Set([...all.matchAll(/^\s+\('([a-z]+:[a-z0-9-]+)', '([a-z]+)', '[^']*', '((?:[^']|'')*)', '((?:[^']|'')*)', (\d+)\)/gm)].map(m => m[1]))].sort();
+    const tpl = [...new Set([...all.matchAll(/^\s+\('(admin|corporate|manager|counter|venue_manager)', '([a-z]+:[a-z0-9-]+)'\)/gm)].map(m => `${m[1]}>${m[2]}`))].sort();
     const want = Object.entries(ROLE_TEMPLATES).flatMap(([r, ks]) => ks.map(k => `${r}>${k}`)).sort();
-    check('0148 seeds the same catalog as permissions.ts', feats.join() === FEATURES.map(f => f.key).join(), feats);
-    check('0148 seeds the same role templates as permissions.ts', tpl.join() === want.join());
+    // a migration may seed a permission this build does not show yet (another branch's, e.g. 0154); every one it shows must be seeded
+    const shown = new Set(FEATURES.map(f => f.key));
+    check('every permission permissions.ts shows is seeded by a migration', FEATURES.every(f => feats.includes(f.key)), FEATURES.map(f => f.key).filter(k => !feats.includes(k)));
+    check('the migrations seed the same role templates as permissions.ts', tpl.filter(t => shown.has(t.split('>')[1])).join() === want.join(), { tpl, want });
   }
   // the phone (counting-app.html v2.32) keeps its own copy of the templates for the keys it reads
   const phone = sibling('counting-app.html');

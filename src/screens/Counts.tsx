@@ -231,7 +231,11 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
       .from('kount_venue_zones')
       .select('*')
       .eq('venue_id', audit.venue_id)
-      .order('added_at', { ascending: true });
+      // v1.08: the table's columns are created_by / created_at (migration 0008,
+      // as the phone uses). Ordering by a column the table lacks failed this load
+      // since v0.18, so every counter-added zone showed as an orphan and the
+      // add-entry card could only reach the venue's default zones.
+      .order('created_at', { ascending: true });
     if (error) { console.error('[counts] load zones', error); return; }
     setZonesDb((data ?? []) as KountVenueZone[]);
   }, [audit.venue_id]);
@@ -349,8 +353,7 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
     const { error } = await supabase.from('kount_venue_zones').insert({
       venue_id: audit.venue_id,
       zone_name: name,
-      added_by_email: user.email,
-      added_by_name: user.name,
+      created_by: user.email,
     });
     if (error) { alert('Add zone failed: ' + error.message); return; }
     setCurrentZone(name);
@@ -363,8 +366,7 @@ function CountsWorkspace({ audit, user }: { audit: KountAudit; user: AccessEntry
     const { error } = await supabase.from('kount_venue_zones').insert({
       venue_id: audit.venue_id,
       zone_name: zoneName,
-      added_by_email: user.email,
-      added_by_name: user.name,
+      created_by: user.email,
     });
     if (error) { alert('Restore zone failed: ' + error.message); return; }
     setCurrentZone(zoneName);

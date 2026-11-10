@@ -16,6 +16,8 @@ import { localDayRange } from '../src/screens/Variance';
 import { phaseMessage, priorAuditState } from '../src/lib/notifications';
 import { deepLinkOutcome, revealFilters } from '../src/screens/Summary';
 import type { KountAudit } from '../src/lib/types';
+import { viewOrderRows } from '../src/lib/orderTrackerReadOnly';
+import { ROLE_TEMPLATES } from '../src/lib/permissions';
 
 let passed = 0;
 let failed = 0;
@@ -255,6 +257,36 @@ async function main() {
     check(`export filename date is local in ${name}`, !s.includes('toISOString().slice(0, 10)') && s.includes('localIsoDate(new Date())'));
   }
   check('Ask AI context date is local', src('src/lib/askAiContext.ts').includes('localIsoDate(asOfDate)'));
+
+  // v1.08: kount_venue_zones has created_by / created_at (migration 0008). The Counts screen ordered by a
+  // missing added_at, so its zone load failed and every counter-added zone showed as an orphan.
+  console.log('\nzone columns');
+  const zoneSrc = src('src/screens/Counts.tsx');
+  const zoneCalls = zoneSrc.split(".from('kount_venue_zones')").slice(1).map(s => s.slice(0, 400));
+  check('Counts touches kount_venue_zones (load, add, restore, remove)', zoneCalls.length === 4, zoneCalls.length);
+  check('zone load orders by created_at', zoneCalls.some(c => c.includes(".order('created_at'")));
+  check('no zone call uses the missing added_* columns', zoneCalls.every(c => !/added_(at|by_email|by_name)/.test(c)));
+  check('zone inserts write created_by', zoneCalls.filter(c => c.includes('.insert(')).every(c => c.includes('created_by: user.email')));
+
+  // v1.08 (0167): Order tracker (view) -- a read-only page for purchasing:order-tracker-view
+  console.log('\norder tracker (view)');
+  const ord = (id: string, extra: Record<string, unknown> = {}) => ({ id, order_number: 'PO-' + id, vendor_name: 'Vendor ' + id, venue_id: 'v11', deliver_to: 'venue',
+    ordered_on: null, expected_on: null, notes: null, completed_at: null, archived_at: null, created_at: '2026-11-01T00:00:00Z', updated_at: '2026-11-0' + id + 'T00:00:00Z', ...extra }) as never;
+  const line = (id: string, order: string, extra: Record<string, unknown> = {}) => ({ id, order_id: order, item_id: null, description: 'Glass ' + id, sku: 'SKU' + id, qty: 2,
+    unit: 'case', unit_price: 10, status: 'ORDERED', status_at: '2026-11-01T00:00:00Z', quote_number: null, invoice_number: null, invoice_date: null,
+    tracking_number: null, expected_on: null, sort: 0, ...extra }) as never;
+  const orders = [ord('1'), ord('2', { completed_at: '2026-11-05T00:00:00Z' }), ord('3', { archived_at: '2026-11-05T00:00:00Z' }), ord('4', { venue_id: 'x:Multiple venues' })];
+  const lns = [line('a', '1'), line('b', '1', { status: 'CANCELLED' }), line('c', '2', { status: 'RECEIVED' }), line('d', '3'), line('e', '4', { venue_id: 'v1', tracking_number: '1Z999' })];
+  const open = viewOrderRows(orders, lns, { show: 'open', venue: 'all', q: '' });
+  check('view: open orders only, archived never', open.map(r => r.o.id).join() === '4,1', open.map(r => r.o.id));
+  check('view: all = open + completed, archived still never', viewOrderRows(orders, lns, { show: 'all', venue: 'all', q: '' }).map(r => r.o.id).sort().join() === '1,2,4');
+  check('view: total leaves cancelled lines out', open.find(r => r.o.id === '1')?.total === 20);
+  check('view: a shared order is under the venue of its lines', viewOrderRows(orders, lns, { show: 'open', venue: 'v1', q: '' }).map(r => r.o.id).join() === '4');
+  check('view: search reaches the tracking number on a line', viewOrderRows(orders, lns, { show: 'all', venue: 'all', q: '1z999' }).map(r => r.o.id).join() === '4');
+  const ro = src('src/screens/OrderTrackerReadOnly.tsx') + src('src/lib/orderTrackerReadOnly.ts');
+  check('the view page never writes', !/\.(insert|update|upsert|delete|remove|upload|rpc)\(/.test(ro) && !/functions\.invoke/.test(ro));
+  check('the view page is gated by its own permission', /path="\/order-tracker-view" element=\{gate\('purchasing:order-tracker-view'/.test(src('src/App.tsx')));
+  check('Order tracker (view) is in no role template', !Object.values(ROLE_TEMPLATES).flat().includes('purchasing:order-tracker-view'));
 }
 
 main().then(() => {

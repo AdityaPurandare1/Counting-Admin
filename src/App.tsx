@@ -24,6 +24,7 @@ import { PurchasePrices } from '@/screens/PurchasePrices';
 import { OrderTracker } from '@/screens/OrderTracker';
 import { OrderPrices } from '@/screens/OrderPrices';
 import { AskAI } from '@/screens/AskAI';
+import { OrderTrackerReadOnly } from '@/screens/OrderTrackerReadOnly';
 import { refreshAccessList, refreshVenues, resolveAccess, can, isDesktopUser } from '@/lib/access';
 import { firstRoute } from '@/lib/routes';
 import { refreshVenueLookups } from '@/lib/venueMap';
@@ -281,6 +282,8 @@ export default function App() {
             <Route path="/order-tracker"   element={gate('purchasing:order-tracker', <OrderTracker user={user} />)} />
             <Route path="/order-prices"    element={gate('purchasing:order-prices', <OrderPrices user={user} />)} />
             <Route path="/inventory" element={<Navigate to={home} replace />} />
+            {/* v1.08 (0167): view-only order tracker, their venues (the database limits the rows) */}
+            <Route path="/order-tracker-view" element={gate('purchasing:order-tracker-view', <OrderTrackerReadOnly user={user} />)} />
             <Route path="/transfers" element={gate('admin:transfers', <Transfers user={user} />)} />
             <Route path="/stock"     element={gate('admin:stock', <StockOnHand user={user} />)} />
             <Route path="/food"      element={gate('admin:food-count', <FoodCount user={user} />)} />
