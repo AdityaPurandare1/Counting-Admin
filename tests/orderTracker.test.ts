@@ -1340,7 +1340,7 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   }
 }
 
-// ── the 9 o'clock pull (0159): retried until 2 pm while today's mail is unread; the admin says so from 10:00 ──
+// ── the 9 o'clock pull (0160): retried until 2 pm while today's mail is unread; the admin says so from 10:00 ──
 {
   const at = (iso: string) => new Date(iso);
   check('LA clock in winter (PST): 17:05 UTC is 9 am', laClock(at('2026-11-10T17:05:00Z')).hour === 9 && laClock(at('2026-11-10T17:05:00Z')).day === '2026-11-10');
@@ -1374,16 +1374,16 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
     && morningPullAlert(st({ connected: false }), at('2026-11-10T18:05:00Z')) === null && morningPullAlert(st(), at('2026-11-10T17:40:00Z')) === null && morningPullAlert(null) === null);
 
   const fn = sibling('supabase', 'functions', 'kount-order-mail', 'index.ts');
-  const mig = sibling('supabase', 'migrations', '0159_kount_ot_mail_morning_watch.sql');
+  const mig = sibling('supabase', 'migrations', '0160_kount_ot_mail_morning_watch.sql');
   const cfg = sibling('supabase', 'config.toml');
   if (fn && mig && cfg) {
     check('the function pulls on schedule only while today is unread (scheduledPullDue), not just in the 9 hour', /if \(!scheduledPullDue\(acctNow\?\.last_fetch_at \?\? null\)\)/.test(fn) && !/laParts\(\)\.hour !== 9/.test(fn));
     check('a pull that read the mail stamps last_fetch_at (not a continuation)', /await fetchPhase\(sb, acct, stats, kinds\);\s*\/\/[^\n]*\n\s*await sb\.from\('kount_ot_mail_account'\)\.update\(\{ last_fetch_at: nowIso\(\) \}\)/.test(fn));
     check('its own continuation call carries the anon key', /'x-kount-cron': String\(secret \?\? ''\), \.\.\.\(SUPABASE_ANON_KEY \? \{ Authorization: `Bearer \$\{SUPABASE_ANON_KEY\}` \}/.test(fn));
-    check('0159: every 10 min 16-21 UTC, only while unread, signed with the anon key, call id kept', mig.includes("schedule := '*/10 16-21 * * *'") && mig.includes("name = 'kount_edge_anon_jwt'")
+    check('0160: every 10 min 16-21 UTC, only while unread, signed with the anon key, call id kept', mig.includes("schedule := '*/10 16-21 * * *'") && mig.includes("name = 'kount_edge_anon_jwt'")
       && mig.includes('set morning_request_id = net.http_post(') && /last_fetch_at < \(date_trunc\('day', now\(\) at time zone 'America\/Los_Angeles'\) \+ interval '9 hours'\)/.test(mig)
       && mig.includes("between 9 and 13"));
-    check('0159: the status says when the mail was read and what the job got back', mig.includes("'last_fetch_at', a.last_fetch_at") && mig.includes("'morning', jsonb_build_object("));
+    check('0160: the status says when the mail was read and what the job got back', mig.includes("'last_fetch_at', a.last_fetch_at") && mig.includes("'morning', jsonb_build_object("));
     check('config.toml pins verify_jwt = false for the mail pull (a plain deploy keeps it)', /\[functions\.kount-order-mail\][^[]*verify_jwt = false/.test(cfg) && /\[functions\.ask-ai\][^[]*verify_jwt = true/.test(cfg));
   }
 }

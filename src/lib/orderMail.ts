@@ -44,7 +44,7 @@ export interface MailRun {
   remaining?: number; error: string | null; reconnect: boolean;
 }
 
-/** The 9 o'clock pull has not read today's mail (0159): what the bell and the Inbox say, or null. From 10:00 in
+/** The 9 o'clock pull has not read today's mail (0160): what the bell and the Inbox say, or null. From 10:00 in
  *  Los Angeles, while Outlook is connected; the reason is the job's refused call, an expired sign-in or the error
  *  the last pull stopped on, when known. */
 export function morningPullAlert(s: MailStatus | null, now: Date = new Date()): { title: string; sub: string } | null {
@@ -75,9 +75,9 @@ export interface MailStatus {
   fetched_through: string | null;
   running: boolean;
   last_run: MailRun | null;
-  /** when a pull last read the mail (0159) */
+  /** when a pull last read the mail (0160) */
   last_fetch_at: string | null;
-  /** the 9 o'clock job's last call and what the function answered (0159); status null = no answer kept */
+  /** the 9 o'clock job's last call and what the function answered (0160); status null = no answer kept */
   morning: { called_at: string | null; status: number | null; error: string | null } | null;
 }
 
