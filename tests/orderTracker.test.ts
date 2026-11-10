@@ -638,6 +638,12 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   check('order #: an E&E storage delivery -> next WHS', autoOrderNumber([nl('BSC - delivery 10/28/2026 SKU: BS-EUROTTE (2)')], 'EE Mercantile', { orders, items }) === 'WHS-0011');
   check('order #: a custom (branded) item -> next CUS', autoOrderNumber([nl('Bird Streets eurotote bag')], 'EE Mercantile', { orders, items }) === 'CUS-0043');
   check('order #: anything else -> next OSE', autoOrderNumber([nl('LIBBEY - CONTOUR GOBLET GLASS 16 OZ/ 12')], 'EE Mercantile', { orders, items }) === 'OSE-0036');
+  // the words rule (CUS for custom / logo / print work) never matched until 11/10: two raw backspace bytes stood
+  // where its \b word boundaries belonged (written in v0.83). The user: "yes please lets fix these".
+  check('order #: "Custom" in the line -> CUS (E&E: NICK & NORA - Custom Model No. 6424)', autoOrderNumber([nl('NICK & NORA - Custom Model No. 6424 Packed cs VISKI - NICK & NORA GLASS 6OZ/ 4')], 'EE Mercantile', { orders, items }) === 'CUS-0043');
+  check('order #: logo print -> CUS', autoOrderNumber([nl('Mints (1000/CS) buttermint 1color logo print')], 'EE Mercantile', { orders, items }) === 'CUS-0043');
+  check('order #: a whole word only ("Customer" is not custom)', autoOrderNumber([nl('Customer pickup shelf')], 'EE Mercantile', { orders, items }) === 'OSE-0036');
+  check('the shared order tracker library has no raw control bytes (a \\b that became a backspace)', !/[\x00-\x08\x0B\x0C\x0E-\x1F]/.test(readFileSync(join(process.cwd(), 'src/lib/orderTracker.ts'), 'utf8')));
   check('order #: a series starts at 0001', autoOrderNumber([nl('Mepra wine cooler')], 'EE Mercantile', { orders: [], items: [] }) === 'OSE-0001');
 }
 
