@@ -6,6 +6,7 @@ import {
 import { FULFILLMENT, fulfillmentOf, fulfillmentStep, lastUpdate, nextEta, orderCategory, paymentOf, stubsToGet, timeAgo, type PaymentView } from '@/lib/orderTrackerView';
 import type { TrackerData } from '@/lib/orderTrackerData';
 import { orderTiming, timingText } from '@/lib/leadTime';
+import { quoteBibleChecks, quoteBibleSummary } from '@/lib/quoteBible';
 import { fmtMoney, shortDate } from './shared';
 import { OrderDrawer } from './OrderDrawer';
 import { DocChips, DocViewer, Icon, docSort, isOtherDoc, latestByName } from './ui';
@@ -44,6 +45,8 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
     for (const ls of m.values()) ls.sort((a, b) => a.sort - b.sort);
     return m;
   }, [data.lines]);
+  // each open order's quoted lines against its venue's bible (v1.07)
+  const bibleChecks = useMemo(() => quoteBibleChecks(data.orders, data.lines, data.bibles), [data.orders, data.lines, data.bibles]);
   const docsByOrder = useMemo(() => {
     const m = new Map<string, OtDocument[]>();
     for (const d of data.documents) if (d.order_id) (m.get(d.order_id) ?? m.set(d.order_id, []).get(d.order_id)!).push(d);
@@ -65,8 +68,8 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
     const ls = linesByOrder.get(o.id) ?? [];
     return { o, ls, st: orderState(o, ls) as OrderState, pay: paymentOf(ls, today),
       late: ls.filter(l => isLate(l, o, today, receivedForLine(data.moves, l.id))).length,
-      toApprove: o.archived_at || o.completed_at ? 0 : ls.filter(awaitingApproval).length };
-  }), [data.orders, data.moves, linesByOrder, today]);
+      toApprove: o.archived_at || o.completed_at ? 0 : ls.filter(awaitingApproval).length, bible: bibleChecks.get(o.id) ?? null };
+  }), [data.orders, data.moves, linesByOrder, today, bibleChecks]);
   const counts = useMemo(() => ({
     open: all.filter(r => r.st === 'open').length, completed: all.filter(r => r.st === 'completed').length,
     all: all.filter(r => r.st !== 'archived').length, archived: all.filter(r => r.st === 'archived').length,
@@ -138,7 +141,7 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
                 <th>Documents</th><th>Other</th><th className="r">Updated</th>
               </tr></thead>
               <tbody>
-                {rows.map(({ o, ls, st, pay, late, toApprove }) => {
+                {rows.map(({ o, ls, st, pay, late, toApprove, bible }) => {
                   const head = headlineStatus(ls);
                   const ful = fulfillmentOf(head);
                   const step = fulfillmentStep(head);
@@ -151,7 +154,9 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
                     <tr key={o.id} className={`click${openId === o.id ? ' sel' : ''}`} tabIndex={0} onClick={() => setOpenId(o.id)}
                       onKeyDown={e => { if (e.key === 'Enter') setOpenId(o.id); }}>
                       <td><div className="t1">{o.vendor_name}</div><div className="t2 mono">{o.order_number || '—'}</div>
-                        {toApprove > 0 && <span className="ot-pill warn" title="Quoted, and no e-mail to the vendor approving it yet">Approve quote</span>}</td>
+                        {toApprove > 0 && <span className="ot-pill warn" title="Quoted, and no e-mail to the vendor approving it yet">Approve quote</span>}
+                        {bible && (bible.ok ? <span className="ot-pill ok" title={quoteBibleSummary(bible, venueName).sub}>In bible</span>
+                          : bible.off.some(x => x.state !== 'no-bible') && <span className="ot-pill warn" title={quoteBibleSummary(bible, venueName).sub}>Check bible</span>)}</td>
                       <td className="venue">{o.venue_id === MULTIPLE_VENUES ? vIds.map(v => venueName(v)).join(', ') : o.venue_id ? venueName(o.venue_id) : 'Warehouse stock'}
                         <div className="t2">{[orderCategory(o.order_number), st !== 'open' && st,
                           o.deliver_to === 'venue' && ls.some(l => l.deliver_to === 'warehouse' && l.status !== 'CANCELLED') && 'sea part to the warehouse'].filter(Boolean).join(' · ') || (o.deliver_to === 'warehouse' ? 'to the warehouse' : 'to the venue')}</div></td>

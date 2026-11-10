@@ -13,6 +13,7 @@ import {
   type EventRow, type TrackerData,
 } from '@/lib/orderTrackerData';
 import { SENT_SOURCE, orderTiming, timingText } from '@/lib/leadTime';
+import { checkQuoteAgainstBible, lineBibleText, quoteBibleSummary } from '@/lib/quoteBible';
 import { checkApprovals } from '@/lib/orderMail';
 import { fmtMoney, shortDate } from './shared';
 import { AttachStubButton, DocChip, Icon, isOtherDoc } from './ui';
@@ -84,6 +85,10 @@ export function OrderDrawer({ order, lines, docs, data, today, venueName, onClos
   const approvals = [...new Map(lines.filter(l => l.status === 'QUOTED' && l.quote_approved_at && !awaitingApproval(l))
     .map(l => [`${l.quote_approved_for ?? ''}|${l.quote_approved_at}`, l] as const)).values()];
   const [approvalMsg, setApprovalMsg] = useState<string | null>(null);
+  // the quoted lines against the venue's bible, by item number (v1.07): green only when every one is in it
+  const bibleCheck = useMemo(() => (order && data.bibles ? checkQuoteAgainstBible(order, lines, data.bibles) : null), [order, lines, data.bibles]);
+  const bibleSum = bibleCheck ? quoteBibleSummary(bibleCheck, venueName) : null;
+  const bibleLine = new Map((bibleCheck?.lines ?? []).map(c => [c.line.id, c]));
   const checkNow = () => run(async () => {
     const r = await checkApprovals();
     if (r.error) throw new Error(`Could not check the mailbox: ${r.error}`);
@@ -144,6 +149,11 @@ export function OrderDrawer({ order, lines, docs, data, today, venueName, onClos
           {approvals.length > 0 && toApprove.length === 0 && (
             <div className="ot-note" title={approvals.map(l => l.quote_approval_note ?? '').filter(Boolean).join('\n')}>
               Quote approved by e-mail{approvals.map(l => ` ${l.quote_approved_for ? `${l.quote_approved_for} ` : ''}on ${shortDate((l.quote_approved_at ?? '').slice(0, 10))}${l.quote_approval_note ? `: ${l.quote_approval_note}` : ''}`).join(';')}.
+            </div>
+          )}
+          {bibleSum && (
+            <div className={`ot-note ${bibleSum.ok ? 'ok' : 'warn'}`} title={bibleCheck!.off.map(c => `${c.line.description}: ${lineBibleText(c)}`).join('\n')}>
+              <b>{bibleSum.title}.</b> {bibleSum.sub}
             </div>
           )}
           {late.length > 0 && <div className="ot-note crit">{late.length} line{late.length > 1 ? 's are' : ' is'} past ETA. Update the ETA or mark {late.length > 1 ? 'them' : 'it'} received.</div>}
@@ -214,6 +224,7 @@ export function OrderDrawer({ order, lines, docs, data, today, venueName, onClos
                             </select>
                             {[l.sku, l.quote_number && `quote ${l.quote_number}`,
                               was && was.status === 'QUOTED' && (awaitingApproval(was) ? 'no approval e-mail yet' : `approved ${shortDate((was.quote_approved_at ?? '').slice(0, 10))}`),
+                              was && bibleLine.has(was.id) && lineBibleText(bibleLine.get(was.id)!),
                               l.venue_id && draft.venue_id === MULTIPLE_VENUES && venueName(l.venue_id),
                               l.item_id && `stock: ${data.items.find(i => i.id === l.item_id)?.name ?? 'item'}`].filter(Boolean).join(' · ')}
                           </div>

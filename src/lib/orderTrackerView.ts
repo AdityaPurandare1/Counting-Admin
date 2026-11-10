@@ -9,6 +9,7 @@ import {
   MULTIPLE_VENUES, STATUSES, isLate, ordersAwaitingApproval, isStorageLine, lineTotal, orderState, qtyInItemUnits, receivedForLine, statusRank, stockRows,
   type LineStatus, type OtDocument, type OtItem, type OtLine, type OtMove, type OtOrder,
 } from './orderTracker';
+import { quoteBibleChecks, quoteBibleSummary, type BibleText } from './quoteBible';
 
 const DAY = 86_400_000;
 const daysFrom = (from: string, to: string) => Math.round((Date.parse(to.slice(0, 10)) - Date.parse(from.slice(0, 10))) / DAY);
@@ -88,7 +89,7 @@ export interface TrackerKpis {
   /** open orders with a Quoted line h.wood has not e-mailed its approval for (0157), and those lines */
   approve: number; approveLines: number;
 }
-interface Data { orders: OtOrder[]; lines: OtLine[]; items: OtItem[]; moves: OtMove[]; documents?: OtDocument[] }
+interface Data { orders: OtOrder[]; lines: OtLine[]; items: OtItem[]; moves: OtMove[]; documents?: OtDocument[]; bibles?: BibleText[] }
 const byOrder = (lines: OtLine[]) => {
   const m = new Map<string, OtLine[]>();
   for (const l of lines) (m.get(l.order_id) ?? m.set(l.order_id, []).get(l.order_id)!).push(l);
@@ -118,13 +119,14 @@ export function trackerKpis(data: Data, today: string): TrackerKpis {
   };
 }
 
-export type AttentionAct = { kind: 'order'; id: string } | { kind: 'tab'; tab: 'inbox' | 'warehouse' | 'overview' };
+export type AttentionAct = { kind: 'order'; id: string } | { kind: 'tab'; tab: 'inbox' | 'warehouse' | 'overview' | 'bibles' };
 export interface Attention { sev: 'crit' | 'warn' | 'info'; title: string; sub: string; act: AttentionAct }
 export const CHASE_DAYS = 14;
 
 /** What needs someone now: late orders, invoices unpaid past two weeks, the Inbox, E&E deliveries
  *  to put in stock, items to reorder — worst first. */
-export function attentionItems(data: Data, today: string, inboxWaiting: number, fmt: (x: number) => string): Attention[] {
+export function attentionItems(data: Data, today: string, inboxWaiting: number, fmt: (x: number) => string,
+  venueName: (id: string | null) => string = id => id ?? 'this venue'): Attention[] {
   const lm = byOrder(data.lines);
   const out: Attention[] = [];
   for (const o of data.orders.filter(x => orderState(x, lm.get(x.id) ?? []) === 'open')) {
@@ -146,6 +148,20 @@ export function attentionItems(data: Data, today: string, inboxWaiting: number, 
     out.push({ sev: 'warn', title: `Approve the quote: ${w.order.vendor_name} ${w.order.order_number ?? ''}`.trim(),
       sub: `${w.quotes.length ? `Quote ${w.quotes.join(', ')}` : `${w.lines.length} quoted line${w.lines.length > 1 ? 's' : ''}`} · no approval e-mail yet${w.days ? ` · ${w.days} day${w.days === 1 ? '' : 's'}` : ''}`,
       act: { kind: 'order', id: w.order.id } });
+  }
+  // quoted items not in the venue's bible by item number (v1.07); a venue with no bible is said once
+  const noBible = new Map<string | null, number>();
+  for (const c of quoteBibleChecks(data.orders, data.lines, data.bibles).values()) {
+    if (c.ok) continue;
+    if (c.off.some(x => x.state !== 'no-bible')) {
+      out.push({ sev: 'warn', title: `Check the quote against the bible: ${c.order.vendor_name} ${c.order.order_number ?? ''}`.trim(),
+        sub: quoteBibleSummary(c, venueName).sub, act: { kind: 'order', id: c.order.id } });
+    }
+    for (const v of c.noBible) noBible.set(v, (noBible.get(v) ?? 0) + 1);
+  }
+  for (const [v, n] of noBible) {
+    out.push({ sev: 'info', title: `No ${v ? venueName(v) : 'venue'} bible to check ${n} quote${n > 1 ? 's' : ''} against`,
+      sub: v ? 'upload it under Bibles and the quotes are checked by item number' : 'a quoted line with no venue', act: { kind: 'tab', tab: 'bibles' } });
   }
   if (inboxWaiting > 0) out.push({ sev: 'info', title: `${inboxWaiting} document${inboxWaiting > 1 ? 's' : ''} waiting in the Inbox`, sub: 'quotes / invoices the pull could not place by itself', act: { kind: 'tab', tab: 'inbox' } });
   const orders = new Map(data.orders.map(o => [o.id, o]));

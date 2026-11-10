@@ -5,6 +5,7 @@
 
 import { supabase, selectAllPagedFiltered } from './supabase';
 import type { ApplyDocument, DocKind, DocLine, LineStatus, OtDocument, OtItem, OtLine, OtMove, OtOrder, OtTracking } from './orderTracker';
+import type { BibleText } from './quoteBible';
 
 export const DOC_BUCKET = 'kount-order-docs';
 
@@ -16,6 +17,9 @@ export interface TrackerData {
   documents: OtDocument[];
   /** tracking numbers per order (0137); empty when that migration is missing */
   tracking: OtTracking[];
+  /** the venues' current bibles, their text only, for checking quotes against them (v1.07);
+   *  undefined when they could not be read — then no quote is checked or flagged */
+  bibles?: BibleText[];
 }
 
 const num = (x: unknown): number | null => (x == null || x === '' ? null : Number.isFinite(Number(x)) ? Number(x) : null);
@@ -34,7 +38,12 @@ export async function loadTracker(): Promise<TrackerData> {
     page<OtMove>('kount_ot_stock_moves', 'created_at'),
     page<OtDocument>('kount_ot_documents', 'created_at'),
   ]);
-  const tracking = await page<OtTracking>('kount_ot_tracking', 'created_at').catch(() => [] as OtTracking[]);
+  const [tracking, bibles] = await Promise.all([
+    page<OtTracking>('kount_ot_tracking', 'created_at').catch(() => [] as OtTracking[]),
+    // the bibles' text (about 270 KB for all of them): what the quotes are checked against
+    Promise.resolve(supabase.from('kount_ot_bibles').select('id, venue_id, title, text_index').eq('is_current', true))
+      .then(({ data, error }) => (error ? undefined : (data ?? []) as BibleText[]), () => undefined),
+  ]);
   const fixLine = (l: OtLine): OtLine => ({ ...l, qty: Number(l.qty) || 0, unit_price: num(l.unit_price) });
   const fixItem = (i: OtItem): OtItem => ({ ...i, pack_size: num(i.pack_size), reorder_point: num(i.reorder_point), lead_time_days: num(i.lead_time_days) });
   return {
@@ -44,6 +53,7 @@ export async function loadTracker(): Promise<TrackerData> {
     moves: moves.map(m => ({ ...m, qty: Number(m.qty) || 0 })),
     documents: documents.map(d => ({ ...d, total: num(d.total) })),
     tracking,
+    bibles,
   };
 }
 

@@ -90,7 +90,7 @@ export function OrderTracker({ today: todayProp, load = loadTracker, loadMail = 
   const kpis = useMemo(() => (data ? trackerKpis(data, today) : null), [data, today]);
   // the 9 o'clock pull not having read today's mail goes first (0160)
   const attention = useMemo(() => {
-    const base = data ? attentionItems(data, today, waiting, fmtMoney0) : [];
+    const base = data ? attentionItems(data, today, waiting, fmtMoney0, venueName) : [];
     const pull = morningPullAlert(mailSt, todayProp ?? new Date());
     return pull ? [{ sev: 'crit' as const, title: pull.title, sub: pull.sub, act: { kind: 'tab' as const, tab: 'inbox' as const } }, ...base] : base;
   }, [data, today, waiting, mailSt, todayProp]);

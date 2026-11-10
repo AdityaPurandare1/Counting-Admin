@@ -190,6 +190,7 @@ select.ot-inp { appearance: none; -webkit-appearance: none; padding-right: 28px;
 .ot-note { font-size: 12.5px; color: var(--ot-ink-2); padding: 9px 12px; border-radius: 8px; background: var(--ot-sunken); }
 .ot-note.crit { background: var(--ot-crit-bg); color: var(--ot-crit); }
 .ot-note.warn { background: var(--ot-warn-bg); color: var(--ot-warn); }
+.ot-note.ok { background: var(--ot-ok-bg); color: var(--ot-ok); }
 .ot-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .ot-tchip { display: inline-flex; gap: 4px; align-items: center; height: 26px; padding: 0 4px 0 9px; border-radius: 13px; background: var(--ot-surface); border: 1px solid var(--ot-line); font-size: 12.5px; }
 .ot-tchip a { color: var(--ot-ink); text-decoration: none; font-family: var(--ot-mono); font-size: 12px; }
