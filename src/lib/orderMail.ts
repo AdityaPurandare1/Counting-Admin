@@ -5,6 +5,7 @@
    here (kount_ot_inbox) for a person. The mailbox's sign-in is kept in Vault
    and never reaches the browser; kount_ot_mail_status() is all the admin sees. */
 
+import { CATCH_UP_UNTIL, laClock, morningPullMissed } from './orderTracker';
 import { supabase, selectAllPagedFiltered } from './supabase';
 import type { ReadDoc, TrackingHit } from './orderTracker';
 
@@ -43,6 +44,22 @@ export interface MailRun {
   remaining?: number; error: string | null; reconnect: boolean;
 }
 
+/** The 9 o'clock pull has not read today's mail (0159): what the bell and the Inbox say, or null. From 10:00 in
+ *  Los Angeles, while Outlook is connected; the reason is the job's refused call, an expired sign-in or the error
+ *  the last pull stopped on, when known. */
+export function morningPullAlert(s: MailStatus | null, now: Date = new Date()): { title: string; sub: string } | null {
+  if (!s || !s.connected || !morningPullMissed(s.last_fetch_at, now)) return null;
+  const last = s.last_fetch_at
+    ? new Date(s.last_fetch_at).toLocaleString('en-US', { timeZone: 'America/Los_Angeles', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+    : 'never';
+  const st = s.morning?.status;
+  const why = st != null && st >= 300 ? `the scheduled call was refused (${st}${s.morning?.error ? `: ${s.morning.error.slice(0, 120)}` : ''})`
+    : s.last_run?.reconnect ? 'the Outlook sign-in has expired: reconnect it in the Inbox'
+    : s.last_run?.error ? `the last pull stopped: ${s.last_run.error.slice(0, 160)}` : null;
+  const retry = laClock(now).hour <= CATCH_UP_UNTIL ? 'it tries again every 10 minutes until 2 pm' : 'it will not try again today';
+  return { title: "The 9 o'clock mail pull hasn't read today's mail", sub: `Last read ${last}${why ? ` · ${why}` : ''} · ${retry}; Pull now in the Inbox reads it right away.` };
+}
+
 export interface MailStatus {
   mailbox: string | null;
   connected: boolean;
@@ -58,6 +75,10 @@ export interface MailStatus {
   fetched_through: string | null;
   running: boolean;
   last_run: MailRun | null;
+  /** when a pull last read the mail (0159) */
+  last_fetch_at: string | null;
+  /** the 9 o'clock job's last call and what the function answered (0159); status null = no answer kept */
+  morning: { called_at: string | null; status: number | null; error: string | null } | null;
 }
 
 export async function loadInbox(): Promise<InboxItem[]> {
@@ -76,6 +97,7 @@ export async function mailStatus(): Promise<MailStatus> {
     auto_create: s.auto_create !== false,
     suggested_domains: s.suggested_domains && typeof s.suggested_domains === 'object' ? s.suggested_domains : {},
     fetched_through: s.fetched_through ?? null, running: !!s.running, last_run: (s.last_run as MailRun | null) ?? null,
+    last_fetch_at: s.last_fetch_at ?? null, morning: s.morning ?? null,
   };
 }
 

@@ -17,7 +17,7 @@ import { WarehouseView } from '@/components/orderTracker/WarehouseView';
 import { BibleView } from '@/components/orderTracker/BibleView';
 import { DocumentReview } from '@/components/orderTracker/DocumentReview';
 import { InboxView } from '@/components/orderTracker/InboxView';
-import { inboxGroups, loadInbox, redecideInbox, type InboxItem } from '@/lib/orderMail';
+import { inboxGroups, loadInbox, mailStatus, morningPullAlert, redecideInbox, type InboxItem, type MailStatus } from '@/lib/orderMail';
 import { StatusPill, download, errBox, fmtMoney, fmtMoney0, headRow, linkBtn, rowBorder, shortDate, subTxt, tbl, td, tdNum, th, thR } from '@/components/orderTracker/shared';
 
 /* ───────────────────────────────────────────────────────────────────────
@@ -38,8 +38,8 @@ import { StatusPill, download, errBox, fmtMoney, fmtMoney0, headRow, linkBtn, ro
 
 type View = 'orders' | 'inbox' | 'warehouse' | 'overview' | 'bibles';
 
-export function OrderTracker({ today: todayProp, load = loadTracker, loadMail = loadInbox }: {
-  user: AccessEntry; today?: Date; load?: () => Promise<TrackerData>; loadMail?: () => Promise<InboxItem[]>;
+export function OrderTracker({ today: todayProp, load = loadTracker, loadMail = loadInbox, loadStatus = mailStatus }: {
+  user: AccessEntry; today?: Date; load?: () => Promise<TrackerData>; loadMail?: () => Promise<InboxItem[]>; loadStatus?: () => Promise<MailStatus>;
 }) {
   const today = useMemo(() => isoDay(todayProp ?? new Date()), [todayProp]);
   const [data, setData] = useState<TrackerData | null>(null);
@@ -51,6 +51,7 @@ export function OrderTracker({ today: todayProp, load = loadTracker, loadMail = 
   const [bellOpen, setBellOpen] = useState(false);
   const [docFile, setDocFile] = useState<File | null>(null);
   const [inbox, setInbox] = useState<InboxItem[]>([]);
+  const [mailSt, setMailSt] = useState<MailStatus | null>(null);
   const [reviewing, setReviewing] = useState<InboxItem | null>(null);
   const [focusOrder, setFocusOrder] = useState<string | null>(null);
   const [reportBusy, setReportBusy] = useState(false);
@@ -63,12 +64,13 @@ export function OrderTracker({ today: todayProp, load = loadTracker, loadMail = 
     setLoading(true);
     try {
       // the inbox is extra: if it can't load (0135 not applied), the tracker still works
-      const [d, mail] = await Promise.all([load(), loadMail().catch(() => [] as InboxItem[])]);
-      if (s === seq.current) { setData(d); setInbox(mail); setError(null); }
+      // the mail status is extra too: it only feeds the 9 o'clock warning (0159)
+      const [d, mail, st] = await Promise.all([load(), loadMail().catch(() => [] as InboxItem[]), loadStatus().catch(() => null)]);
+      if (s === seq.current) { setData(d); setInbox(mail); setMailSt(st); setError(null); }
     } catch (e) {
       if (s === seq.current) setError(e instanceof Error ? e.message : String(e));
     } finally { if (s === seq.current) setLoading(false); }
-  }, [load, loadMail]);
+  }, [load, loadMail, loadStatus]);
   useEffect(() => { void reload(); }, [reload]);
   const waiting = inboxGroups(inbox).waiting.length;
 
@@ -86,7 +88,12 @@ export function OrderTracker({ today: todayProp, load = loadTracker, loadMail = 
   };
 
   const kpis = useMemo(() => (data ? trackerKpis(data, today) : null), [data, today]);
-  const attention = useMemo(() => (data ? attentionItems(data, today, waiting, fmtMoney0) : []), [data, today, waiting]);
+  // the 9 o'clock pull not having read today's mail goes first (0159)
+  const attention = useMemo(() => {
+    const base = data ? attentionItems(data, today, waiting, fmtMoney0) : [];
+    const pull = morningPullAlert(mailSt, todayProp ?? new Date());
+    return pull ? [{ sev: 'crit' as const, title: pull.title, sub: pull.sub, act: { kind: 'tab' as const, tab: 'inbox' as const } }, ...base] : base;
+  }, [data, today, waiting, mailSt, todayProp]);
   const lateHot = (kpis?.late ?? 0) > 0;
   const kpi = (key: OrdersPreset['key'] | 'warehouse') => {
     if (key === 'warehouse') { setView('warehouse'); return; }

@@ -3,7 +3,7 @@ import { Btn, Card, Pill } from '@/components/atoms';
 import { DOC_KIND_LABEL, headlineStatus, STATUS_LABEL, trackingUrl, type OtLine, type OtOrder } from '@/lib/orderTracker';
 import { addTracking, documentUrl } from '@/lib/orderTrackerData';
 import {
-  disconnectMail, findInMail, findSummary, inboxGroups, isPaymentStub, isTrackingEmail, mailStatus, pollConnect, pullNow, setAutoCreate, setDocKinds, setInboxState, setVendorDomains, startConnect,
+  disconnectMail, findInMail, findSummary, morningPullAlert, inboxGroups, isPaymentStub, isTrackingEmail, mailStatus, pollConnect, pullNow, setAutoCreate, setDocKinds, setInboxState, setVendorDomains, startConnect,
   type DeviceCode, type InboxItem, type MailStatus,
 } from '@/lib/orderMail';
 import { errBox, fmtMoney, linkBtn, okBox, picker, shortDate, smallInput, subTxt } from './shared';
@@ -213,6 +213,7 @@ function MailCard({ onChanged }: { onChanged: () => void }) {
               {run.failed ? `, ${run.failed} not read` : ''}{run.remaining ? `, ${run.remaining} still to read` : ''}.
             </div>
           )}
+          {(() => { const a = morningPullAlert(s); return a && <div style={errBox}><b>{a.title}.</b> {a.sub}</div>; })()}
           {run?.error && <div style={errBox}>{run.reconnect ? 'The Outlook sign-in has expired — reconnect below.' : `The last pull stopped: ${run.error}`}</div>}
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>

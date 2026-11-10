@@ -11,6 +11,7 @@ import {
   planDocRows, planDocumentSave, documentChecks, decideMailDocument, extractTracking, trackingUrl, orderForEmail, venueForDoc, filterByVenue, sortOrders, orderVenueIds,
   planStorageLine, storageMoveRows, isStorageLine, autoOrderNumber, lineOutsideSubtotal, orderForReferences,
   keepOtherAttachment, isSpreadsheet, sheetUpdates, itemLocation, EE_WAREHOUSE, linePack, qtyInItemUnits, lineDeliversTo,
+  laClock, morningFetchDone, scheduledPullDue, morningPullMissed,
   awaitingApproval, approvalPhrase, replyText, findApproval, planQuoteApprovals, ordersAwaitingApproval, quoteKey, searchableQuote,
   type ReadDoc, type MailSource, type MailMessage,
   type OtItem, type OtLine, type OtMove, type OtOrder, type OtDocument, type DocLine, type DocReview,
@@ -26,7 +27,7 @@ import {
   orderDraft, lineDraft, planOrderSave, isPlanEmpty, setDraftStage, markDraft, draftStage, draftTotal, draftLineTotal,
   stubsToGet, invoiceToken, stubInvoices, arrivesNow,
 } from '../src/lib/orderTrackerView';
-import { inboxGroups, findSummary, type InboxItem } from '../src/lib/orderMail';
+import { inboxGroups, findSummary, morningPullAlert, type InboxItem, type MailStatus } from '../src/lib/orderMail';
 import { existsSync } from 'node:fs';
 
 // the sibling Counting-App repo (the pull, the reader): only on a machine that has both — CI checks out this repo alone
@@ -1336,6 +1337,54 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
     check('only lines still Quoted are stamped', fn.includes(".in('id', s.lineIds).eq('status', 'QUOTED')"));
     check('reads the new text of each reply, as text', fn.includes('uniqueBody') && fn.includes('{ textBody: true }'));
     check('0157 adds the four line columns', ['quote_approved_at', 'quote_approved_for', 'quote_approval_note', 'quote_approval_message_id'].every(c => mig.includes(`add column if not exists ${c}`)));
+  }
+}
+
+// ── the 9 o'clock pull (0159): retried until 2 pm while today's mail is unread; the admin says so from 10:00 ──
+{
+  const at = (iso: string) => new Date(iso);
+  check('LA clock in winter (PST): 17:05 UTC is 9 am', laClock(at('2026-11-10T17:05:00Z')).hour === 9 && laClock(at('2026-11-10T17:05:00Z')).day === '2026-11-10');
+  check('LA clock in summer (PDT): 16:05 UTC is 9 am', laClock(at('2026-07-10T16:05:00Z')).hour === 9);
+  check('LA clock: 07:30 UTC is still the day before in LA', laClock(at('2026-11-11T07:30:00Z')).day === '2026-11-10' && laClock(at('2026-11-11T07:30:00Z')).hour === 23);
+  const yesterday = '2026-11-09T19:34:02.450Z';
+  check('read at 9:20 today -> done', morningFetchDone('2026-11-10T17:20:00Z', at('2026-11-10T18:30:00Z')));
+  check('read yesterday -> not done', !morningFetchDone(yesterday, at('2026-11-10T18:30:00Z')));
+  check('read at 8:30 today (before 9) -> not done', !morningFetchDone('2026-11-10T16:30:00Z', at('2026-11-10T18:30:00Z')));
+  check('never read / garbage -> not done', !morningFetchDone(null, at('2026-11-10T18:30:00Z')) && !morningFetchDone('x', at('2026-11-10T18:30:00Z')));
+  check('9:00, not read today -> pull', scheduledPullDue(yesterday, at('2026-11-10T17:00:00Z')));
+  check('9:10, read at 9:02 -> no second pull', !scheduledPullDue('2026-11-10T17:02:00Z', at('2026-11-10T17:10:00Z')));
+  check('12:10, the morning missed -> catch up', scheduledPullDue(yesterday, at('2026-11-10T20:10:00Z')));
+  check('13:50 is the last try, 14:00 is not', scheduledPullDue(yesterday, at('2026-11-10T21:50:00Z')) && !scheduledPullDue(yesterday, at('2026-11-10T22:00:00Z')));
+  check('8:50 is too early', !scheduledPullDue(yesterday, at('2026-11-10T16:50:00Z')));
+  check('summer: 9:00 PDT (16 UTC) pulls, 13:50 PDT (20:50 UTC) catches up', scheduledPullDue('2026-07-09T16:30:00Z', at('2026-07-10T16:00:00Z')) && scheduledPullDue('2026-07-09T16:30:00Z', at('2026-07-10T20:50:00Z')));
+  check('warning from 10:00 when not read', morningPullMissed(yesterday, at('2026-11-10T18:05:00Z')) && !morningPullMissed(yesterday, at('2026-11-10T17:30:00Z')));
+  check('no warning once read', !morningPullMissed('2026-11-10T20:12:00Z', at('2026-11-10T21:00:00Z')));
+
+  const st = (over: Partial<MailStatus> = {}): MailStatus => ({
+    mailbox: 'apurandare@hwoodgroup.com', connected: true, connected_by: null, connected_at: null, signing_in: false, vendor_domains: ['eemercantile.co'],
+    doc_kinds: ['quote', 'invoice'], auto_create: true, suggested_domains: {}, fetched_through: null, running: false, last_run: null,
+    last_fetch_at: yesterday, morning: { called_at: '2026-11-10T17:50:00Z', status: 401, error: '{"code":"UNAUTHORIZED_NO_AUTH_HEADER","message":"Missing authorization header"}' }, ...over });
+  const a = morningPullAlert(st(), at('2026-11-10T18:05:00Z'));
+  check('the alert says it did not read today, when it last did, and why (the refused call)', !!a && /hasn't read today's mail/.test(a.title)
+    && /Last read Nov 9, 11:34 AM/.test(a.sub) && /refused \(401: .*Missing authorization header/.test(a.sub) && /every 10 minutes until 2 pm/.test(a.sub), a);
+  check('after 2 pm it says it will not try again today', /will not try again today/.test(morningPullAlert(st(), at('2026-11-10T22:30:00Z'))?.sub ?? ''));
+  check('an expired Outlook sign-in is the reason when the call went through', /reconnect it in the Inbox/.test(morningPullAlert(st({ morning: { called_at: null, status: 202, error: null },
+    last_run: { trigger: 'morning', started_at: 'x', messages: 0, new_pdfs: 0, read: 0, applied: 0, pending: 0, ignored: 0, failed: 0, error: 'expired', reconnect: true } }), at('2026-11-10T18:05:00Z'))?.sub ?? ''));
+  check('no alert: read today, Outlook not connected, or before 10:00', morningPullAlert(st({ last_fetch_at: '2026-11-10T17:01:00Z' }), at('2026-11-10T18:05:00Z')) === null
+    && morningPullAlert(st({ connected: false }), at('2026-11-10T18:05:00Z')) === null && morningPullAlert(st(), at('2026-11-10T17:40:00Z')) === null && morningPullAlert(null) === null);
+
+  const fn = sibling('supabase', 'functions', 'kount-order-mail', 'index.ts');
+  const mig = sibling('supabase', 'migrations', '0159_kount_ot_mail_morning_watch.sql');
+  const cfg = sibling('supabase', 'config.toml');
+  if (fn && mig && cfg) {
+    check('the function pulls on schedule only while today is unread (scheduledPullDue), not just in the 9 hour', /if \(!scheduledPullDue\(acctNow\?\.last_fetch_at \?\? null\)\)/.test(fn) && !/laParts\(\)\.hour !== 9/.test(fn));
+    check('a pull that read the mail stamps last_fetch_at (not a continuation)', /await fetchPhase\(sb, acct, stats, kinds\);\s*\/\/[^\n]*\n\s*await sb\.from\('kount_ot_mail_account'\)\.update\(\{ last_fetch_at: nowIso\(\) \}\)/.test(fn));
+    check('its own continuation call carries the anon key', /'x-kount-cron': String\(secret \?\? ''\), \.\.\.\(SUPABASE_ANON_KEY \? \{ Authorization: `Bearer \$\{SUPABASE_ANON_KEY\}` \}/.test(fn));
+    check('0159: every 10 min 16-21 UTC, only while unread, signed with the anon key, call id kept', mig.includes("schedule := '*/10 16-21 * * *'") && mig.includes("name = 'kount_edge_anon_jwt'")
+      && mig.includes('set morning_request_id = net.http_post(') && /last_fetch_at < \(date_trunc\('day', now\(\) at time zone 'America\/Los_Angeles'\) \+ interval '9 hours'\)/.test(mig)
+      && mig.includes("between 9 and 13"));
+    check('0159: the status says when the mail was read and what the job got back', mig.includes("'last_fetch_at', a.last_fetch_at") && mig.includes("'morning', jsonb_build_object("));
+    check('config.toml pins verify_jwt = false for the mail pull (a plain deploy keeps it)', /\[functions\.kount-order-mail\][^[]*verify_jwt = false/.test(cfg) && /\[functions\.ask-ai\][^[]*verify_jwt = true/.test(cfg));
   }
 }
 
