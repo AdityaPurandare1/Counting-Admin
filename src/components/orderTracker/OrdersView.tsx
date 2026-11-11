@@ -3,7 +3,7 @@ import {
   ORDER_SORTS, awaitingApproval, filterByVenue, headlineStatus, isLate, isoDay, lineTotal, orderState, orderVenueIds, receivedForLine, sortOrders, MULTIPLE_VENUES,
   type OrderSort, type OrderState, type OtDocument, type OtLine,
 } from '@/lib/orderTracker';
-import { FULFILLMENT, fulfillmentOf, fulfillmentStep, lastUpdate, nextEta, orderCategory, paymentOf, stubsToGet, timeAgo, type PaymentView } from '@/lib/orderTrackerView';
+import { FULFILLMENT, fulfillmentOf, fulfillmentStep, lastUpdate, nextEta, orderCategory, paymentOf, stubsToGet, stubsToSend, timeAgo, type PaymentView } from '@/lib/orderTrackerView';
 import type { TrackerData } from '@/lib/orderTrackerData';
 import { orderTiming, timingText } from '@/lib/leadTime';
 import { quoteBibleChecks, quoteBibleSummary } from '@/lib/quoteBible';
@@ -63,6 +63,12 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
     for (const n of stubsToGet(data.orders, data.lines, data.documents).needs) m.set(n.orderId, (m.get(n.orderId) ?? 0) + 1);
     return m;
   }, [data.orders, data.lines, data.documents]);
+  // v1.14 recently paid, stub not sent to the vendor yet: per order, overdue or not
+  const stubSend = useMemo(() => {
+    const m = new Map<string, boolean>();
+    for (const g of stubsToSend(data.orders, data.lines, data.documents, today)) for (const it of g.items) m.set(it.orderId, (m.get(it.orderId) ?? false) || g.overdue);
+    return m;
+  }, [data.orders, data.lines, data.documents, today]);
   // the venues orders are for, by name (an order serving several counts for each)
   const venues = useMemo(() => [...new Set(data.orders.flatMap(o => orderVenueIds(o, linesByOrder.get(o.id) ?? [])))]
     .map(id => ({ id, name: venueName(id) })).sort((a, b) => a.name.localeCompare(b.name)), [data.orders, linesByOrder, venueName]);
@@ -159,7 +165,9 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
                       <td><div className="t1">{o.vendor_name}</div><div className="t2 mono">{o.order_number || '—'}</div>
                         {toApprove > 0 && <span className="ot-pill warn" title="Quoted, and no e-mail to the vendor approving it yet">Approve quote</span>}
                         {bible && (bible.ok ? <span className="ot-pill ok" title={quoteBibleSummary(bible, venueName).sub}>In bible</span>
-                          : bible.off.some(x => x.state !== 'no-bible') && <span className="ot-pill warn" title={quoteBibleSummary(bible, venueName).sub}>Check bible</span>)}</td>
+                          : bible.off.some(x => x.state !== 'no-bible') && <span className="ot-pill warn" title={quoteBibleSummary(bible, venueName).sub}>Check bible</span>)}
+                        {stubSend.has(o.id) && <span className={`ot-pill ${stubSend.get(o.id) ? 'crit' : 'warn'}`}
+                          title="Paid recently: send the check stub to the vendor (To send)">{stubSend.get(o.id) ? 'Stub overdue' : 'Send stub'}</span>}</td>
                       <td className="venue">{o.venue_id === MULTIPLE_VENUES ? vIds.map(v => venueName(v)).join(', ') : o.venue_id ? venueName(o.venue_id) : 'Warehouse stock'}
                         <div className="t2">{[orderCategory(o.order_number), st !== 'open' && st,
                           o.deliver_to === 'venue' && ls.some(l => l.deliver_to === 'warehouse' && l.status !== 'CANCELLED') && 'sea part to the warehouse'].filter(Boolean).join(' · ') || (o.deliver_to === 'warehouse' ? 'to the warehouse' : 'to the venue')}</div></td>

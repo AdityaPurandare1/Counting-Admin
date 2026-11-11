@@ -8,7 +8,7 @@ import {
 } from '@/lib/orderTracker';
 import { loadTracker, type TrackerData } from '@/lib/orderTrackerData';
 import { buildReportWorkbook, reportFileName, reportVenues } from '@/lib/orderTrackerReport';
-import { attentionItems, stubsToGet, trackerKpis, type Attention } from '@/lib/orderTrackerView';
+import { attentionItems, stubsToGet, stubsToSend, trackerKpis, type Attention } from '@/lib/orderTrackerView';
 import { median, spanText, vendorLeadTimes } from '@/lib/leadTime';
 import { OrdersView, type OrdersPreset } from '@/components/orderTracker/OrdersView';
 import { ToSend } from '@/components/orderTracker/ToSend';
@@ -84,7 +84,8 @@ export function OrderTracker({ user, today: todayProp, load = loadTracker, loadM
   const toSendCount = useMemo(() => {
     if (!data) return 0;
     const d = { ...data, followups: data.followups ?? [] };
-    return paymentRequestsDue(d, venueName, user.email).length + followupsDue(d, inbox, today, venueName, user.email).filter(f => f.to === 'vendor').length;
+    return paymentRequestsDue(d, venueName, user.email).length + followupsDue(d, inbox, today, venueName, user.email).filter(f => f.to === 'vendor').length
+      + stubsToSend(data.orders, data.lines, data.documents, today).length;   // v1.14 check stubs to send
   }, [data, inbox, today, venueName, user.email]);
 
   const downloadReport = async () => {

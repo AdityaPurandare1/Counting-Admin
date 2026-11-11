@@ -119,7 +119,7 @@ export function trackerKpis(data: Data, today: string): TrackerKpis {
   };
 }
 
-export type AttentionAct = { kind: 'order'; id: string } | { kind: 'tab'; tab: 'inbox' | 'warehouse' | 'overview' | 'bibles' };
+export type AttentionAct = { kind: 'order'; id: string } | { kind: 'tab'; tab: 'inbox' | 'warehouse' | 'overview' | 'bibles' | 'tosend' };
 export interface Attention { sev: 'crit' | 'warn' | 'info'; title: string; sub: string; act: AttentionAct }
 export const CHASE_DAYS = 14;
 
@@ -169,7 +169,21 @@ export function attentionItems(data: Data, today: string, inboxWaiting: number, 
   const deliveries = data.lines.filter(l => !l.stock_draw && !drawn.has(l.id) && orders.has(l.order_id) && isStorageLine(l, orders.get(l.order_id)!.vendor_name)).length;
   if (deliveries) out.push({ sev: 'info', title: `${deliveries} E&E deliver${deliveries > 1 ? 'ies' : 'y'} to put in stock`, sub: 'pick the item for each in Warehouse', act: { kind: 'tab', tab: 'warehouse' } });
   if (data.documents) {
-    const { needs, groups } = stubsToGet(data.orders, data.lines, data.documents);
+    // v1.14: recently paid invoices whose stub has not gone to the vendor — one item per payment run (Thu-Fri)
+    const sends = stubsToSend(data.orders, data.lines, data.documents, today);
+    const runs = new Map<string, StubToSend[]>();
+    for (const g of sends) (runs.get(g.run.key) ?? runs.set(g.run.key, []).get(g.run.key)!).push(g);
+    for (const gs of runs.values()) {
+      const late = gs.filter(g => g.overdue).length;
+      const n = gs.reduce((t, g) => t + g.items.length, 0);
+      out.push({ sev: late ? 'crit' : 'warn', title: `Send the check stub${gs.length > 1 ? 's' : ''}: ${gs[0].run.label}`,
+        sub: `${gs.map(g => `${g.vendor} (${g.items.map(i => i.orderNumber ?? i.invoice).join(', ')})`).join(' · ')} · ${n} invoice${n > 1 ? 's' : ''}`
+          + (late ? ` · overdue since ${gs[0].dueOn}` : ` · send by ${gs[0].dueOn}`), act: { kind: 'tab', tab: 'tosend' } });
+    }
+    const recent = new Set(sends.flatMap(g => g.items.map(i => `${i.orderId}|${i.invoice}`)));
+    const all = stubsToGet(data.orders, data.lines, data.documents);
+    const needs = all.needs.filter(nd => !recent.has(`${nd.orderId}|${nd.invoice}`));
+    const groups = all.groups.map(g => ({ ...g, items: g.items.filter(nd => !recent.has(`${nd.orderId}|${nd.invoice}`)) })).filter(g => g.items.length);
     if (needs.length) out.push({ sev: 'info', title: `${needs.length} paid invoice${needs.length > 1 ? 's have' : ' has'} no check stub`,
       sub: `${groups.filter(g => g.payments.length).length} R365 payment${groups.filter(g => g.payments.length).length === 1 ? '' : 's'} to reprint — see Overview`, act: { kind: 'tab', tab: 'overview' } });
   }
@@ -374,4 +388,98 @@ export function stubsToGet(orders: OtOrder[], lines: OtLine[], documents: OtDocu
   const sorted = [...groups.values()].sort((a, b) => (!a.key ? 1 : !b.key ? -1 : (b.payments.slice(-1)[0]?.date ?? '').localeCompare(a.payments.slice(-1)[0]?.date ?? '')));
   for (const g of sorted) g.items.sort((a, b) => a.invoice.localeCompare(b.invoice));
   return { needs, groups: sorted };
+}
+
+/* ── v1.14 check stubs to SEND: recently paid, by payment run ────────────────────────
+ * The user: "when the status changes to paid for any order ... flagged as recently paid ... so that I can pull the
+ * check stub and send it to the vendor on time" and "things are sent for payment every thursday and friday".
+ * An invoice paid in the last RECENT_PAID_DAYS whose stub has not gone to the vendor: grouped per vendor and R365
+ * payment (one stub e-mail each), labelled by its payment run (that week's Thu-Fri), due the next business day
+ * after the run. "Sent" = a stub on the order that came from an e-mail we sent (the mail pull files those); a stub
+ * attached by hand is on file but not sent. */
+
+export const RECENT_PAID_DAYS = 21;
+const WEEKDAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const dow = (day: string) => new Date(`${day}T12:00:00Z`).getUTCDay();
+const addD = (day: string, n: number) => { const d = new Date(`${day}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+const md = (day: string) => `${WEEKDAY[dow(day)]} ${Number(day.slice(5, 7))}/${Number(day.slice(8, 10))}`;
+/** The next weekday after `day`. */
+export const nextBusinessDay = (day: string) => { let d = addD(day, 1); while (dow(d) === 0 || dow(d) === 6) d = addD(d, 1); return d; };
+
+/** The payment run a payment belongs to: that week's Thursday-Friday run (paid Thu or Fri), else its own day. */
+export function paymentRun(day: string): { key: string; label: string; endsOn: string } {
+  const w = dow(day);
+  if (w === 4 || w === 5) {
+    const thu = w === 4 ? day : addD(day, -1);
+    return { key: `run:${thu}`, label: `${md(thu)} – ${md(addD(thu, 1))} payment run`, endsOn: addD(thu, 1) };
+  }
+  return { key: `day:${day}`, label: `paid ${md(day)}`, endsOn: day };
+}
+
+export interface StubToSend {
+  key: string;
+  vendor: string;
+  /** the R365 payment(s) that paid it; empty = paid, not matched to an R365 payment */
+  payments: R365Payment[];
+  paidOn: string;
+  run: { key: string; label: string; endsOn: string };
+  /** send it by this day (the next business day after the run); overdue after it */
+  dueOn: string;
+  overdue: boolean;
+  /** get = no stub on file yet (reprint it in R365) · send = on file, not sent to the vendor */
+  stage: 'get' | 'send';
+  items: Array<{ orderId: string; orderNumber: string | null; invoice: string; amount: number }>;
+  total: number;
+  /** the vendor's invoice e-mail to reply to (its id), when the invoice came by e-mail */
+  replyTo: string | null;
+}
+
+export function stubsToSend(orders: OtOrder[], lines: OtLine[], documents: OtDocument[], today: string, days = RECENT_PAID_DAYS): StubToSend[] {
+  const live = new Map(orders.filter(o => !o.archived_at).map(o => [o.id, o]));
+  const onFile = new Set<string>(), sent = new Set<string>();
+  for (const d of documents) if (d.kind === 'payment' && d.order_id) for (const t of stubInvoices(d)) {
+    onFile.add(`${d.order_id}|${t}`);
+    if ((d as OtDocument & { source_message_id?: string | null }).source_message_id) sent.add(`${d.order_id}|${t}`);
+  }
+  const byInvoice = new Map<string, OtLine[]>();
+  for (const l of lines) {
+    if (!l.invoice_number || l.status === 'CANCELLED' || !live.has(l.order_id)) continue;
+    const k = `${l.order_id}|${invoiceToken(l.invoice_number)}`;
+    (byInvoice.get(k) ?? byInvoice.set(k, []).get(k)!).push(l);
+  }
+  const groups = new Map<string, StubToSend>();
+  for (const [k, ls] of byInvoice) {
+    if (sent.has(k) || !ls.every(l => statusRank(l.status) >= statusRank('PAID'))) continue;
+    const o = live.get(ls[0].order_id)!;
+    const pays = new Map<string, R365Payment>();
+    for (const l of ls) for (const p of l.r365_payments ?? []) pays.set(p.number, { number: p.number, date: p.date, amount: Number(p.amount) || 0 });
+    // paid on: R365's payment day; else the day a line was MARKED Paid — not a line that arrived already Paid (the
+    // 11/3 sheet import: its status time is its creation time, which says nothing about when it was paid)
+    const changedToPaid = (l: OtLine) => {
+      const created = (l as OtLine & { created_at?: string }).created_at;
+      return !created || Math.abs(Date.parse(l.status_at) - Date.parse(created)) > 3600_000;
+    };
+    const paidOn = [...pays.values()].map(p => p.date.slice(0, 10)).sort().pop()
+      ?? ls.filter(l => l.status === 'PAID' && changedToPaid(l)).map(l => l.status_at.slice(0, 10)).sort().pop() ?? null;
+    if (!paidOn || paidOn > today || paidOn < addD(today, -days)) continue;
+    const payments = [...pays.values()].sort((a, b) => a.date.localeCompare(b.date));
+    const vendorKey = o.vendor_name.toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const key = `${vendorKey}|${payments.map(p => p.number).join('+') || `order:${o.id}`}`;
+    const run = paymentRun(paidOn);
+    const g = groups.get(key) ?? groups.set(key, { key, vendor: o.vendor_name, payments, paidOn, run, dueOn: nextBusinessDay(run.endsOn), overdue: false,
+      stage: 'send', items: [], total: 0, replyTo: null }).get(key)!;
+    const amount = ls.reduce((t, l) => t + lineTotal(l), 0);
+    g.items.push({ orderId: o.id, orderNumber: o.order_number, invoice: k.split('|')[1], amount });
+    g.total += amount;
+    if (!onFile.has(k)) g.stage = 'get';
+    if (paidOn > g.paidOn) { g.paidOn = paidOn; g.run = paymentRun(paidOn); g.dueOn = nextBusinessDay(g.run.endsOn); }
+    if (!g.replyTo) {
+      const inv = documents.find(d => d.kind === 'invoice' && d.order_id === o.id && invoiceToken(d.doc_number) === k.split('|')[1]
+        && (d as OtDocument & { source_message_id?: string | null }).source_message_id);
+      g.replyTo = (inv as (OtDocument & { source_message_id?: string | null }) | undefined)?.source_message_id ?? null;
+    }
+  }
+  const out = [...groups.values()];
+  for (const g of out) { g.overdue = today > g.dueOn; g.items.sort((a, b) => a.invoice.localeCompare(b.invoice)); g.total = Math.round(g.total * 100) / 100; }
+  return out.sort((a, b) => b.paidOn.localeCompare(a.paidOn) || a.vendor.localeCompare(b.vendor));
 }

@@ -960,7 +960,11 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
     groups.length === 2 && groups[0].key === 'ACH - 24567' && groups[0].items.map(i => i.orderNumber).sort().join() === 'CUS-0041,OSE-0035' && groups[1].key === '' && groups[1].items[0].invoice === 'INV-2026-875132', groups);
   check('stubs: the invoice amount is its lines (paid, delivered alike)', needs.find(n => n.invoice === 'INV-2026-418553')?.amount === 350);
   const att = attentionItems({ orders: [a, b, c, old], lines: ls, items: [], moves: [], documents: docs }, '2026-11-03', 0, x => '$' + x);
-  check('bell: "N paid invoices have no check stub" → Overview', att.some(x => x.title === '3 paid invoices have no check stub' && x.act.kind === 'tab' && (x.act as { tab: string }).tab === 'overview' && /1 R365 payment to reprint/.test(x.sub)), att);
+  // v1.14: paid in the last 21 days (the 10/22 ACH) -> "Send the check stub" by payment run (overdue: due Mon 10/26);
+  // the older, unmatched one stays in "no check stub" -> Overview
+  check('bell: recently paid -> "Send the check stub" (its Thu-Fri run, overdue); older -> "N paid invoices have no check stub" → Overview',
+    att.some(x => x.sev === 'crit' && x.title === 'Send the check stub: Thu 10/22 – Fri 10/23 payment run' && /OSE-0035/.test(x.sub) && /CUS-0041/.test(x.sub))
+    && att.some(x => x.title === '1 paid invoice has no check stub' && x.act.kind === 'tab' && (x.act as { tab: string }).tab === 'overview'), att);
   const fn = sibling('supabase', 'functions', 'kount-order-mail', 'index.ts');
   if (fn) check('pull: each paid line keeps the R365 payment that paid it, lines past Paid too',
     /r365_payments: refs/.test(fn) && /\.in\('status', PAID_ON\)\.is\('r365_payments', null\)/.test(fn));
