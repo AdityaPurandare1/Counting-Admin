@@ -62,10 +62,13 @@ export function parseAddresses(text: string): { ok: string[]; bad: string[] } {
   return { ok: [...new Set(parts.filter(p => EMAIL.test(p)).map(p => p.toLowerCase()))], bad: parts.filter(p => !EMAIL.test(p)) };
 }
 
-/** What the tracker said when it could not send, for the person. */
-export function sendFallbackText(r: { reason?: string; mailbox?: string | null; detail?: string | null }): string {
-  if (r.reason === 'not_granted') return 'Sending from the tracker is waiting on IT (the Order Tracker app needs Microsoft Mail.Send). Open it in Outlook and send it there — the 9 o\'clock pull will mark the quote approved.';
-  if (r.reason === 'not_owner') return `Only ${r.mailbox ?? 'the connected mailbox'}'s owner sends from the tracker. Open it in your Outlook and send it there.`;
-  if (r.reason === 'not_connected') return 'Outlook is not connected (Inbox). Open it in Outlook and send it there.';
-  return `Not sent${r.detail ? `: ${r.detail}` : ''}. Open it in Outlook and send it there.`;
+/** What the tracker said when it could not send, for the person; `thread` = the vendor's quote e-mail can be
+ *  opened in Outlook (v1.12 Reply in Outlook keeps the approval in its thread). */
+export function sendFallbackText(r: { reason?: string; mailbox?: string | null; detail?: string | null }, thread = false): string {
+  const how = thread ? 'Use Reply in Outlook: it opens the vendor\'s quote e-mail with the message copied, so it stays in the thread.'
+    : 'Open it in Outlook and send it there.';
+  if (r.reason === 'not_granted') return `Sending from the tracker is waiting on IT (the Order Tracker app needs Microsoft Mail.Send). ${how} The 9 o'clock pull will mark the quote approved.`;
+  if (r.reason === 'not_owner') return `Only ${r.mailbox ?? 'the connected mailbox'}'s owner sends from the tracker. Open it in your own Outlook and send it there.`;
+  if (r.reason === 'not_connected') return `Outlook is not connected (Inbox). ${how}`;
+  return `Not sent${r.detail ? `: ${r.detail}` : ''}. ${how}`;
 }

@@ -95,5 +95,25 @@ check('the e-mail: Send approval / Open in Outlook instead / Cancel; Send calls 
 check('the tracker hands the Inbox and who is signed in down to the order panel', /mails=\{inbox\} me=\{\{ email: user\.email, name: user\.name \}\}/.test(src('src/screens/OrderTracker.tsx'))
   && /mails=\{mails\} me=\{me\}/.test(src('src/components/orderTracker/OrdersView.tsx')));
 
+// ── v1.12 Reply in Outlook: "Can it go to the thread some how ?" (without Mail.Send) ──
+{
+  check('no send permission + the quote came by e-mail: points to Reply in Outlook (it stays in the thread)',
+    /Use Reply in Outlook: it opens the vendor's quote e-mail with the message copied, so it stays in the thread\./.test(sendFallbackText({ reason: 'not_granted' }, true))
+    && /Open it in Outlook and send it there\./.test(sendFallbackText({ reason: 'not_granted' }, false)));
+  const dlgSrc = readFileSync(join(process.cwd(), 'src/components/orderTracker/QuoteApprovalDialog.tsx'), 'utf8');
+  check('the dialog finds the quote e-mail when it opens (so the click can open it at once)', /messageLink\(d\.replyTo\)\.then/.test(dlgSrc) && /if \(d\.replyTo\) \{/.test(dlgSrc));
+  check('Reply in Outlook: copies the message, opens the quote e-mail in a new tab, says what to do',
+    /await navigator\.clipboard\.writeText\(text\)/.test(dlgSrc) && /window\.open\(link\.url, '_blank', 'noopener'\)/.test(dlgSrc) && /click Reply, paste \(Ctrl\+V\) and Send\. It stays in the thread/.test(dlgSrc));
+  check('a quote that came by e-mail offers Reply in Outlook and a new e-mail; one that did not, Open in Outlook',
+    />\s*Reply in Outlook<\/button>/.test(dlgSrc) && />New e-mail in Outlook<\/button>/.test(dlgSrc) && />Open in Outlook instead<\/button>/.test(dlgSrc));
+  const fn2 = sibling('supabase', 'functions', 'kount-order-mail', 'index.ts');
+  if (fn2) {
+    const blk = fn2.slice(fn2.indexOf("if (action === 'message_link')"), fn2.indexOf("if (action === 'approve_quote')"));
+    check('function message_link: only the mailbox\'s owner, read token only, just the webLink, only an Outlook address',
+      blk.length > 300 && /!== caller\.email\) return json\(200, \{ link: null, reason: 'not_owner'/.test(blk) && /refreshAccess\(String\(refresh\)\);/.test(blk) && !/SEND_SCOPE/.test(blk)
+      && /\?\$select=webLink`/.test(blk) && /\^https:\\\/\\\/outlook\\\.\(office365\|office\|live\)\\\.com\\\//.test(blk) && !/graphPost/.test(blk));
+  }
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

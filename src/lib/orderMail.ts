@@ -126,6 +126,10 @@ export const checkApprovals = () => invokeMail<{ approved: number; error: string
 /** v1.11: send the quote approval e-mail from the connected mailbox and stamp the lines approved. sent = false with a
  *  reason when the tracker can't send it (not_granted = IT has not given it Mail.Send; not_owner = not your mailbox;
  *  not_connected) — then it opens in Outlook instead. */
+/** v1.12: the vendor's e-mail in Outlook on the web (Reply there = in its thread); link null with a reason when
+ *  it can't be opened (not_owner: it is someone else's mailbox; gone: no longer in the mailbox). */
+export const messageLink = (message_id: string) =>
+  invokeMail<{ link: string | null; reason?: 'not_owner' | 'not_connected' | 'gone'; mailbox?: string | null }>({ action: 'message_link', message_id });
 export const approveQuote = (p: { order_id: string; line_ids: string[]; quote_number: string | null; to: string[]; cc: string[];
   subject: string; text: string; reply_to: string | null }) =>
   invokeMail<{ sent: boolean; approved?: number; reason?: 'not_granted' | 'not_owner' | 'not_connected'; mailbox?: string | null; detail?: string | null }>({ action: 'approve_quote', ...p });
