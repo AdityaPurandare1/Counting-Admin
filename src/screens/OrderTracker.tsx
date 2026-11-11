@@ -7,7 +7,7 @@ import {
   type OtLine,
 } from '@/lib/orderTracker';
 import { loadTracker, type TrackerData } from '@/lib/orderTrackerData';
-import { buildReportWorkbook } from '@/lib/orderTrackerReport';
+import { buildReportWorkbook, reportFileName, reportVenues } from '@/lib/orderTrackerReport';
 import { attentionItems, stubsToGet, trackerKpis, type Attention } from '@/lib/orderTrackerView';
 import { median, spanText, vendorLeadTimes } from '@/lib/leadTime';
 import { OrdersView, type OrdersPreset } from '@/components/orderTracker/OrdersView';
@@ -58,6 +58,8 @@ export function OrderTracker({ user, today: todayProp, load = loadTracker, loadM
   const [focusOrder, setFocusOrder] = useState<string | null>(null);
   const [reportBusy, setReportBusy] = useState(false);
   const [includeClosed, setIncludeClosed] = useState(true);
+  // v1.10: the export for one venue ('' = every venue)
+  const [reportVenue, setReportVenue] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
   const seq = useRef(0);
 
@@ -77,6 +79,7 @@ export function OrderTracker({ user, today: todayProp, load = loadTracker, loadM
   const waiting = inboxGroups(inbox).waiting.length;
 
   const venueName = useCallback((id: string | null) => orderVenueName(id, VENUES), []);
+  const exportVenues = useMemo(() => (data ? reportVenues(data.orders, data.lines, venueName) : []), [data, venueName]);
   // v1.08 To send (0153): payment requests + vendor follow-ups waiting (the tab's count)
   const toSendCount = useMemo(() => {
     if (!data) return 0;
@@ -88,8 +91,8 @@ export function OrderTracker({ user, today: todayProp, load = loadTracker, loadM
     if (!data) return;
     setReportBusy(true);
     try {
-      const buf = await buildReportWorkbook({ ...data, venueName, today, includeClosed, tracking: data.tracking });
-      download(`Order tracker report ${today}.xlsx`, buf, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      const buf = await buildReportWorkbook({ ...data, venueName, today, includeClosed, tracking: data.tracking, venueId: reportVenue || null });
+      download(reportFileName(today, reportVenue ? venueName(reportVenue) : null), buf, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     } catch (e) {
       setError('Report not built: ' + (e instanceof Error ? e.message : String(e)));
     } finally { setReportBusy(false); }
@@ -142,7 +145,13 @@ export function OrderTracker({ user, today: todayProp, load = loadTracker, loadM
               </div>
             )}
           </div>
-          <button type="button" className="ot-btn" onClick={() => void downloadReport()} disabled={!data || reportBusy} title={includeClosed ? 'Every order, completed ones too' : 'Open orders only'}>
+          <select className="ot-inp" style={{ width: 'auto', maxWidth: 190 }} value={reportVenue} onChange={e => setReportVenue(e.target.value)} aria-label="Export for venue"
+            title="Export one venue's orders (of an order for several venues, only its lines)">
+            <option value="">All venues</option>
+            {exportVenues.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+          </select>
+          <button type="button" className="ot-btn" onClick={() => void downloadReport()} disabled={!data || reportBusy}
+            title={`${reportVenue ? `${venueName(reportVenue)}'s orders` : 'Every venue'}: ${includeClosed ? 'open and completed' : 'open orders only (in process)'}`}>
             <Icon name="download" />{reportBusy ? 'Building…' : 'Export to Excel'}
           </button>
           <label className="ot-check" title="Include completed orders in the export"><input type="checkbox" checked={includeClosed} onChange={e => setIncludeClosed(e.target.checked)} />with completed</label>

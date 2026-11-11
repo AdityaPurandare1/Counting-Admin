@@ -14,10 +14,10 @@ import {
   laClock, morningFetchDone, scheduledPullDue, morningPullMissed,
   awaitingApproval, approvalPhrase, replyText, findApproval, planQuoteApprovals, ordersAwaitingApproval, quoteKey, searchableQuote,
   type ReadDoc, type MailSource, type MailMessage,
-  type OtItem, type OtLine, type OtMove, type OtOrder, type OtDocument, type DocLine, type DocReview,
+  type OtItem, type OtLine, type OtMove, type OtOrder, type OtDocument, type OtTracking, type DocLine, type DocReview,
 } from '../src/lib/orderTracker';
 import { pricePoints, histories, priceMoves, quoteChecks, invoiceRegister, spendByMonth, isInvoiced, priceMovesCsv } from '../src/lib/orderPrices';
-import { buildReportRows } from '../src/lib/orderTrackerReport';
+import { buildReportRows, reportFileName, reportVenues } from '../src/lib/orderTrackerReport';
 import { parseCsv, tidyRows, cellText, sheetsFromXlsx, sheetsFromFile } from '../src/lib/sheetPreview';
 import { colWidthPx, rowHeightPx, applyTint, themePalette, excelColor, cellStyle, displayText, safeLink, richImageMap, sheetVmCells, sheetFiles, loadBible, bibleFromCsv, bibleTextIndex, bibleItemColumn } from '../src/lib/bibleRender';
 import { questionTerms, buildOrdersContext, asksVariance, ordersBudget, shortUrl } from '../src/lib/askAiOrders';
@@ -402,6 +402,58 @@ check('"other" documents change nothing', statusAfterDocument('ORDERED', 'other'
   // prepaid: a SHIPPED line has been invoiced and paid, so it is spend too (Aug, from its status date)
   check('report: spend sheet from invoiced lines (shipped = invoiced first)', all.spend.length === 3 && all.spend.some(r => r[0] === '2026-09') && all.spend.some(r => r[0] === '2026-08'), all.spend);
   check('report: orders sheet has the tracking column', all.orders[0].includes('Tracking #s'));
+}
+
+// ── v1.10 the export for one venue: "i cant pull a report per venue for the orders currently in process" ──
+{
+  const MV = 'x:Multiple venues';
+  const names: Record<string, string> = { v1: 'Delilah LA', v2: 'Delilah Miami' };
+  const vn = (v: string | null) => (v ? names[v] ?? v : 'Warehouse');
+  const la = order({ order_number: 'OSE-LA', venue_id: 'v1', deliver_to: 'venue' });
+  const mia = order({ order_number: 'OSE-MIA', venue_id: 'v2', deliver_to: 'venue' });
+  const whs = order({ order_number: 'WHS-1', venue_id: null });
+  const split = order({ order_number: 'CUS-0019', venue_id: MV });          // matchbooks for LA and Miami (11/3)
+  const half = order({ order_number: 'CUS-0020', venue_id: MV });           // LA received, Miami still open
+  const ls = [
+    line(la, { qty: 5, unit_price: 10, status: 'ORDERED' }), line(la, { qty: 2, unit_price: 3, status: 'ORDERED' }),
+    line(mia, { qty: 1, unit_price: 9, status: 'ORDERED' }), line(whs, { qty: 4, unit_price: 1, status: 'ORDERED' }),
+    line(split, { venue_id: 'v1', qty: 10, unit_price: 2, status: 'SHIPPED', invoice_number: 'INV-LA', tracking_number: '1ZLA' }),
+    line(split, { venue_id: 'v2', qty: 5, unit_price: 3, status: 'RECEIVED', invoice_number: 'INV-MIA', tracking_number: '1ZMIA' }),
+    line(half, { venue_id: 'v1', status: 'RECEIVED' }), line(half, { venue_id: 'v2', status: 'ORDERED' }),
+  ];
+  const tracking = [{ id: 't1', order_id: split.id, tracking_number: '1ZWHOLE', carrier: null, source: 'email', note: null, created_at: '2026-11-03T00:00:00Z' },
+                    { id: 't2', order_id: la.id, tracking_number: '1ZDLA', carrier: null, source: 'email', note: null, created_at: '2026-11-03T00:00:00Z' }] as OtTracking[];
+  const base = { items: [], orders: [la, mia, whs, split, half], lines: ls, moves: [], venueName: vn, today: '2026-11-11', tracking };
+  const laOpen = buildReportRows({ ...base, includeClosed: false, venueId: 'v1' });
+  const laAll = buildReportRows({ ...base, includeClosed: true, venueId: 'v1' });
+  const miaOpen = buildReportRows({ ...base, includeClosed: false, venueId: 'v2' });
+  const every = buildReportRows({ ...base, includeClosed: true });
+  const row = (r: ReturnType<typeof buildReportRows>, n: string) => r.orders.find(x => x[0] === n);
+  check('venue export: only its orders (not another venue\'s, not warehouse stock)', laAll.orders.slice(1).map(r => r[0]).sort().join() === 'CUS-0019,CUS-0020,OSE-LA', laAll.orders.map(r => r[0]));
+  check('venue export: an order for several venues is cut to its lines — For, line count, total, invoice #',
+    row(laAll, 'CUS-0019')?.[2] === 'Delilah LA' && row(laAll, 'CUS-0019')?.[8] === 1 && row(laAll, 'CUS-0019')?.[9] === 20 && row(laAll, 'CUS-0019')?.[11] === 'INV-LA', row(laAll, 'CUS-0019'));
+  check('venue export: a shared order shows its own lines\' tracking, never another venue\'s or the whole order\'s',
+    row(laAll, 'CUS-0019')?.[12] === '1ZLA', row(laAll, 'CUS-0019')?.[12]);
+  check('venue export: a one-venue order keeps its order tracking', String(row(laAll, 'OSE-LA')?.[12]).includes('1ZDLA'));
+  check('venue export: the line sheet holds only that venue\'s lines', laAll.lines.length - 1 === 4 && laAll.lines.slice(1).every(r => r[2] === 'Delilah LA'), laAll.lines.map(r => r[2]));
+  check('in process for a venue = by its lines: CUS-0020 is done for LA, still open for Miami',
+    !row(laOpen, 'CUS-0020') && !!row(miaOpen, 'CUS-0020') && !!row(laOpen, 'CUS-0019') && !row(miaOpen, 'CUS-0019'), [laOpen.orders.map(r => r[0]), miaOpen.orders.map(r => r[0])]);
+  check('venue export summary: titled for the venue, says what it includes, no warehouse block',
+    laOpen.summary[0][0] === 'Order tracker report: Delilah LA' && laOpen.summary.some(r => r[0] === 'Venue' && r[1] === 'Delilah LA')
+    && laOpen.summary.some(r => r[0] === 'Includes' && r[1] === 'open orders only (in process)') && !laOpen.summary.some(r => r[0] === 'Warehouse items')
+    && every.summary.some(r => r[0] === 'Warehouse items') && every.summary[0][0] === 'Order tracker report', laOpen.summary);
+  const spendTotal = (r: ReturnType<typeof buildReportRows>) => r.spend.slice(1).reduce((t, x) => t + Number(x[x.length - 1] ?? 0), 0);
+  check('venue export: spend by month counts only its lines', spendTotal(laAll) > 0 && spendTotal(laAll) < spendTotal(every), [spendTotal(laAll), spendTotal(every)]);
+  check('every venue (no pick): unchanged — every order, the whole order\'s tracking', every.orders.length - 1 === 5 && String(row(every, 'CUS-0019')?.[12]).includes('1ZWHOLE'));
+  check('the picker lists the venues with orders, by name (no warehouse, no archived-only venue)',
+    reportVenues([...base.orders, order({ venue_id: 'v9', archived_at: 'x' })], ls, vn).map(v => v.name).join() === 'Delilah LA,Delilah Miami');
+  check('file name: per venue, characters Windows refuses taken out', reportFileName('2026-11-11') === 'Order tracker report 2026-11-11.xlsx'
+    && reportFileName('2026-11-11', 'Delilah LA') === 'Order tracker report - Delilah LA 2026-11-11.xlsx' && reportFileName('2026-11-11', 'A/B: C') === 'Order tracker report - A B C 2026-11-11.xlsx');
+  const scr = readFileSync(join(process.cwd(), 'src/screens/OrderTracker.tsx'), 'utf8');
+  const rep = readFileSync(join(process.cwd(), 'src/lib/orderTrackerReport.ts'), 'utf8');
+  check('the screen: a venue picker beside Export, passed to the workbook and the file name',
+    /aria-label="Export for venue"/.test(scr) && /venueId: reportVenue \|\| null/.test(scr) && /reportFileName\(today, reportVenue \? venueName\(reportVenue\) : null\)/.test(scr)
+    && /if \(!inp\.venueId\) add\('Warehouse', 'warehouse'\);/.test(rep));
 }
 
 // ── wiring ─────────────────────────────────────────────────────────────

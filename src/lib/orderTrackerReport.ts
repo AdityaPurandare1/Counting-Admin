@@ -1,12 +1,13 @@
 /* Order tracker report (v0.79) — the Excel workbook to share internally:
    every order and line with its status, what is held in the warehouse, and
-   invoiced spend by month. Rows are built by pure functions (tested); the
+   invoiced spend by month. v1.10: or one venue's — the user: "i cant pull a
+   report per venue for the orders currently in process". Rows are built by pure functions (tested); the
    workbook itself uses exceljs, lazy-loaded like the audit report so it stays
    out of the main bundle. */
 
 import type ExcelJSNS from 'exceljs';
 import {
-  STATUS_LABEL, headlineStatus, lineTotal, orderState, receivedForLine, stockRows,
+  MULTIPLE_VENUES, STATUS_LABEL, headlineStatus, lineTotal, orderState, orderVenueIds, receivedForLine, stockRows,
   type OtItem, type OtLine, type OtMove, type OtOrder, type OtTracking, type StockRow,
 } from './orderTracker';
 import { isInvoiced, pricePoints, spendByMonth } from './orderPrices';
@@ -20,6 +21,9 @@ export interface ReportInput {
   today: string;            // YYYY-MM-DD
   includeClosed: boolean;   // completed orders too (archived never)
   tracking?: OtTracking[];
+  /** v1.10: one venue only — its orders, and of an order for several venues only its lines (totals, status and
+   *  open / completed from those lines); no Warehouse sheet (that stock is not one venue's). null = every venue. */
+  venueId?: string | null;
 }
 
 export type Cell = string | number | null;
@@ -34,29 +38,57 @@ export interface ReportSheets {
 
 const r2 = (x: number) => Math.round(x * 100) / 100;
 
+/** The venue a line is for: its own (an order for several venues), else the order's; null = warehouse stock. */
+const lineVenue = (o: Pick<OtOrder, 'venue_id'>, l: Pick<OtLine, 'venue_id'>): string | null => {
+  const v = l.venue_id ?? o.venue_id;
+  return v && v !== MULTIPLE_VENUES ? v : null;
+};
+
+/** The venues the export can be for: every venue with an order that is not archived, by name. */
+export function reportVenues(orders: OtOrder[], lines: OtLine[], venueName: (id: string | null) => string): Array<{ id: string; name: string }> {
+  const byOrder = new Map<string, OtLine[]>();
+  for (const l of lines) (byOrder.get(l.order_id) ?? byOrder.set(l.order_id, []).get(l.order_id)!).push(l);
+  const ids = new Set(orders.filter(o => !o.archived_at).flatMap(o => orderVenueIds(o, byOrder.get(o.id) ?? [])));
+  return [...ids].map(id => ({ id, name: venueName(id) })).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** "Order tracker report 2026-11-11.xlsx" / "Order tracker report - Delilah LA 2026-11-11.xlsx" (no characters a file name can't hold). */
+export const reportFileName = (today: string, venue?: string | null) =>
+  `Order tracker report${venue ? ` - ${venue.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim()}` : ''} ${today}.xlsx`;
+
 export function buildReportRows(inp: ReportInput): ReportSheets {
   const linesByOrder = new Map<string, OtLine[]>();
   for (const l of inp.lines) (linesByOrder.get(l.order_id) ?? linesByOrder.set(l.order_id, []).get(l.order_id)!).push(l);
   const itemById = new Map(inp.items.map(i => [i.id, i]));
+  const forVenue = inp.venueId ?? null;
+  // one venue: only its lines of each order (an order for several venues is cut down to them)
+  const linesOf = (o: OtOrder) => {
+    const all = linesByOrder.get(o.id) ?? [];
+    return forVenue ? all.filter(l => lineVenue(o, l) === forVenue) : all;
+  };
 
   const shown = inp.orders
     .filter(o => !o.archived_at)
-    .filter(o => inp.includeClosed || orderState(o, linesByOrder.get(o.id) ?? []) === 'open')
+    .filter(o => !forVenue || orderVenueIds(o, linesByOrder.get(o.id) ?? []).includes(forVenue))
+    .filter(o => inp.includeClosed || orderState(o, linesOf(o)) === 'open')
     .sort((a, b) => (a.ordered_on ?? a.created_at).localeCompare(b.ordered_on ?? b.created_at));
 
   const orders: Cell[][] = [['Order #', 'Vendor', 'For', 'Deliver to', 'Ordered', 'Expected', 'Status', 'State', 'Lines', 'Order total', 'Invoiced', 'Invoice #s', 'Tracking #s', 'Last update']];
   const lines: Cell[][] = [['Order #', 'Vendor', 'Venue', 'Item', 'SKU', 'Qty', 'Unit', 'Unit price', 'Line total', 'Status', 'Status since',
     'Quote #', 'Invoice #', 'Invoice date', 'Tracking #', 'Expected', 'Received into warehouse']];
   for (const o of shown) {
-    const ls = (linesByOrder.get(o.id) ?? []).slice().sort((a, b) => a.sort - b.sort);
+    const ls = linesOf(o).slice().sort((a, b) => a.sort - b.sort);
+    // an order's tracking numbers are not per venue: for one venue of a shared order, only its own lines' numbers
+    const orderTracking = !forVenue || orderVenueIds(o, linesByOrder.get(o.id) ?? []).length <= 1
+      ? (inp.tracking ?? []).filter(t => t.order_id === o.id).map(t => t.tracking_number) : [];
     const head = headlineStatus(ls);
     const invoiced = ls.filter(isInvoiced);
     const invNums = [...new Set(ls.map(l => l.invoice_number).filter(Boolean))].join(', ');
     const lastUpdate = [o.updated_at, ...ls.map(l => l.status_at)].sort().slice(-1)[0] ?? '';
-    orders.push([o.order_number ?? '', o.vendor_name, inp.venueName(o.venue_id), o.deliver_to === 'warehouse' ? 'Warehouse' : 'Venue',
+    orders.push([o.order_number ?? '', o.vendor_name, inp.venueName(forVenue ?? o.venue_id), o.deliver_to === 'warehouse' ? 'Warehouse' : 'Venue',
       o.ordered_on ?? '', o.expected_on ?? '', head ? STATUS_LABEL[head] : '—', orderState(o, ls), ls.length,
       r2(ls.filter(l => l.status !== 'CANCELLED').reduce((s, l) => s + lineTotal(l), 0)), r2(invoiced.reduce((s, l) => s + lineTotal(l), 0)),
-      invNums, [...new Set([...(inp.tracking ?? []).filter(t => t.order_id === o.id).map(t => t.tracking_number),
+      invNums, [...new Set([...orderTracking,
         ...ls.map(l => l.tracking_number).filter((x): x is string => !!x)])].join(', '), lastUpdate.slice(0, 10)]);
     for (const l of ls) {
       const item = l.item_id ? itemById.get(l.item_id) : undefined;
@@ -78,26 +110,32 @@ export function buildReportRows(inp: ReportInput): ReportSheets {
       s.lastReceipt ? `${s.lastReceipt.qty} on ${s.lastReceipt.moved_on}` : '', s.state]);
   }
 
-  const pts = pricePoints(inp.lines, inp.orders, inp.items);
+  const orderById = new Map(inp.orders.map(o => [o.id, o]));
+  const spendLines = forVenue ? inp.lines.filter(l => { const o = orderById.get(l.order_id); return !!o && lineVenue(o, l) === forVenue; }) : inp.lines;
+  const pts = pricePoints(spendLines, inp.orders, inp.items);
   const sp = spendByMonth(pts, 'vendor');
   const spend: Cell[][] = [['Month', ...sp.groups, 'Total']];
   for (const m of sp.months) spend.push([m, ...sp.groups.map(g => r2(sp.cells[m]?.[g] ?? 0)), r2(sp.totals[m])]);
 
-  const open = shown.filter(o => orderState(o, linesByOrder.get(o.id) ?? []) === 'open');
-  const liveLines = shown.flatMap(o => linesByOrder.get(o.id) ?? []).filter(l => l.status !== 'CANCELLED');
+  const open = shown.filter(o => orderState(o, linesOf(o)) === 'open');
+  const liveLines = shown.flatMap(o => linesOf(o)).filter(l => l.status !== 'CANCELLED');
   const summary: Cell[][] = [
-    ['Order tracker report', ''],
+    [forVenue ? `Order tracker report: ${inp.venueName(forVenue)}` : 'Order tracker report', ''],
     ['Generated', inp.today],
+    ...(forVenue ? [['Venue', inp.venueName(forVenue)] as Cell[], ['Orders for several venues', 'only this venue\'s lines'] as Cell[]] : []),
+    ['Includes', inp.includeClosed ? 'open and completed orders' : 'open orders only (in process)'],
     ['Orders in this report', shown.length],
     ['Open orders', open.length],
     ['', ''],
     ['Lines by status', ''],
     ...(Object.keys(STATUS_LABEL) as Array<keyof typeof STATUS_LABEL>).filter(s => s !== 'CANCELLED')
       .map(s => [STATUS_LABEL[s], liveLines.filter(l => l.status === s).length] as Cell[]),
-    ['', ''],
-    ['Warehouse items', stock.length],
-    ['Reorder now', stock.filter(s => s.state === 'reorder now').length],
-    ['Reorder within 30 days', stock.filter(s => s.state === 'reorder soon').length],
+    ...(forVenue ? [] : [
+      ['', ''] as Cell[],
+      ['Warehouse items', stock.length] as Cell[],
+      ['Reorder now', stock.filter(s => s.state === 'reorder now').length] as Cell[],
+      ['Reorder within 30 days', stock.filter(s => s.state === 'reorder soon').length] as Cell[],
+    ]),
   ];
   return { summary, orders, lines, warehouse, spend };
 }
@@ -136,7 +174,7 @@ export async function buildReportWorkbook(inp: ReportInput): Promise<ArrayBuffer
   add('Summary', 'summary');
   add('Orders', 'orders');
   add('Order lines', 'lines');
-  add('Warehouse', 'warehouse');
+  if (!inp.venueId) add('Warehouse', 'warehouse');   // the warehouse is not one venue's (v1.10)
   add('Spend by month', 'spend');
   return wb.xlsx.writeBuffer() as Promise<ArrayBuffer>;
 }
