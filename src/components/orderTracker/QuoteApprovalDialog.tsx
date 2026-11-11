@@ -48,9 +48,10 @@ export function QuoteApprovalDialog({ order, drafts, onClose, onSent }: {
   // a reply in the thread without Mail.Send: copy the text, open the vendor's e-mail; Reply + paste there
   const replyInOutlook = async () => {
     if (!link?.url) return;
-    let copied = false;
-    try { await navigator.clipboard.writeText(text); copied = true; } catch { /* the text stays in the box to copy by hand */ }
+    // the copy starts while this page has focus, the tab opens in the click itself (no await before it: not blocked)
+    const copying = navigator.clipboard ? navigator.clipboard.writeText(text).then(() => true, () => false) : Promise.resolve(false);
     window.open(link.url, '_blank', 'noopener');
+    const copied = await copying;
     setNote({ kind: 'ok', text: `${copied ? 'The message is copied. ' : 'Copy the message above, then: '}The quote e-mail is open in Outlook — click Reply, paste (Ctrl+V) and Send. It stays in the thread, and the 9 o'clock pull (or "I've sent it, check now") marks the quote approved.` });
   };
 
@@ -99,7 +100,7 @@ export function QuoteApprovalDialog({ order, drafts, onClose, onSent }: {
             <>
               <button type="button" className="ot-btn ghost" onClick={newInOutlook} disabled={busy || !!problem}
                 title="A new e-mail in Outlook (not in the vendor's thread)">New e-mail in Outlook</button>
-              <button type="button" className={`ot-btn${fellBack ? ' primary' : ''}`} onClick={() => void replyInOutlook()} disabled={busy || !canReply}
+              <button type="button" className={`ot-btn${fellBack ? ' primary' : ''}`} onClick={() => void replyInOutlook()} disabled={busy || !canReply || !text.trim()}
                 title={canReply ? 'Copies the message and opens the vendor\'s quote e-mail in Outlook: Reply, paste, Send — it stays in the thread'
                   : link?.reason === 'not_owner' ? `The quote e-mail is in ${link.mailbox ?? 'another'} mailbox` : link ? 'The quote e-mail could not be found in Outlook' : 'Finding the quote e-mail…'}>
                 Reply in Outlook</button>

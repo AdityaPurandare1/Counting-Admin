@@ -186,7 +186,8 @@ function MailCard({ onChanged }: { onChanged: () => void }) {
   const saveDomains = (list: string[]) => act(async () => { await setVendorDomains(list); await refresh(); });
   // adding a domain also picks it for "Pull past e-mails", so its older mail is one click away
   const addDomain = (raw: string) => {
-    const d = raw.trim().toLowerCase().replace(/^@/, '');
+    // "orders@vendor.com" or "@vendor.com" -> vendor.com (what the server stores)
+    const d = raw.trim().toLowerCase().replace(/^.*@/, '');
     if (!d || !s) return;
     void saveDomains([...s.vendor_domains, d]);
     setNewDomain(''); setPastDomain(d); setJustAdded(d); setPastNote(null);

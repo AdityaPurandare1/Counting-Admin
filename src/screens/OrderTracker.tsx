@@ -85,7 +85,7 @@ export function OrderTracker({ user, today: todayProp, load = loadTracker, loadM
     if (!data) return 0;
     const d = { ...data, followups: data.followups ?? [] };
     return paymentRequestsDue(d, venueName, user.email).length + followupsDue(d, inbox, today, venueName, user.email).filter(f => f.to === 'vendor').length
-      + stubsToSend(data.orders, data.lines, data.documents, today).length;   // v1.14 check stubs to send
+      + stubsToSend(data.orders, data.lines, data.documents, today, data.followups ?? []).length;   // v1.14 check stubs to send
   }, [data, inbox, today, venueName, user.email]);
 
   const downloadReport = async () => {
@@ -215,7 +215,7 @@ export function OrderTracker({ user, today: todayProp, load = loadTracker, loadM
               mails={inbox} me={{ email: user.email, name: user.name }} />}
             {view === 'inbox' && <InboxView items={inbox} orders={data.orders} lines={data.lines} onReview={i => { setReviewing(i); setDocFile(null); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
               onOpenOrder={id => { setFocusOrder(id); setView('orders'); }} onChanged={() => void reload()} />}
-            {view === 'tosend' && <ToSend data={data} mails={inbox} today={today} venueName={venueName} me={user.email}
+            {view === 'tosend' && <ToSend data={data} mails={inbox} today={today} venueName={venueName} me={user.email} meName={user.name}
               onOpenOrder={id => { setFocusOrder(id); setView('orders'); }} onReload={() => void reload()} />}
             {view === 'warehouse' && <WarehouseView data={data} today={today} venueName={venueName} onReload={() => void reload()} />}
             {view === 'bibles' && <BibleView data={data} today={today} />}

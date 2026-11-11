@@ -103,7 +103,8 @@ check('the tracker hands the Inbox and who is signed in down to the order panel'
   const dlgSrc = readFileSync(join(process.cwd(), 'src/components/orderTracker/QuoteApprovalDialog.tsx'), 'utf8');
   check('the dialog finds the quote e-mail when it opens (so the click can open it at once)', /messageLink\(d\.replyTo\)\.then/.test(dlgSrc) && /if \(d\.replyTo\) \{/.test(dlgSrc));
   check('Reply in Outlook: copies the message, opens the quote e-mail in a new tab, says what to do',
-    /await navigator\.clipboard\.writeText\(text\)/.test(dlgSrc) && /window\.open\(link\.url, '_blank', 'noopener'\)/.test(dlgSrc) && /click Reply, paste \(Ctrl\+V\) and Send\. It stays in the thread/.test(dlgSrc));
+    /const copying = navigator\.clipboard \? navigator\.clipboard\.writeText\(text\)/.test(dlgSrc) && dlgSrc.indexOf('const copying') < dlgSrc.indexOf("window.open(link.url, '_blank', 'noopener')")
+    && dlgSrc.indexOf("window.open(link.url, '_blank', 'noopener')") < dlgSrc.indexOf('const copied = await copying') && /disabled=\{busy \|\| !canReply \|\| !text\.trim\(\)\}/.test(dlgSrc) && /click Reply, paste \(Ctrl\+V\) and Send\. It stays in the thread/.test(dlgSrc));
   check('a quote that came by e-mail offers Reply in Outlook and a new e-mail; one that did not, Open in Outlook',
     />\s*Reply in Outlook<\/button>/.test(dlgSrc) && />New e-mail in Outlook<\/button>/.test(dlgSrc) && />Open in Outlook instead<\/button>/.test(dlgSrc));
   const fn2 = sibling('supabase', 'functions', 'kount-order-mail', 'index.ts');

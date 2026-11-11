@@ -66,9 +66,9 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
   // v1.14 recently paid, stub not sent to the vendor yet: per order, overdue or not
   const stubSend = useMemo(() => {
     const m = new Map<string, boolean>();
-    for (const g of stubsToSend(data.orders, data.lines, data.documents, today)) for (const it of g.items) m.set(it.orderId, (m.get(it.orderId) ?? false) || g.overdue);
+    for (const g of stubsToSend(data.orders, data.lines, data.documents, today, data.followups ?? [])) for (const it of g.items) m.set(it.orderId, (m.get(it.orderId) ?? false) || g.overdue);
     return m;
-  }, [data.orders, data.lines, data.documents, today]);
+  }, [data.orders, data.lines, data.documents, data.followups, today]);
   // the venues orders are for, by name (an order serving several counts for each)
   const venues = useMemo(() => [...new Set(data.orders.flatMap(o => orderVenueIds(o, linesByOrder.get(o.id) ?? [])))]
     .map(id => ({ id, name: venueName(id) })).sort((a, b) => a.name.localeCompare(b.name)), [data.orders, linesByOrder, venueName]);
@@ -179,7 +179,7 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
                       <td>
                         <span className={`ot-pill ${PAY_TONE[pay.state]}`}>{pay.label}</span>
                         {pay.invoices.length > 0 && <div className="t2 mono" title={pay.invoices.join(', ')}>{pay.invoices[0]}{pay.invoices.length > 1 ? ` +${pay.invoices.length - 1}` : ''}</div>}
-                        {noStub.get(o.id) ? <div className="t2" style={{ color: 'var(--ot-warn)' }}>no check stub{noStub.get(o.id)! > 1 ? ` (${noStub.get(o.id)})` : ''}</div> : null}
+                        {noStub.get(o.id) && !stubSend.has(o.id) ? <div className="t2" style={{ color: 'var(--ot-warn)' }}>no check stub{noStub.get(o.id)! > 1 ? ` (${noStub.get(o.id)})` : ''}</div> : null}
                         {pay.state === 'unpaid' && pay.oldestDays != null && <div className="t2">{pay.oldestDays ? `${pay.oldestDays} day${pay.oldestDays === 1 ? '' : 's'} waiting` : 'invoiced today'}</div>}
                       </td>
                       <td className="r num">{ls.length}{late > 0 && <span className="ot-pill crit" style={{ marginLeft: 6 }}>{late} late</span>}</td>

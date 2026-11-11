@@ -33,7 +33,7 @@ if (fn) {
     /kount_ot_mail_begin_run/.test(pull) && /background\(runPull\(sb, fromMs \? `past e-mails: \$\{only \?\? 'every listed vendor'\} since \$\{body\.since\} \(by \$\{caller\.email\}\)` : `by \$\{caller\.email\}`, 0, fromMs, only\)\);/.test(pull));
   const fetch = fn.slice(fn.indexOf('async function fetchPhase'), fn.indexOf('async function fetchPhase') + 3000);
   check('function: a past pull reads that domain only — its PDFs and tracking — and leaves the morning mark alone',
-    /const vendors = only \? \[only\] : \(acct\.vendor_domains \?\? \[\]\);/.test(fetch) && /await backfillPdfs\(sb, tok\.access_token, vendors, fromMs, stats, kinds\);/.test(fetch)
+    /const vendors = only \? \[only\] : \(acct\.vendor_domains \?\? \[\]\);/.test(fetch) && /const done = await backfillPdfs\(sb, tok\.access_token, vendors, fromMs, stats, kinds, until\);/.test(fetch)
     && /await trackingPhase\(sb, tok\.access_token, vendors, fromMs, stats\);/.test(fetch) && /if \(!only\) await stubPhase/.test(fetch)
     && fetch.indexOf('if (fromMs) {') < fetch.indexOf('const prevThrough') && fetch.indexOf('return;') < fetch.indexOf('const prevThrough'));
   check('function: a past pull does not count as today\'s 9 o\'clock read (one at 8:00 would have skipped the morning)',
@@ -44,6 +44,18 @@ if (fn) {
     && /isRecent\(m\.receivedDateTime\)\)\) \{/.test(fn) && /isRecent\(r\.received_at\)\)\) \{ stats\.tracking\+\+/.test(fn));
   check('function: that domain\'s mail is found by search (from:domain received>=day), at most 40 pages, PDFs by the usual rules',
     /"from:\$\{domain\} received>=\$\{sinceDay\}"/.test(fn) && /while \(url && pages\+\+ < 40\)/.test(fn) && /wantsAttachment\(kinds, m\.subject, a\.name\)\) await takePdf/.test(fn));
+}
+
+// ── review fixes, function side (11/11) ──
+if (fn) {
+  const stub = fn.slice(fn.indexOf('async function stubPhase'), fn.indexOf('async function attachStub'));
+  check('stubs: any invoice number a tracked order carries is read, not only E&E\'s (so a non-E&E stub can clear)',
+    /\.\.\.trackedInvoicesIn\(m\.uniqueBody\?\.content, data\)/.test(stub) && /function trackedInvoicesIn/.test(fn) && /t\.length >= 4 && \/\\d\/\.test\(t\)/.test(fn));
+  check('stubs: whether it went to someone outside h.wood is kept (internal = on file, not sent)',
+    /toRecipients,ccRecipients/.test(stub) && /parsed: \{ kind: 'payment', invoices, to_vendor: toVendor \}/.test(stub)
+    && /to_vendor: \(row\.parsed as \{ to_vendor: boolean \}\)\.to_vendor/.test(fn));
+  check('past e-mails: a time limit, and a cut-short pull says to run it again', /const BACKFILL_FETCH_MS = 90_000;/.test(fn)
+    && /if \(Date\.now\(\) > until\) return false;/.test(fn) && /Pulled part of \$\{only \?\? 'the vendors'\}' e-mails \(time limit\)/.test(fn));
 }
 
 const inbox = readFileSync(join(process.cwd(), 'src/components/orderTracker/InboxView.tsx'), 'utf8');

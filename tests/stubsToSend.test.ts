@@ -92,7 +92,44 @@ check('To send: "Check stubs to send" first, by payment run with its send-by day
   && /Check Stub Reprint/.test(ts));
 check('To send: Reply in Outlook copies the text and opens the tab in the click (not blocked)', /navigator\.clipboard\.writeText\(e\.body\)/.test(ts) && /const w = window\.open\('', '_blank'\);/.test(ts) && /w\.location\.href = r\.link/.test(ts));
 check('Orders: "Send stub" / "Stub overdue" on the order row', /'Stub overdue' : 'Send stub'/.test(src('src/components/orderTracker/OrdersView.tsx')));
-check('the To send count includes the stubs', /\+ stubsToSend\(data\.orders, data\.lines, data\.documents, today\)\.length/.test(src('src/screens/OrderTracker.tsx')));
+check('the To send count includes the stubs', /\+ stubsToSend\(data\.orders, data\.lines, data\.documents, today, data\.followups \?\? \[\]\)\.length/.test(src('src/screens/OrderTracker.tsx')));
+
+// ── review fixes (11/11) ──────────────────────────────────────────────
+{
+  const J = order('OSE-0050', { vendor_name: 'Everything Promo' }), K = order('OSE-0051'), L = order('OSE-0052'), M = order('OSE-0053'), N = order('OSE-0054');
+  const ls2 = [
+    line(J, 'I051027', { status_at: '2026-11-09T18:00:00Z' }),                       // non-E&E number, marked Paid
+    line(K, 'INV-2026-200001', pay('ACH - 25001', '2026-11-06')),                       // stub only e-mailed inside h.wood
+    line(L, 'INV-2026-200002', { status_at: '2026-11-11T01:30:00Z' }),                 // marked Paid Tue 11/10 5:30 pm in LA
+    line(M, 'INV-2026-200003', pay('ACH - 25002', '2026-11-06')),                       // one invoice over two orders, one ACH
+    line(N, 'INV-2026-200003', pay('ACH - 25002', '2026-11-06')),
+    line(K, 'INV-2026-200004', pay('ACH - 25003', '2026-11-06')),                       // a payment REQUEST logged for it: not a stub mark
+  ];
+  const docs2 = [{ ...doc(K, 'payment', 'INV-2026-200001', 'MSG-INTERNAL'), parsed: { invoices: ['INV-2026-200001'], to_vendor: false } } as unknown as OtDocument];
+  const marks = [{ order_id: J.id, kind: 'payment' as const, note: 'Check stub sent: I051027', invoice_numbers: ['I051027'] },
+                 { order_id: K.id, kind: 'payment' as const, note: 'Payment Request - EE Mercantile …', invoice_numbers: ['INV-2026-200004'] }];
+  const before = stubsToSend([J, K, L, M, N], ls2, docs2, today);
+  const after = stubsToSend([J, K, L, M, N], ls2, docs2, today, marks);
+  const has = (gs: typeof before, inv: string) => gs.some(g => g.items.some(i => i.invoice === inv));
+  check('a non-E&E invoice (I051027) is listed, and Mark sent takes it off', has(before, 'I051027') && !has(after, 'I051027'));
+  check('a payment request logged for an invoice is not a stub mark', has(after, 'INV-2026-200004'));
+  const internal = after.find(g => g.items.some(i => i.invoice === 'INV-2026-200001'))!;
+  check('a stub e-mailed only inside h.wood is on file, not sent', !!internal && internal.stage === 'send');
+  const evening = after.find(g => g.items.some(i => i.invoice === 'INV-2026-200002'))!;
+  check('marked Paid at 5:30 pm in LA counts on that LA day (not tomorrow in UTC)', evening.paidOn === '2026-11-10' && evening.run.key === 'day:2026-11-10');
+  const split = after.find(g => g.items.some(i => i.invoice === 'INV-2026-200003'))!;
+  const se = stubEmail(split, [M, N], [], { email: 'apurandare@hwoodgroup.com', name: 'Aditya Purandare' });
+  check('one invoice over two orders: listed once in the stub e-mail', split.items.length === 2 && se.subject === 'Payment stub – INV-2026-200003' && (se.body.match(/INV-2026-200003/g) ?? []).length === 1, se);
+
+  const ts2 = src('src/components/orderTracker/ToSend.tsx');
+  check('To send: signed with the person\'s name (passed down), Copy text, the message shown, Mark sent with Undo',
+    /meName=\{user\.name\}/.test(src('src/screens/OrderTracker.tsx')) && /const meEntry = \{ email: me, name: meName \};/.test(ts2) && />Copy text</.test(ts2)
+    && /<summary[^>]*>Message<\/summary>/.test(ts2) && />Mark sent</.test(ts2) && /note: `\$\{STUB_SENT_NOTE\}: \$\{invs\.join\(', '\)\}`/.test(ts2) && /await undoFollowup\(x\)/.test(ts2));
+  check('To send: a failed copy is said plainly; the blank tab is closed if the e-mail can\'t be opened',
+    /could NOT be copied/.test(ts2) && /\} catch \(err\) \{ w\?\.close\(\); throw err; \}/.test(ts2));
+  check('Orders: no "no check stub" next to "Send stub"', /noStub\.get\(o\.id\) && !stubSend\.has\(o\.id\)/.test(src('src/components/orderTracker/OrdersView.tsx')));
+  check('Inbox: "orders@vendor.com" is added as vendor.com', /raw\.trim\(\)\.toLowerCase\(\)\.replace\(\/\^\.\*@\/, ''\)/.test(src('src/components/orderTracker/InboxView.tsx')));
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

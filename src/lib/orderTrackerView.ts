@@ -10,6 +10,7 @@ import {
   type LineStatus, type OtDocument, type OtItem, type OtLine, type OtMove, type OtOrder,
 } from './orderTracker';
 import { quoteBibleChecks, quoteBibleSummary, type BibleText } from './quoteBible';
+import type { OtFollowup } from './orderFollowups';
 
 const DAY = 86_400_000;
 const daysFrom = (from: string, to: string) => Math.round((Date.parse(to.slice(0, 10)) - Date.parse(from.slice(0, 10))) / DAY);
@@ -89,7 +90,7 @@ export interface TrackerKpis {
   /** open orders with a Quoted line h.wood has not e-mailed its approval for (0157), and those lines */
   approve: number; approveLines: number;
 }
-interface Data { orders: OtOrder[]; lines: OtLine[]; items: OtItem[]; moves: OtMove[]; documents?: OtDocument[]; bibles?: BibleText[] }
+interface Data { orders: OtOrder[]; lines: OtLine[]; items: OtItem[]; moves: OtMove[]; documents?: OtDocument[]; bibles?: BibleText[]; followups?: StubSentMark[] }
 const byOrder = (lines: OtLine[]) => {
   const m = new Map<string, OtLine[]>();
   for (const l of lines) (m.get(l.order_id) ?? m.set(l.order_id, []).get(l.order_id)!).push(l);
@@ -170,7 +171,7 @@ export function attentionItems(data: Data, today: string, inboxWaiting: number, 
   if (deliveries) out.push({ sev: 'info', title: `${deliveries} E&E deliver${deliveries > 1 ? 'ies' : 'y'} to put in stock`, sub: 'pick the item for each in Warehouse', act: { kind: 'tab', tab: 'warehouse' } });
   if (data.documents) {
     // v1.14: recently paid invoices whose stub has not gone to the vendor — one item per payment run (Thu-Fri)
-    const sends = stubsToSend(data.orders, data.lines, data.documents, today);
+    const sends = stubsToSend(data.orders, data.lines, data.documents, today, data.followups ?? []);
     const runs = new Map<string, StubToSend[]>();
     for (const g of sends) (runs.get(g.run.key) ?? runs.set(g.run.key, []).get(g.run.key)!).push(g);
     for (const gs of runs.values()) {
@@ -434,13 +435,24 @@ export interface StubToSend {
   replyTo: string | null;
 }
 
-export function stubsToSend(orders: OtOrder[], lines: OtLine[], documents: OtDocument[], today: string, days = RECENT_PAID_DAYS): StubToSend[] {
+/** "Mark sent" on a stub (v1.14): a To send log (kount_ot_followups, kind 'payment', note "Check stub sent: …"). */
+export type StubSentMark = Pick<OtFollowup, 'order_id' | 'kind' | 'note' | 'invoice_numbers'>;
+export const STUB_SENT_NOTE = 'Check stub sent';
+/** A day in Los Angeles ("2026-11-11") — what `today` is too; a UTC slice would make a 5 pm change tomorrow. */
+const laDate = (iso: string) => new Date(iso).toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+
+export function stubsToSend(orders: OtOrder[], lines: OtLine[], documents: OtDocument[], today: string,
+                            marks: readonly StubSentMark[] = [], days = RECENT_PAID_DAYS): StubToSend[] {
   const live = new Map(orders.filter(o => !o.archived_at).map(o => [o.id, o]));
   const onFile = new Set<string>(), sent = new Set<string>();
   for (const d of documents) if (d.kind === 'payment' && d.order_id) for (const t of stubInvoices(d)) {
     onFile.add(`${d.order_id}|${t}`);
-    if ((d as OtDocument & { source_message_id?: string | null }).source_message_id) sent.add(`${d.order_id}|${t}`);
+    // sent = filed from an e-mail we sent to someone outside h.wood (to_vendor false = passed around inside only)
+    const x = d as OtDocument & { source_message_id?: string | null; parsed?: { to_vendor?: boolean } | null };
+    if (x.source_message_id && x.parsed?.to_vendor !== false) sent.add(`${d.order_id}|${t}`);
   }
+  // "Mark sent": a stub sent some other way, or for a vendor whose invoice numbers the mail pull can't read
+  for (const m of marks) if (m.kind === 'payment' && (m.note ?? '').startsWith(STUB_SENT_NOTE)) for (const inv of m.invoice_numbers ?? []) sent.add(`${m.order_id}|${invoiceToken(inv)}`);
   const byInvoice = new Map<string, OtLine[]>();
   for (const l of lines) {
     if (!l.invoice_number || l.status === 'CANCELLED' || !live.has(l.order_id)) continue;
@@ -460,7 +472,7 @@ export function stubsToSend(orders: OtOrder[], lines: OtLine[], documents: OtDoc
       return !created || Math.abs(Date.parse(l.status_at) - Date.parse(created)) > 3600_000;
     };
     const paidOn = [...pays.values()].map(p => p.date.slice(0, 10)).sort().pop()
-      ?? ls.filter(l => l.status === 'PAID' && changedToPaid(l)).map(l => l.status_at.slice(0, 10)).sort().pop() ?? null;
+      ?? ls.filter(l => l.status === 'PAID' && changedToPaid(l)).map(l => laDate(l.status_at)).sort().pop() ?? null;
     if (!paidOn || paidOn > today || paidOn < addD(today, -days)) continue;
     const payments = [...pays.values()].sort((a, b) => a.date.localeCompare(b.date));
     const vendorKey = o.vendor_name.toLowerCase().replace(/[^a-z0-9]+/g, '');

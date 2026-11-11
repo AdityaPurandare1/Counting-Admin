@@ -18,7 +18,8 @@ export function stubEmail(g: StubToSend, orders: readonly OtOrder[], mails: Read
   const thread = g.replyTo ? mails.find(m => m.message_id === g.replyTo && m.sender_email && !isOwnSender(m.sender_email)) : undefined;
   const order = orders.find(o => o.id === g.items[0]?.orderId);
   const contact = thread ? { email: thread.sender_email!.toLowerCase(), name: thread.sender_name } : order ? vendorContact(order, [...mails]) : null;
-  const invoices = g.items.map(i => i.invoice);
+  // once each: an invoice split over two orders and paid by one ACH is in the group twice
+  const invoices = [...new Set(g.items.map(i => i.invoice))];
   const list = invoices.length > 1 ? `${invoices.slice(0, -1).join(', ')} and ${invoices[invoices.length - 1]}` : invoices[0];
   const paid = `paid ${longDay(g.paidOn)}${g.payments.length ? ` – ${g.payments.map(p => p.number).join(', ')}` : ''}`;
   return {
