@@ -3,7 +3,7 @@ import { Btn, Card, Pill } from '@/components/atoms';
 import { DOC_KIND_LABEL, headlineStatus, STATUS_LABEL, trackingUrl, type OtLine, type OtOrder } from '@/lib/orderTracker';
 import { addTracking, documentUrl } from '@/lib/orderTrackerData';
 import {
-  disconnectMail, findInMail, findSummary, morningPullAlert, inboxGroups, isPaymentStub, isTrackingEmail, mailStatus, pollConnect, pullNow, setAutoCreate, setDocKinds, setInboxState, setVendorDomains, startConnect,
+  disconnectMail, findInMail, findSummary, morningPullAlert, pastPullConfirm, pastPullDefaultDay, pullPast, inboxGroups, isPaymentStub, isTrackingEmail, mailStatus, pollConnect, pullNow, setAutoCreate, setDocKinds, setInboxState, setVendorDomains, startConnect,
   type DeviceCode, type InboxItem, type MailStatus,
 } from '@/lib/orderMail';
 import { errBox, fmtMoney, linkBtn, okBox, picker, shortDate, smallInput, subTxt } from './shared';
@@ -144,6 +144,11 @@ function MailCard({ onChanged }: { onChanged: () => void }) {
   const [newDomain, setNewDomain] = useState('');
   const [findNo, setFindNo] = useState('');
   const [found, setFound] = useState<string | null>(null);
+  // v1.13 past e-mails from one vendor domain, since a day (a domain just added is picked)
+  const [pastDomain, setPastDomain] = useState('');
+  const [pastDay, setPastDay] = useState(() => pastPullDefaultDay());
+  const [justAdded, setJustAdded] = useState<string | null>(null);
+  const [pastNote, setPastNote] = useState<string | null>(null);
   const wasRunning = useRef(false);
 
   const refresh = useCallback(async () => {
@@ -179,6 +184,13 @@ function MailCard({ onChanged }: { onChanged: () => void }) {
     try { await fn(); } catch (e) { setErr(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
   };
   const saveDomains = (list: string[]) => act(async () => { await setVendorDomains(list); await refresh(); });
+  // adding a domain also picks it for "Pull past e-mails", so its older mail is one click away
+  const addDomain = (raw: string) => {
+    const d = raw.trim().toLowerCase().replace(/^@/, '');
+    if (!d || !s) return;
+    void saveDomains([...s.vendor_domains, d]);
+    setNewDomain(''); setPastDomain(d); setJustAdded(d); setPastNote(null);
+  };
   const toggleKind = (k: string) => act(async () => {
     const next = s!.doc_kinds.includes(k) ? s!.doc_kinds.filter(x => x !== k) : [...s!.doc_kinds, k];
     if (!next.length) throw new Error('Keep at least one document type.');
@@ -265,18 +277,45 @@ function MailCard({ onChanged }: { onChanged: () => void }) {
             </span>
           ))}
           <input style={{ ...smallInput, width: 170 }} placeholder="add a vendor domain" value={newDomain} onChange={e => setNewDomain(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && newDomain.trim()) { void saveDomains([...s.vendor_domains, newDomain.trim()]); setNewDomain(''); } }} />
-          {newDomain.trim() && <Btn variant="secondary" size="sm" disabled={busy} onClick={() => { void saveDomains([...s.vendor_domains, newDomain.trim()]); setNewDomain(''); }}>Add</Btn>}
+            onKeyDown={e => { if (e.key === 'Enter' && newDomain.trim()) addDomain(newDomain); }} />
+          {newDomain.trim() && <Btn variant="secondary" size="sm" disabled={busy} onClick={() => addDomain(newDomain)}>Add</Btn>}
         </div>
         {suggestions.length > 0 && (
           <div style={{ marginTop: 8 }}>
             <span style={{ color: 'var(--fg-muted)' }}>Also sent you invoice or quote PDFs (not read): </span>
             {suggestions.map(([d, n]) => (
               <button key={d} style={{ ...picker, padding: '2px 8px', fontSize: 12, marginRight: 6, cursor: 'pointer' }} disabled={busy}
-                onClick={() => void saveDomains([...s.vendor_domains, d])} title="Add to the vendor list">+ {d} ({n})</button>
+                onClick={() => addDomain(d)} title="Add to the vendor list">+ {d} ({n})</button>
             ))}
           </div>
         )}
+        {s.connected && s.vendor_domains.length > 0 && (() => {
+          const dom = s.vendor_domains.includes(pastDomain) ? pastDomain : s.vendor_domains[0];
+          const today = new Date().toISOString().slice(0, 10);
+          return (
+            <form style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 10 }}
+              onSubmit={e => {
+                e.preventDefault();
+                if (!dom || !pastDay || !confirm(pastPullConfirm(dom, pastDay))) return;
+                void act(async () => {
+                  const r = await pullPast(dom, pastDay);
+                  if (!r.started) throw new Error(r.reason ?? 'Not started.');
+                  setPastNote(`Pulling ${dom} since ${pastDay}… it runs in the background; what it finds shows up here and on the orders.`);
+                  setJustAdded(null);
+                  await refresh();
+                });
+              }}>
+              <span style={{ color: 'var(--fg-muted)' }}>{justAdded === dom ? `Added ${dom}. Pull its older e-mails too:` : 'Pull past e-mails from'}</span>
+              <select style={{ ...smallInput, width: 'auto' }} value={dom} onChange={e => { setPastDomain(e.target.value); setPastNote(null); }} aria-label="Vendor domain to pull">
+                {s.vendor_domains.map(d => <option key={d} value={d}>{d}</option>)}
+              </select>
+              <span style={{ color: 'var(--fg-muted)' }}>since</span>
+              <input type="date" style={{ ...smallInput, width: 150 }} value={pastDay} min="2025-01-01" max={today} onChange={e => setPastDay(e.target.value)} aria-label="Pull since" />
+              <Btn variant={justAdded === dom ? 'primary' : 'secondary'} size="sm" type="submit" disabled={busy || s.running || !pastDay}>Pull</Btn>
+              {pastNote && <span style={{ color: 'var(--fg-muted)' }}>{pastNote}</span>}
+            </form>
+          );
+        })()}
       </div>
     </Card>
   );

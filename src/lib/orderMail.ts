@@ -122,6 +122,18 @@ export const pullNow = () => invokeMail<{ started: boolean; reason?: string }>({
 export interface FindResult { found: number; new_pdfs?: number; applied?: number; pending?: number; ignored?: number; failed?: number; paid?: number; reason?: string }
 export const findInMail = (number: string) => invokeMail<FindResult>({ action: 'find', number });
 /** Look for h.wood's approval e-mails on the Quoted lines now (0157): "I've sent it, check now". */
+/** v1.13 past e-mails: one listed vendor domain's quotes, invoices, shipping notices and tracking since `day`
+ *  ('2026-10-01'), through the same rules. The user: "when I add another domain, i want to be able to pull emails
+ *  from that domain only. Along with marking since what date". The 9 o'clock pull's mark is not moved; documents
+ *  older than 30 days start no new orders (they wait in the Inbox) and older tracking moves no lines. */
+export const pullPast = (domain: string, day: string) => invokeMail<{ started: boolean; reason?: string }>({ action: 'pull', since: day, domain });
+/** The day a past pull starts at by default: 30 days back. */
+export const pastPullDefaultDay = (today: Date = new Date()) => new Date(today.getTime() - 30 * 86_400_000).toISOString().slice(0, 10);
+/** What Pull asks before it starts. */
+export const pastPullConfirm = (domain: string, day: string) =>
+  `Pull ${domain}'s e-mails since ${day}: quotes, order confirmations, invoices, shipping notices and tracking?\n\n`
+  + 'What clearly belongs to an order goes on it. Documents older than 30 days start no new orders (they wait in the Inbox for you), '
+  + 'and older tracking numbers are added without moving lines. The 9 o\'clock pull is not affected.';
 export const checkApprovals = () => invokeMail<{ approved: number; error: string | null }>({ action: 'approvals' });
 /** v1.11: send the quote approval e-mail from the connected mailbox and stamp the lines approved. sent = false with a
  *  reason when the tracker can't send it (not_granted = IT has not given it Mail.Send; not_owner = not your mailbox;

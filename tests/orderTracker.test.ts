@@ -1436,7 +1436,9 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   const cfg = sibling('supabase', 'config.toml');
   if (fn && mig && cfg) {
     check('the function pulls on schedule only while today is unread (scheduledPullDue), not just in the 9 hour', /if \(!scheduledPullDue\(acctNow\?\.last_fetch_at \?\? null\)\)/.test(fn) && !/laParts\(\)\.hour !== 9/.test(fn));
-    check('a pull that read the mail stamps last_fetch_at (not a continuation)', /await fetchPhase\(sb, acct, stats, kinds\);\s*\/\/[^\n]*\n\s*await sb\.from\('kount_ot_mail_account'\)\.update\(\{ last_fetch_at: nowIso\(\) \}\)/.test(fn));
+    // v1.13: a past-e-mails pull (fromMs) reads old mail only, so it does not stamp today's read
+    check('a pull that read the mail stamps last_fetch_at (not a continuation, not a past-e-mails pull)',
+      /await fetchPhase\(sb, acct, stats, kinds, fromMs, only\);(\s*\/\/[^\n]*\n)+\s*if \(!fromMs\) await sb\.from\('kount_ot_mail_account'\)\.update\(\{ last_fetch_at: nowIso\(\) \}\)/.test(fn));
     check('its own continuation call carries the anon key', /'x-kount-cron': String\(secret \?\? ''\), \.\.\.\(SUPABASE_ANON_KEY \? \{ Authorization: `Bearer \$\{SUPABASE_ANON_KEY\}` \}/.test(fn));
     check('0160: every 10 min 16-21 UTC, only while unread, signed with the anon key, call id kept', mig.includes("schedule := '*/10 16-21 * * *'") && mig.includes("name = 'kount_edge_anon_jwt'")
       && mig.includes('set morning_request_id = net.http_post(') && /last_fetch_at < \(date_trunc\('day', now\(\) at time zone 'America\/Los_Angeles'\) \+ interval '9 hours'\)/.test(mig)
