@@ -210,7 +210,8 @@ export function OrderTracker({ user, today: todayProp, load = loadTracker, loadM
               {tab('bibles', 'Bibles', null)}
             </div>
             <div style={{ opacity: loading ? 0.7 : 1, transition: 'opacity .2s' }}>
-            {view === 'orders' && <OrdersView data={data} today={today} venueName={venueName} onReload={() => void reload()} focusOrderId={focusOrder} preset={preset} newNonce={newNonce} />}
+            {view === 'orders' && <OrdersView data={data} today={today} venueName={venueName} onReload={() => void reload()} focusOrderId={focusOrder} preset={preset} newNonce={newNonce}
+              mails={inbox} me={{ email: user.email, name: user.name }} />}
             {view === 'inbox' && <InboxView items={inbox} orders={data.orders} lines={data.lines} onReview={i => { setReviewing(i); setDocFile(null); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
               onOpenOrder={id => { setFocusOrder(id); setView('orders'); }} onChanged={() => void reload()} />}
             {view === 'tosend' && <ToSend data={data} mails={inbox} today={today} venueName={venueName} me={user.email}

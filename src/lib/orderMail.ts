@@ -123,6 +123,12 @@ export interface FindResult { found: number; new_pdfs?: number; applied?: number
 export const findInMail = (number: string) => invokeMail<FindResult>({ action: 'find', number });
 /** Look for h.wood's approval e-mails on the Quoted lines now (0157): "I've sent it, check now". */
 export const checkApprovals = () => invokeMail<{ approved: number; error: string | null }>({ action: 'approvals' });
+/** v1.11: send the quote approval e-mail from the connected mailbox and stamp the lines approved. sent = false with a
+ *  reason when the tracker can't send it (not_granted = IT has not given it Mail.Send; not_owner = not your mailbox;
+ *  not_connected) — then it opens in Outlook instead. */
+export const approveQuote = (p: { order_id: string; line_ids: string[]; quote_number: string | null; to: string[]; cc: string[];
+  subject: string; text: string; reply_to: string | null }) =>
+  invokeMail<{ sent: boolean; approved?: number; reason?: 'not_granted' | 'not_owner' | 'not_connected'; mailbox?: string | null; detail?: string | null }>({ action: 'approve_quote', ...p });
 /** What a find did, in a sentence. */
 export function findSummary(number: string, r: FindResult): string {
   if (r.reason) return r.reason;

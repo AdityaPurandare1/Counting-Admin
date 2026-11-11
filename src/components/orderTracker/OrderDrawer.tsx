@@ -15,14 +15,18 @@ import {
 import { SENT_SOURCE, orderTiming, timingText } from '@/lib/leadTime';
 import { checkQuoteAgainstBible, lineBibleText, quoteBibleSummary } from '@/lib/quoteBible';
 import { checkApprovals } from '@/lib/orderMail';
+import { approvalDrafts, type ApprovalDraft, type ThreadMail } from '@/lib/quoteApprovalMail';
+import { QuoteApprovalDialog } from './QuoteApprovalDialog';
 import { fmtMoney, shortDate } from './shared';
 import { AttachStubButton, DocChip, Icon, isOtherDoc } from './ui';
 
 /** One order in the side panel (the user's design): its fields, the cycle stepper, lines, invoices,
  *  tracking, documents and notes. Edits are a draft — Save writes only what changed (planOrderSave). */
-export function OrderDrawer({ order, lines, docs, data, today, venueName, onClose, onReload, onCreated, onOpenDoc }: {
+export function OrderDrawer({ order, lines, docs, data, today, venueName, onClose, onReload, onCreated, onOpenDoc, mails = [], me }: {
   order: OtOrder | null; lines: OtLine[]; docs: OtDocument[]; data: TrackerData; today: string; venueName: (id: string | null) => string;
   onClose: () => void; onReload: () => void; onCreated: (orderId: string) => void; onOpenDoc: (d: OtDocument) => void;
+  /** the Inbox's e-mails (the vendor's quote thread) and who is signed in — for the approval e-mail (v1.11) */
+  mails?: ThreadMail[]; me?: { email: string; name?: string | null };
 }) {
   const fresh = useMemo(() => orderDraft(order, lines, today), [order, lines, today]);
   const [draft, setDraft] = useState<OrderDraft>(fresh);
@@ -41,7 +45,7 @@ export function OrderDrawer({ order, lines, docs, data, today, venueName, onClos
 
   const close = () => { if (dirty && confirming !== 'discard') setConfirming('discard'); else onClose(); };
   useEffect(() => {
-    const k = (e: KeyboardEvent) => { if (e.key === 'Escape' && !document.querySelector('.ot-viewer')) close(); };
+    const k = (e: KeyboardEvent) => { if (e.key === 'Escape' && !document.querySelector('.ot-viewer, .ot-dialog')) close(); };
     window.addEventListener('keydown', k);
     return () => window.removeEventListener('keydown', k);
   });
@@ -85,6 +89,9 @@ export function OrderDrawer({ order, lines, docs, data, today, venueName, onClos
   const approvals = [...new Map(lines.filter(l => l.status === 'QUOTED' && l.quote_approved_at && !awaitingApproval(l))
     .map(l => [`${l.quote_approved_for ?? ''}|${l.quote_approved_at}`, l] as const)).values()];
   const [approvalMsg, setApprovalMsg] = useState<string | null>(null);
+  // v1.11: Approve -> the approval e-mail to check and send (kept while open, so the reload after Send doesn't close it)
+  const [approving, setApproving] = useState<ApprovalDraft[] | null>(null);
+  const startApprove = () => { if (order) setApproving(approvalDrafts(order, lines, docs, mails, venueName, me ?? { email: '' })); };
   // the quoted lines against the venue's bible, by item number (v1.07): green only when every one is in it
   const bibleCheck = useMemo(() => (order && data.bibles ? checkQuoteAgainstBible(order, lines, data.bibles) : null), [order, lines, data.bibles]);
   const bibleSum = bibleCheck ? quoteBibleSummary(bibleCheck, venueName) : null;
@@ -125,6 +132,9 @@ export function OrderDrawer({ order, lines, docs, data, today, venueName, onClos
   return (
     <>
       <div className="ot-scrim" onClick={close} />
+      {approving && order && approving.length > 0 && (
+        <QuoteApprovalDialog order={order} drafts={approving} onClose={() => setApproving(null)} onSent={onReload} />
+      )}
       <aside className="ot-drawer ot" role="dialog" aria-modal="true" aria-labelledby="ot-dr-title" style={{ gap: 0 }}>
         <div className="ot-dr-head">
           <div style={{ minWidth: 0 }}>
@@ -143,6 +153,8 @@ export function OrderDrawer({ order, lines, docs, data, today, venueName, onClos
                 e-mail from us yet. Reply to the vendor's quote e-mail ("Approved, good to go ahead"); it stays flagged until that e-mail is sent.
                 {approvalMsg && <><br />{approvalMsg}</>}
               </span>
+              <button type="button" className="ot-btn sm primary" disabled={busy} onClick={startApprove}
+                title="Shows the approval e-mail to the vendor; Send sends it and marks the quote approved">Approve &amp; e-mail vendor</button>
               <button type="button" className="ot-btn sm" disabled={busy} onClick={() => void checkNow()} title="Look in the mailbox for your approval e-mail now (the 9 o'clock pull also checks)">I've sent it, check now</button>
             </div>
           )}

@@ -9,6 +9,7 @@ import { orderTiming, timingText } from '@/lib/leadTime';
 import { quoteBibleChecks, quoteBibleSummary } from '@/lib/quoteBible';
 import { fmtMoney, shortDate } from './shared';
 import { OrderDrawer } from './OrderDrawer';
+import type { ThreadMail } from '@/lib/quoteApprovalMail';
 import { DocChips, DocViewer, Icon, docSort, isOtherDoc, latestByName } from './ui';
 
 type StateFilter = 'open' | 'completed' | 'all' | 'archived';
@@ -18,9 +19,11 @@ export interface OrdersPreset { key: 'open' | 'late' | 'onorder' | 'invoiced' | 
 const FUL_TONE: Record<string, string> = { 'In production': 'info', Shipped: 'info', Delivered: 'ok', Received: 'ok' };
 const PAY_TONE: Record<PaymentView['state'], string> = { none: '', unpaid: 'warn', part: 'warn', paid: 'ok' };
 
-export function OrdersView({ data, today, venueName, onReload, focusOrderId, preset, newNonce }: {
+export function OrdersView({ data, today, venueName, onReload, focusOrderId, preset, newNonce, mails, me }: {
   data: TrackerData; today: string; venueName: (id: string | null) => string; onReload: () => void;
   focusOrderId: string | null; preset: OrdersPreset | null; newNonce: number;
+  /** for the quote approval e-mail (v1.11): the Inbox's e-mails and who is signed in */
+  mails?: ThreadMail[]; me?: { email: string; name?: string | null };
 }) {
   const [q, setQ] = useState('');
   const [state, setState] = useState<StateFilter>('open');
@@ -192,7 +195,7 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
 
       {openId && (openId === 'new' || openOrder) && (
         <OrderDrawer key={openId} order={openOrder} lines={openOrder ? linesByOrder.get(openOrder.id) ?? [] : []} docs={openOrder ? docsByOrder.get(openOrder.id) ?? [] : []}
-          data={data} today={today} venueName={venueName} onClose={() => setOpenId(null)} onReload={onReload} onOpenDoc={setViewing}
+          data={data} today={today} venueName={venueName} onClose={() => setOpenId(null)} onReload={onReload} onOpenDoc={setViewing} mails={mails} me={me}
           onCreated={id => { setState('open'); setOpenId(id); onReload(); }} />
       )}
       {viewing && <DocViewer doc={viewing} onClose={() => setViewing(null)} />}
