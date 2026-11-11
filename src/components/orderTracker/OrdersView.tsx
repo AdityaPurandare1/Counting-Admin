@@ -14,7 +14,7 @@ import { DocChips, DocViewer, Icon, docSort, isOtherDoc, latestByName } from './
 
 type StateFilter = 'open' | 'completed' | 'all' | 'archived';
 /** A KPI tile clicked: the list it stands for (n makes a second click on the same tile count). */
-export interface OrdersPreset { key: 'open' | 'late' | 'onorder' | 'invoiced' | 'approve'; n: number }
+export interface OrdersPreset { key: 'open' | 'late' | 'onorder' | 'invoiced' | 'approve' | 'stubs'; n: number }
 
 const FUL_TONE: Record<string, string> = { 'In production': 'info', Shipped: 'info', Delivered: 'ok', Received: 'ok' };
 const PAY_TONE: Record<PaymentView['state'], string> = { none: '', unpaid: 'warn', part: 'warn', paid: 'ok' };
@@ -33,13 +33,17 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
   const [lateOnly, setLateOnly] = useState(false);
   const [unpaidOnly, setUnpaidOnly] = useState(false);
   const [approveOnly, setApproveOnly] = useState(false);
+  // v1.15 the user: "can you add a filter like quote approval for this also" — orders whose check stub still has to
+  // go to the vendor (recently paid, by payment run); open AND completed orders, since a delivered order can owe one
+  const [stubsOnly, setStubsOnly] = useState(false);
   const [openId, setOpenId] = useState<string | null>(focusOrderId);
   const [viewing, setViewing] = useState<OtDocument | null>(null);
   useEffect(() => { if (focusOrderId) setOpenId(focusOrderId); }, [focusOrderId]);
   useEffect(() => { if (newNonce) setOpenId('new'); }, [newNonce]);
   useEffect(() => {
     if (!preset) return;
-    setState('open'); setQ(''); setLateOnly(preset.key === 'late'); setUnpaidOnly(preset.key === 'invoiced'); setApproveOnly(preset.key === 'approve');
+    setState(preset.key === 'stubs' ? 'all' : 'open'); setQ(''); setLateOnly(preset.key === 'late'); setUnpaidOnly(preset.key === 'invoiced'); setApproveOnly(preset.key === 'approve');
+    setStubsOnly(preset.key === 'stubs');
   }, [preset]);
 
   const linesByOrder = useMemo(() => {
@@ -93,6 +97,7 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
       if (lateOnly && !r.late) return false;
       if (unpaidOnly && r.pay.state !== 'unpaid') return false;
       if (approveOnly && !r.toApprove) return false;
+      if (stubsOnly && !stubSend.has(r.o.id)) return false;
       if (!term) return true;
       const hay = [r.o.order_number, r.o.vendor_name, venueName(r.o.venue_id), ...r.ls.flatMap(l => [l.description, l.sku, l.invoice_number, l.quote_number, l.tracking_number]),
         ...data.tracking.filter(t => t.order_id === r.o.id).map(t => t.tracking_number), ...(docsByOrder.get(r.o.id) ?? []).flatMap(d => [d.doc_number, d.file_name])]
@@ -100,10 +105,11 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
       return hay.includes(term);
     });
     return sortOrders(filterByVenue(list, venue), sort, venueName);
-  }, [all, data.tracking, docsByOrder, q, state, vendor, venue, sort, lateOnly, unpaidOnly, approveOnly, venueName]);
+  }, [all, data.tracking, docsByOrder, q, state, vendor, venue, sort, lateOnly, unpaidOnly, approveOnly, stubsOnly, stubSend, venueName]);
 
-  const clearFilters = () => { setQ(''); setVendor(''); setVenue(''); setLateOnly(false); setUnpaidOnly(false); setApproveOnly(false); setState('all'); };
+  const clearFilters = () => { setQ(''); setVendor(''); setVenue(''); setLateOnly(false); setUnpaidOnly(false); setApproveOnly(false); setStubsOnly(false); setState('all'); };
   const toApproveCount = all.filter(r => r.toApprove > 0).length;
+  const stubOverdue = [...stubSend.values()].filter(Boolean).length;
   const now = Date.now();
   const openOrder = openId && openId !== 'new' ? data.orders.find(o => o.id === openId) ?? null : null;
 
@@ -133,6 +139,10 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
         {unpaidOnly && <span className="ot-fchip warn">Invoiced, not paid<button type="button" onClick={() => setUnpaidOnly(false)} aria-label="Clear unpaid filter"><Icon name="x" /></button></span>}
         {approveOnly ? <span className="ot-fchip warn">Quotes to approve<button type="button" onClick={() => setApproveOnly(false)} aria-label="Clear the quotes-to-approve filter"><Icon name="x" /></button></span>
           : toApproveCount > 0 && <button type="button" className="ot-btn sm" onClick={() => { setApproveOnly(true); setState('open'); }} title="Quoted lines with no approval e-mail to the vendor yet">Quotes to approve <span className="num">{toApproveCount}</span></button>}
+        {stubsOnly ? <span className={`ot-fchip ${stubOverdue ? 'crit' : 'warn'}`}>Stubs to send<button type="button" onClick={() => setStubsOnly(false)} aria-label="Clear the stubs-to-send filter"><Icon name="x" /></button></span>
+          : stubSend.size > 0 && <button type="button" className="ot-btn sm" onClick={() => { setStubsOnly(true); setState('all'); }}
+            title="Paid recently and the check stub not sent to the vendor yet (due the next business day after the Thursday / Friday payment run)">
+            Stubs to send <span className="num">{stubSend.size}</span>{stubOverdue > 0 && <span style={{ color: 'var(--ot-crit)', marginLeft: 4 }}>· {stubOverdue} overdue</span>}</button>}
         <span className="ot-count num">{rows.length} order{rows.length === 1 ? '' : 's'}</span>
       </div>
 

@@ -131,5 +131,17 @@ check('the To send count includes the stubs', /\+ stubsToSend\(data\.orders, dat
   check('Inbox: "orders@vendor.com" is added as vendor.com', /raw\.trim\(\)\.toLowerCase\(\)\.replace\(\/\^\.\*@\/, ''\)/.test(src('src/components/orderTracker/InboxView.tsx')));
 }
 
+// ── v1.15 "can you add a filter like quote approval for this also" ──
+{
+  const ov = src('src/components/orderTracker/OrdersView.tsx');
+  check('Orders: a "Stubs to send" button beside "Quotes to approve", with the overdue count',
+    /Stubs to send <span className="num">\{stubSend\.size\}<\/span>/.test(ov) && /· \{stubOverdue\} overdue/.test(ov) && ov.indexOf('Quotes to approve <span') < ov.indexOf('Stubs to send <span'));
+  check('the filter keeps only orders whose stub still has to go out — open and completed (a delivered order can owe one)',
+    /if \(stubsOnly && !stubSend\.has\(r\.o\.id\)\) return false;/.test(ov) && /onClick=\{\(\) => \{ setStubsOnly\(true\); setState\('all'\); \}\}/.test(ov));
+  check('the chip clears it (red when any is overdue); Clear filters resets it; a "stubs" preset opens it',
+    /ot-fchip \$\{stubOverdue \? 'crit' : 'warn'\}/.test(ov) && /setApproveOnly\(false\); setStubsOnly\(false\);/.test(ov) && /setStubsOnly\(preset\.key === 'stubs'\)/.test(ov)
+    && /\.ot-fchip\.crit \{/.test(src('src/components/orderTracker/tracker.css')));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);
