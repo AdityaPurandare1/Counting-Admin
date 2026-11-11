@@ -11,6 +11,8 @@ import { buildReportWorkbook } from '@/lib/orderTrackerReport';
 import { attentionItems, stubsToGet, trackerKpis, type Attention } from '@/lib/orderTrackerView';
 import { median, spanText, vendorLeadTimes } from '@/lib/leadTime';
 import { OrdersView, type OrdersPreset } from '@/components/orderTracker/OrdersView';
+import { ToSend } from '@/components/orderTracker/ToSend';
+import { followupsDue, paymentRequestsDue } from '@/lib/orderFollowups';
 import { AttachStubButton, Icon } from '@/components/orderTracker/ui';
 import '@/components/orderTracker/tracker.css';
 import { WarehouseView } from '@/components/orderTracker/WarehouseView';
@@ -36,9 +38,9 @@ import { StatusPill, download, errBox, fmtMoney, fmtMoney0, headRow, linkBtn, ro
    documents viewable from the list (src/lib/orderTrackerView.ts, tracker.css).
    ─────────────────────────────────────────────────────────────────────── */
 
-type View = 'orders' | 'inbox' | 'warehouse' | 'overview' | 'bibles';
+type View = 'orders' | 'inbox' | 'tosend' | 'warehouse' | 'overview' | 'bibles';
 
-export function OrderTracker({ today: todayProp, load = loadTracker, loadMail = loadInbox, loadStatus = mailStatus }: {
+export function OrderTracker({ user, today: todayProp, load = loadTracker, loadMail = loadInbox, loadStatus = mailStatus }: {
   user: AccessEntry; today?: Date; load?: () => Promise<TrackerData>; loadMail?: () => Promise<InboxItem[]>; loadStatus?: () => Promise<MailStatus>;
 }) {
   const today = useMemo(() => isoDay(todayProp ?? new Date()), [todayProp]);
@@ -75,6 +77,12 @@ export function OrderTracker({ today: todayProp, load = loadTracker, loadMail = 
   const waiting = inboxGroups(inbox).waiting.length;
 
   const venueName = useCallback((id: string | null) => orderVenueName(id, VENUES), []);
+  // v1.08 To send (0153): payment requests + vendor follow-ups waiting (the tab's count)
+  const toSendCount = useMemo(() => {
+    if (!data) return 0;
+    const d = { ...data, followups: data.followups ?? [] };
+    return paymentRequestsDue(d, venueName, user.email).length + followupsDue(d, inbox, today, venueName, user.email).filter(f => f.to === 'vendor').length;
+  }, [data, inbox, today, venueName, user.email]);
 
   const downloadReport = async () => {
     if (!data) return;
@@ -187,6 +195,7 @@ export function OrderTracker({ today: todayProp, load = loadTracker, loadMail = 
             <div className="ot-tabs" role="tablist">
               {tab('orders', 'Orders', kpis.open, lateHot)}
               {tab('inbox', 'Inbox', waiting)}
+              {tab('tosend', 'To send', toSendCount)}
               {tab('warehouse', 'Warehouse', kpis.reorder, kpis.reorder > 0)}
               {tab('overview', 'Overview', null)}
               {tab('bibles', 'Bibles', null)}
@@ -195,6 +204,8 @@ export function OrderTracker({ today: todayProp, load = loadTracker, loadMail = 
             {view === 'orders' && <OrdersView data={data} today={today} venueName={venueName} onReload={() => void reload()} focusOrderId={focusOrder} preset={preset} newNonce={newNonce} />}
             {view === 'inbox' && <InboxView items={inbox} orders={data.orders} lines={data.lines} onReview={i => { setReviewing(i); setDocFile(null); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
               onOpenOrder={id => { setFocusOrder(id); setView('orders'); }} onChanged={() => void reload()} />}
+            {view === 'tosend' && <ToSend data={data} mails={inbox} today={today} venueName={venueName} me={user.email}
+              onOpenOrder={id => { setFocusOrder(id); setView('orders'); }} onReload={() => void reload()} />}
             {view === 'warehouse' && <WarehouseView data={data} today={today} venueName={venueName} onReload={() => void reload()} />}
             {view === 'bibles' && <BibleView data={data} today={today} />}
             {view === 'overview' && <Overview data={data} today={today} venueName={venueName} onOpen={id => { setFocusOrder(id); setView('orders'); }} onReload={() => void reload()} />}

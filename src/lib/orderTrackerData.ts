@@ -3,6 +3,7 @@
    RLS; documents live in the private 'kount-order-docs' bucket and are read
    by the kount-read-purchase-doc Edge Function. */
 
+import type { OtFollowup } from './orderFollowups';
 import { supabase, selectAllPagedFiltered } from './supabase';
 import type { ApplyDocument, DocKind, DocLine, LineStatus, OtDocument, OtItem, OtLine, OtMove, OtOrder, OtTracking } from './orderTracker';
 import type { BibleText } from './quoteBible';
@@ -20,6 +21,8 @@ export interface TrackerData {
   /** the venues' current bibles, their text only, for checking quotes against them (v1.07);
    *  undefined when they could not be read — then no quote is checked or flagged */
   bibles?: BibleText[];
+  /** follow-ups / payment requests composed (0153); absent in older test data */
+  followups?: OtFollowup[];
 }
 
 const num = (x: unknown): number | null => (x == null || x === '' ? null : Number.isFinite(Number(x)) ? Number(x) : null);
@@ -44,6 +47,8 @@ export async function loadTracker(): Promise<TrackerData> {
     Promise.resolve(supabase.from('kount_ot_bibles').select('id, venue_id, title, text_index').eq('is_current', true))
       .then(({ data, error }) => (error ? undefined : (data ?? []) as BibleText[]), () => undefined),
   ]);
+  // follow-ups / payment requests composed (0153); empty before that migration
+  const followups = await page<OtFollowup>('kount_ot_followups', 'created_at').catch(() => [] as OtFollowup[]);
   const fixLine = (l: OtLine): OtLine => ({ ...l, qty: Number(l.qty) || 0, unit_price: num(l.unit_price) });
   const fixItem = (i: OtItem): OtItem => ({ ...i, pack_size: num(i.pack_size), reorder_point: num(i.reorder_point), lead_time_days: num(i.lead_time_days) });
   return {
@@ -54,7 +59,20 @@ export async function loadTracker(): Promise<TrackerData> {
     documents: documents.map(d => ({ ...d, total: num(d.total) })),
     tracking,
     bibles,
+    followups,
   };
+}
+
+/** A follow-up / payment request composed from To send (0153): who and which day are stamped by the database. */
+export async function logFollowup(f: { order_id: string; kind: OtFollowup['kind']; invoice_numbers?: string[] | null; note?: string | null }): Promise<string> {
+  const { data, error } = await supabase.from('kount_ot_followups')
+    .insert({ order_id: f.order_id, kind: f.kind, invoice_numbers: f.invoice_numbers ?? null, note: f.note ?? null }).select('id').single();
+  if (error || !data) fail('Not logged', error);
+  return (data as { id: string }).id;
+}
+export async function undoFollowup(id: string): Promise<void> {
+  const { error } = await supabase.from('kount_ot_followups').delete().eq('id', id);
+  if (error) fail('Not undone', error);
 }
 
 export interface EventRow { id: number; line_id: string | null; order_id: string | null; from_status: string | null; to_status: string; source: string; note: string | null; by_email: string | null; at: string }
