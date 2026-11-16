@@ -3,7 +3,7 @@ import {
   ORDER_SORTS, awaitingApproval, filterByVenue, headlineStatus, isLate, isoDay, lineTotal, orderState, orderVenueIds, receivedForLine, sortOrders, MULTIPLE_VENUES,
   type OrderSort, type OrderState, type OtDocument, type OtLine,
 } from '@/lib/orderTracker';
-import { FULFILLMENT, fulfillmentOf, fulfillmentStep, lastUpdate, nextEta, orderCategory, paymentOf, stubsToGet, stubsToSend, timeAgo, type PaymentView } from '@/lib/orderTrackerView';
+import { FULFILLMENT, fulfillmentOf, fulfillmentStep, lastUpdate, nextEta, notSentToAccounting, orderCategory, paymentOf, stubsToGet, stubsToSend, timeAgo, type PaymentView } from '@/lib/orderTrackerView';
 import type { TrackerData } from '@/lib/orderTrackerData';
 import { orderTiming, timingText } from '@/lib/leadTime';
 import { quoteBibleChecks, quoteBibleSummary } from '@/lib/quoteBible';
@@ -36,6 +36,9 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
   // v1.15 the user: "can you add a filter like quote approval for this also" — orders whose check stub still has to
   // go to the vendor (recently paid, by payment run); open AND completed orders, since a delivered order can owe one
   const [stubsOnly, setStubsOnly] = useState(false);
+  // v1.20 the user: "scan if those invoices are being sent to accounting" (hwoodap@ / hwoodga@iqbackoffice.com) —
+  // orders with an unpaid invoice no e-mail to either has named yet; open and completed, like stubs
+  const [acctOnly, setAcctOnly] = useState(false);
   const [openId, setOpenId] = useState<string | null>(focusOrderId);
   const [viewing, setViewing] = useState<OtDocument | null>(null);
   useEffect(() => { if (focusOrderId) setOpenId(focusOrderId); }, [focusOrderId]);
@@ -43,7 +46,7 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
   useEffect(() => {
     if (!preset) return;
     setState(preset.key === 'stubs' ? 'all' : 'open'); setQ(''); setLateOnly(preset.key === 'late'); setUnpaidOnly(preset.key === 'invoiced'); setApproveOnly(preset.key === 'approve');
-    setStubsOnly(preset.key === 'stubs');
+    setStubsOnly(preset.key === 'stubs'); setAcctOnly(false);
   }, [preset]);
 
   const linesByOrder = useMemo(() => {
@@ -73,6 +76,8 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
     for (const g of stubsToSend(data.orders, data.lines, data.documents, today, data.followups ?? [])) for (const it of g.items) m.set(it.orderId, (m.get(it.orderId) ?? false) || g.overdue);
     return m;
   }, [data.orders, data.lines, data.documents, data.followups, today]);
+  // v1.20 unpaid invoices not e-mailed to accounting yet, per order
+  const notAcct = useMemo(() => notSentToAccounting(data.orders, data.lines), [data.orders, data.lines]);
   // the venues orders are for, by name (an order serving several counts for each)
   const venues = useMemo(() => [...new Set(data.orders.flatMap(o => orderVenueIds(o, linesByOrder.get(o.id) ?? [])))]
     .map(id => ({ id, name: venueName(id) })).sort((a, b) => a.name.localeCompare(b.name)), [data.orders, linesByOrder, venueName]);
@@ -98,6 +103,7 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
       if (unpaidOnly && r.pay.state !== 'unpaid') return false;
       if (approveOnly && !r.toApprove) return false;
       if (stubsOnly && !stubSend.has(r.o.id)) return false;
+      if (acctOnly && !notAcct.has(r.o.id)) return false;
       if (!term) return true;
       const hay = [r.o.order_number, r.o.vendor_name, venueName(r.o.venue_id), ...r.ls.flatMap(l => [l.description, l.sku, l.invoice_number, l.quote_number, l.tracking_number]),
         ...data.tracking.filter(t => t.order_id === r.o.id).map(t => t.tracking_number), ...(docsByOrder.get(r.o.id) ?? []).flatMap(d => [d.doc_number, d.file_name])]
@@ -105,9 +111,9 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
       return hay.includes(term);
     });
     return sortOrders(filterByVenue(list, venue), sort, venueName);
-  }, [all, data.tracking, docsByOrder, q, state, vendor, venue, sort, lateOnly, unpaidOnly, approveOnly, stubsOnly, stubSend, venueName]);
+  }, [all, data.tracking, docsByOrder, q, state, vendor, venue, sort, lateOnly, unpaidOnly, approveOnly, stubsOnly, stubSend, acctOnly, notAcct, venueName]);
 
-  const clearFilters = () => { setQ(''); setVendor(''); setVenue(''); setLateOnly(false); setUnpaidOnly(false); setApproveOnly(false); setStubsOnly(false); setState('all'); };
+  const clearFilters = () => { setQ(''); setVendor(''); setVenue(''); setLateOnly(false); setUnpaidOnly(false); setApproveOnly(false); setStubsOnly(false); setAcctOnly(false); setState('all'); };
   const toApproveCount = all.filter(r => r.toApprove > 0).length;
   const stubOverdue = [...stubSend.values()].filter(Boolean).length;
   const now = Date.now();
@@ -143,6 +149,10 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
           : stubSend.size > 0 && <button type="button" className="ot-btn sm" onClick={() => { setStubsOnly(true); setState('all'); }}
             title="Paid recently and the check stub not sent to the vendor yet (due the next business day after the Thursday / Friday payment run)">
             Stubs to send <span className="num">{stubSend.size}</span>{stubOverdue > 0 && <span style={{ color: 'var(--ot-crit)', marginLeft: 4 }}>· {stubOverdue} overdue</span>}</button>}
+        {acctOnly ? <span className="ot-fchip warn">Not sent to accounting<button type="button" onClick={() => setAcctOnly(false)} aria-label="Clear the not-sent-to-accounting filter"><Icon name="x" /></button></span>
+          : notAcct.size > 0 && <button type="button" className="ot-btn sm" onClick={() => { setAcctOnly(true); setState('all'); }}
+            title="Invoiced, not paid, and no e-mail to hwoodap@ or hwoodga@iqbackoffice.com names the invoice yet (checked each morning)">
+            Not sent to accounting <span className="num">{notAcct.size}</span></button>}
         <span className="ot-count num">{rows.length} order{rows.length === 1 ? '' : 's'}</span>
       </div>
 
@@ -189,6 +199,7 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
                       <td>
                         <span className={`ot-pill ${PAY_TONE[pay.state]}`}>{pay.label}</span>
                         {pay.invoices.length > 0 && <div className="t2 mono" title={pay.invoices.join(', ')}>{pay.invoices[0]}{pay.invoices.length > 1 ? ` +${pay.invoices.length - 1}` : ''}</div>}
+                        {notAcct.has(o.id) && <div className="t2" style={{ color: 'var(--ot-warn)' }} title={`No e-mail to hwoodap@ / hwoodga@iqbackoffice.com names ${notAcct.get(o.id)!.join(', ')} yet`}>not sent to accounting</div>}
                         {noStub.get(o.id) && !stubSend.has(o.id) ? <div className="t2" style={{ color: 'var(--ot-warn)' }}>no check stub{noStub.get(o.id)! > 1 ? ` (${noStub.get(o.id)})` : ''}</div> : null}
                         {pay.state === 'unpaid' && pay.oldestDays != null && <div className="t2">{pay.oldestDays ? `${pay.oldestDays} day${pay.oldestDays === 1 ? '' : 's'} waiting` : 'invoiced today'}</div>}
                       </td>

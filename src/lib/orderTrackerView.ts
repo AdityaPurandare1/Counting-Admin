@@ -495,3 +495,58 @@ export function stubsToSend(orders: OtOrder[], lines: OtLine[], documents: OtDoc
   for (const g of out) { g.overdue = today > g.dueOn; g.items.sort((a, b) => a.invoice.localeCompare(b.invoice)); g.total = Math.round(g.total * 100) / 100; }
   return out.sort((a, b) => b.paidOn.localeCompare(a.paidOn) || a.vendor.localeCompare(b.vendor));
 }
+
+/* ── v1.20 sent to accounting (0174) ──────────────────────────────────────────────────
+ * The user (11/16): "1 more distinction for the invoices we receive. I want it to scan if those invoices are being
+ * sent to accounting. hwoodap@iqbackoffice.com and hwoodga@iqbackoffice.com". The mail pull stamps acct_sent_* on an
+ * invoice's lines from the first e-mail to either mailbox naming it; a payment request found before that (0153) still
+ * counts — those go to AP. */
+
+export interface AccountingSent {
+  at: string;
+  /** 'AP', 'GA', 'AP, GA'; null = a payment request seen before 0174, mailbox not recorded */
+  to: string | null;
+  by: string | null;
+  subject: string | null;
+  messageId: string | null;
+}
+
+/** An invoice's lines (any order of them) -> the first e-mail that took it to accounting; null = none seen. */
+export function accountingOf(ls: ReadonlyArray<OtLine>): AccountingSent | null {
+  let best: AccountingSent | null = null;
+  for (const l of ls) {
+    if (!l.acct_sent_at) continue;
+    if (!best || Date.parse(l.acct_sent_at) < Date.parse(best.at)) {
+      best = { at: l.acct_sent_at, to: l.acct_sent_to ?? null, by: l.acct_sent_by ?? null, subject: l.acct_sent_subject ?? null, messageId: l.acct_message_id ?? null };
+    }
+  }
+  if (best) return best;
+  const pr = ls.map(l => l.pay_requested_at).filter((x): x is string => !!x).sort((a, b) => Date.parse(a) - Date.parse(b))[0];
+  return pr ? { at: pr, to: null, by: null, subject: null, messageId: null } : null;
+}
+
+/** "AP · 10/28" for a pill: where it went and the LA day. */
+export function accountingText(a: AccountingSent): string {
+  const [, m, d] = laDate(a.at).split('-');
+  return `${a.to || 'AP'} · ${Number(m)}/${Number(d)}`;
+}
+
+/** Live orders' invoices not paid yet that no e-mail to accounting has named: per order, its invoice numbers.
+ *  "Not paid" as the Payment column reads it — every live line of the invoice before Paid. */
+export function notSentToAccounting(orders: ReadonlyArray<OtOrder>, lines: ReadonlyArray<OtLine>): Map<string, string[]> {
+  const liveOrders = new Set(orders.filter(o => !o.archived_at).map(o => o.id));
+  const byInvoice = new Map<string, OtLine[]>();
+  for (const l of lines) {
+    if (!l.invoice_number?.trim() || l.status === 'CANCELLED' || !liveOrders.has(l.order_id)) continue;
+    const k = `${l.order_id}|${invoiceToken(l.invoice_number)}`;
+    (byInvoice.get(k) ?? byInvoice.set(k, []).get(k)!).push(l);
+  }
+  const out = new Map<string, string[]>();
+  for (const [k, ls] of byInvoice) {
+    if (ls.some(l => statusRank(l.status) >= statusRank('PAID')) || accountingOf(ls)) continue;
+    const [orderId, inv] = k.split('|');
+    (out.get(orderId) ?? out.set(orderId, []).get(orderId)!).push(inv);
+  }
+  for (const v of out.values()) v.sort();
+  return out;
+}

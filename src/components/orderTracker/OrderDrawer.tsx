@@ -5,7 +5,7 @@ import {
   type LineStatus, type OtDocument, type OtLine, type OtOrder,
 } from '@/lib/orderTracker';
 import {
-  arrivesNow, draftLineTotal, draftStage, draftTotal, invoiceToken, isPlanEmpty, lastUpdate, stubInvoices, lineDraft, markDraft, orderCategory, orderDraft, paymentOf, planOrderSave, setDraftStage, timeAgo,
+  accountingOf, accountingText, arrivesNow, draftLineTotal, draftStage, draftTotal, invoiceToken, isPlanEmpty, lastUpdate, stubInvoices, lineDraft, markDraft, orderCategory, orderDraft, paymentOf, planOrderSave, setDraftStage, timeAgo,
   type LineDraft, type OrderDraft,
 } from '@/lib/orderTrackerView';
 import {
@@ -273,16 +273,21 @@ export function OrderDrawer({ order, lines, docs, data, today, venueName, onClos
               <span className="faint" style={{ fontSize: 12 }}>Paid also comes from R365 each morning.</span>
             </div>
             {invoices.length ? (
-              <table className="ot-invs"><thead><tr><th>Invoice #</th><th>Date</th><th style={{ textAlign: 'right' }}>Amount</th><th>Payment</th><th>PDF</th><th>Check stub</th></tr></thead>
+              <table className="ot-invs"><thead><tr><th>Invoice #</th><th>Date</th><th style={{ textAlign: 'right' }}>Amount</th><th>Payment</th><th>Accounting</th><th>PDF</th><th>Check stub</th></tr></thead>
                 <tbody>{invoices.map(i => {
                   const pdf = pdfs.find(d => d.kind === 'invoice' && d.doc_number?.trim() === i.n);
                   const tok = invoiceToken(i.n);
                   const stub = docs.find(d => d.kind === 'payment' && stubInvoices(d as typeof d & { parsed?: unknown }).has(tok));
                   // which R365 payment paid it (0143): the stub to reprint in R365
                   const r365 = [...new Map(lines.filter(l => invoiceToken(l.invoice_number) === tok).flatMap(l => l.r365_payments ?? []).map(p => [p.number, p])).values()];
+                  // v1.20: the first e-mail to accounting (hwoodap@ / hwoodga@iqbackoffice.com) naming it, found by the mail pull
+                  const acct = accountingOf(lines.filter(l => invoiceToken(l.invoice_number) === tok && l.status !== 'CANCELLED'));
                   return <tr key={i.n}><td className="mono">{i.n}</td><td>{i.day ? shortDate(i.day) : '—'}</td><td style={{ textAlign: 'right' }} className="num">{fmtMoney(i.amount)}</td>
                     <td><span className={`ot-pill ${i.paid ? 'ok' : 'warn'}`}>{i.paid ? 'Paid' : i.waiting != null ? `Not paid · ${i.waiting}d` : 'Not paid'}</span>
                       {r365.length > 0 && <div className="faint mono" style={{ fontSize: 11.5 }}>{r365.map(p => `${p.number} · ${shortDate(p.date)}`).join(', ')}</div>}</td>
+                    <td>{acct ? <span className="ot-pill ok" title={[acct.by ? `From ${acct.by}` : 'A payment request to AP', acct.subject && `"${acct.subject}"`].filter(Boolean).join(' · ')}>Sent to {accountingText(acct)}</span>
+                      : i.paid ? <span className="faint">—</span>
+                      : <span className="ot-pill warn" title="No e-mail to hwoodap@ or hwoodga@iqbackoffice.com names this invoice yet (checked each morning in the connected mailbox)">Not sent</span>}</td>
                     <td>{pdf ? <DocChip d={pdf} onOpen={onOpenDoc} /> : <span className="faint">—</span>}</td>
                     <td>{stub ? <DocChip d={stub} onOpen={onOpenDoc} />
                       : i.paid && order ? <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}><span className="ot-pill warn">No stub</span>
