@@ -113,13 +113,16 @@ export function followupsDue(data: { orders: OtOrder[]; lines: OtLine[]; documen
 
     const stage = headlineStatus(open)!;
     const late = open.filter(l => (l.expected_on ?? o.expected_on ?? '') !== '' && (l.expected_on ?? o.expected_on)! < today && statusRank(l.status) < statusRank('DELIVERED'));
-    // v1.20: an invoice already e-mailed to accounting (AP / GA, 0174) needs no payment request
-    const unpaid = open.filter(l => l.status === 'INVOICED' && !l.pay_requested_at && !l.acct_sent_at);
+    // invoices with no payment request yet (0153; v1.20: our own e-mail of it to AP / GA counts, set by the pull)
+    const unpaid = open.filter(l => l.status === 'INVOICED' && !l.pay_requested_at);
     let kind: FollowKind, to: 'vendor' | 'self', what: string;
     if (stage === 'REQUESTED') { kind = 'order-it'; to = 'self'; what = 'Requested, not ordered yet'; }
     else if (stage === 'QUOTED') { kind = 'approve'; to = 'self'; what = 'Quote waiting for approval — approve it and ask for the invoice'; }
-    else if (stage === 'INVOICED' && unpaid.length === open.length) { kind = 'pay'; to = 'self'; what = 'Invoice not paid yet — send the payment request'; }
+    else if (stage === 'INVOICED' && unpaid.length) { kind = 'pay'; to = 'self'; what = 'Invoice not paid yet — send the payment request'; }
     else if (late.length) { kind = 'late'; to = 'vendor'; what = `${late.length} line${late.length > 1 ? 's' : ''} past ETA — ask for a new ETA`; }
+    // v1.20 (review): every invoice is with accounting — waiting on the payment, nothing to chase (it used to fall
+    // through to "Paid, not shipped" and an e-mail to the vendor)
+    else if (stage === 'INVOICED') continue;
     else if (stage === 'ORDERED') { kind = 'confirm'; to = 'vendor'; what = 'Not confirmed — ask for the confirmation / quote'; }
     else if (stage === 'SHIPPED') { kind = 'delivery'; to = 'vendor'; what = 'Shipped, not delivered — confirm delivery'; }
     else { kind = 'eta'; to = 'vendor'; what = 'Paid, not shipped — ask for production status + ETA'; }
@@ -163,8 +166,8 @@ export function payCategory(ls: Pick<OtLine, 'description'>[]): string {
   return [...new Set(hit)].slice(0, 2).join(' & ') || 'Order';
 }
 
-/** Invoices with no payment request yet (none found in the mailbox, none composed here, not e-mailed to accounting
- *  — AP / GA, v1.20), one request per order
+/** Invoices with no payment request yet (none found in the mailbox — v1.20: our own e-mail of it to AP / GA is one —
+ *  none composed here), one request per order
  *  and venue, written as the team writes them. Amount = the invoice PDF's total (tax and shipping as billed);
  *  without the PDF, the lines' total before tax (said so). */
 export function paymentRequestsDue(data: { orders: OtOrder[]; lines: OtLine[]; documents: OtDocument[]; followups: OtFollowup[] },
@@ -174,7 +177,7 @@ export function paymentRequestsDue(data: { orders: OtOrder[]; lines: OtLine[]; d
   for (const o of data.orders) {
     if (o.archived_at) continue;
     const waiting = data.lines.filter(l => l.order_id === o.id && l.status === 'INVOICED' && l.invoice_number
-      && !l.pay_requested_at && !l.acct_sent_at && !composed.has(normText(l.invoice_number)));
+      && !l.pay_requested_at && !composed.has(normText(l.invoice_number)));
     if (!waiting.length) continue;
     const byVenue = new Map<string, OtLine[]>();
     for (const l of waiting) { const v = l.venue_id ?? o.venue_id ?? ''; (byVenue.get(v) ?? byVenue.set(v, []).get(v)!).push(l); }

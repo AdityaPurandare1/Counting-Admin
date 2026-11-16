@@ -41,6 +41,8 @@ export interface MailRun {
   tracking?: number; paid?: number;
   /** Quoted lines whose approval e-mail the pull found (0157) */
   approved?: number; approval_error?: string;
+  /** v1.20 (0174): unpaid invoices searched for an e-mail to accounting / their lines found sent / what was left or failed */
+  acct_checked?: number; acct_sent?: number; acct_error?: string;
   remaining?: number; error: string | null; reconnect: boolean;
 }
 

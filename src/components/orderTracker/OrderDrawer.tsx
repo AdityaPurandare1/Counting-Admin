@@ -282,11 +282,13 @@ export function OrderDrawer({ order, lines, docs, data, today, venueName, onClos
                   const r365 = [...new Map(lines.filter(l => invoiceToken(l.invoice_number) === tok).flatMap(l => l.r365_payments ?? []).map(p => [p.number, p])).values()];
                   // v1.20: the first e-mail to accounting (hwoodap@ / hwoodga@iqbackoffice.com) naming it, found by the mail pull
                   const acct = accountingOf(lines.filter(l => invoiceToken(l.invoice_number) === tok && l.status !== 'CANCELLED'));
+                  // part paid = accounting had it (as the Orders filter reads it)
+                  const anyPaid = lines.some(l => invoiceToken(l.invoice_number) === tok && l.status !== 'CANCELLED' && statusRank(l.status) >= statusRank('PAID'));
                   return <tr key={i.n}><td className="mono">{i.n}</td><td>{i.day ? shortDate(i.day) : '—'}</td><td style={{ textAlign: 'right' }} className="num">{fmtMoney(i.amount)}</td>
                     <td><span className={`ot-pill ${i.paid ? 'ok' : 'warn'}`}>{i.paid ? 'Paid' : i.waiting != null ? `Not paid · ${i.waiting}d` : 'Not paid'}</span>
                       {r365.length > 0 && <div className="faint mono" style={{ fontSize: 11.5 }}>{r365.map(p => `${p.number} · ${shortDate(p.date)}`).join(', ')}</div>}</td>
                     <td>{acct ? <span className="ot-pill ok" title={[acct.by ? `From ${acct.by}` : 'A payment request to AP', acct.subject && `"${acct.subject}"`].filter(Boolean).join(' · ')}>Sent to {accountingText(acct)}</span>
-                      : i.paid ? <span className="faint">—</span>
+                      : anyPaid || i.paid ? <span className="faint">—</span>
                       : <span className="ot-pill warn" title="No e-mail to hwoodap@ or hwoodga@iqbackoffice.com names this invoice yet (checked each morning in the connected mailbox)">Not sent</span>}</td>
                     <td>{pdf ? <DocChip d={pdf} onOpen={onOpenDoc} /> : <span className="faint">—</span>}</td>
                     <td>{stub ? <DocChip d={stub} onOpen={onOpenDoc} />
