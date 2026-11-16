@@ -5,7 +5,7 @@ import {
   type LineStatus, type OtDocument, type OtLine, type OtOrder,
 } from '@/lib/orderTracker';
 import {
-  accountingOf, accountingText, arrivesNow, draftLineTotal, draftStage, draftTotal, invoiceToken, isPlanEmpty, lastUpdate, stubInvoices, lineDraft, markDraft, orderCategory, orderDraft, paymentOf, planOrderSave, setDraftStage, timeAgo,
+  accountingOf, accountingText, notSentToAccounting, arrivesNow, draftLineTotal, draftStage, draftTotal, invoiceToken, isPlanEmpty, lastUpdate, stubInvoices, lineDraft, markDraft, orderCategory, orderDraft, paymentOf, planOrderSave, setDraftStage, timeAgo,
   type LineDraft, type OrderDraft,
 } from '@/lib/orderTrackerView';
 import {
@@ -14,7 +14,7 @@ import {
 } from '@/lib/orderTrackerData';
 import { SENT_SOURCE, orderTiming, timingText } from '@/lib/leadTime';
 import { checkQuoteAgainstBible, lineBibleText, quoteBibleSummary } from '@/lib/quoteBible';
-import { checkApprovals } from '@/lib/orderMail';
+import { checkAccounting, checkApprovals } from '@/lib/orderMail';
 import { approvalDrafts, type ApprovalDraft, type ThreadMail } from '@/lib/quoteApprovalMail';
 import { QuoteApprovalDialog } from './QuoteApprovalDialog';
 import { fmtMoney, shortDate } from './shared';
@@ -89,6 +89,17 @@ export function OrderDrawer({ order, lines, docs, data, today, venueName, onClos
   const approvals = [...new Map(lines.filter(l => l.status === 'QUOTED' && l.quote_approved_at && !awaitingApproval(l))
     .map(l => [`${l.quote_approved_for ?? ''}|${l.quote_approved_at}`, l] as const)).values()];
   const [approvalMsg, setApprovalMsg] = useState<string | null>(null);
+  // v1.21 this order's unpaid invoices no e-mail to accounting (AP / GA) has named yet, like a quote to approve
+  const [acctMsg, setAcctMsg] = useState<string | null>(null);
+  const toAccounting = useMemo(() => (order ? notSentToAccounting([order], lines).get(order.id) ?? [] : []), [order, lines]);
+  const checkAcct = () => run(async () => {
+    if (!order) return;
+    const r = await checkAccounting(order.id);
+    if (r.found || r.requested) {
+      setAcctMsg(`Found it: ${r.found ? `${r.found} line${r.found === 1 ? '' : 's'} marked sent to accounting` : ''}${r.found && r.requested ? '; ' : ''}${r.requested ? 'your payment request too' : ''}.`);
+      onReload();
+    } else setAcctMsg(r.error ? `Could not check everything: ${r.error}` : 'No e-mail to AP / GA naming it found yet. Send the invoice to hwoodap@iqbackoffice.com (with the payment request), then check again.');
+  });
   // v1.11: Approve -> the approval e-mail to check and send (kept while open, so the reload after Send doesn't close it)
   const [approving, setApproving] = useState<ApprovalDraft[] | null>(null);
   const startApprove = () => { if (order) setApproving(approvalDrafts(order, lines, docs, mails, venueName, me ?? { email: '' })); };
@@ -156,6 +167,17 @@ export function OrderDrawer({ order, lines, docs, data, today, venueName, onClos
               <button type="button" className="ot-btn sm primary" disabled={busy} onClick={startApprove}
                 title="Shows the approval e-mail to the vendor; Send sends it and marks the quote approved">Approve &amp; e-mail vendor</button>
               <button type="button" className="ot-btn sm" disabled={busy} onClick={() => void checkNow()} title="Look in the mailbox for your approval e-mail now (the 9 o'clock pull also checks)">I've sent it, check now</button>
+            </div>
+          )}
+          {toAccounting.length > 0 && (
+            <div className="ot-note warn" style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <span style={{ flex: '1 1 280px' }}>
+                <b>Send to accounting.</b> {toAccounting.length > 1 ? 'Invoices' : 'Invoice'} {toAccounting.join(', ')} {toAccounting.length > 1 ? 'have' : 'has'} not
+                been e-mailed to AP or GA (hwoodap@ / hwoodga@iqbackoffice.com) yet; {toAccounting.length > 1 ? 'they stay' : 'it stays'} flagged until that e-mail is found.
+                {acctMsg && <><br />{acctMsg}</>}
+              </span>
+              <button type="button" className="ot-btn sm" disabled={busy} onClick={() => void checkAcct()}
+                title="Look in the mailbox for your e-mail to AP / GA now (the 9 o'clock pull also checks)">I've sent it, check now</button>
             </div>
           )}
           {approvals.length > 0 && toApprove.length === 0 && (

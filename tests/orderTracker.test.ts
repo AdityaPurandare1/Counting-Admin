@@ -819,7 +819,10 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   const k = trackerKpis(data, '2026-11-03');
   check('KPIs: open, late (oldest days), on order, invoiced-not-paid, invoices', k.open === 1 && k.openLines === 3 && k.late === 1 && k.oldestLateDays === 9
     && k.onOrder$ === 250 && k.unpaid$ === 50 && k.unpaidInvoices === 1 && k.oldestUnpaidDays === 24, k);
-  const att = attentionItems(data, '2026-11-03', 3, x => '$' + x);
+  const attAll = attentionItems(data, '2026-11-03', 3, x => '$' + x);
+  // v1.21: its unpaid invoice was never e-mailed to accounting -> a "Send to accounting" item too (tests/acctSent.test.ts)
+  check('bell: the unpaid invoice not e-mailed to accounting is flagged', attAll.some(a => a.title === 'Send to accounting: EE Mercantile CUS-0012'), attAll.map(a => a.title));
+  const att = attAll.filter(a => !a.title.startsWith('Send to accounting'));
   check('bell: late orders first, then unpaid past 14 days, then the Inbox', att.map(a => a.sev).join() === 'crit,warn,info' && att[0].act.kind === 'order'
     && /1 line past ETA/.test(att[0].sub) && /24 days unpaid/.test(att[1].sub) && att[2].title === '3 documents waiting in the Inbox', att);
 

@@ -14,7 +14,7 @@ import { DocChips, DocViewer, Icon, docSort, isOtherDoc, latestByName } from './
 
 type StateFilter = 'open' | 'completed' | 'all' | 'archived';
 /** A KPI tile clicked: the list it stands for (n makes a second click on the same tile count). */
-export interface OrdersPreset { key: 'open' | 'late' | 'onorder' | 'invoiced' | 'approve' | 'stubs'; n: number }
+export interface OrdersPreset { key: 'open' | 'late' | 'onorder' | 'invoiced' | 'approve' | 'stubs' | 'acct'; n: number }
 
 const FUL_TONE: Record<string, string> = { 'In production': 'info', Shipped: 'info', Delivered: 'ok', Received: 'ok' };
 const PAY_TONE: Record<PaymentView['state'], string> = { none: '', unpaid: 'warn', part: 'warn', paid: 'ok' };
@@ -45,8 +45,8 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
   useEffect(() => { if (newNonce) setOpenId('new'); }, [newNonce]);
   useEffect(() => {
     if (!preset) return;
-    setState(preset.key === 'stubs' ? 'all' : 'open'); setQ(''); setLateOnly(preset.key === 'late'); setUnpaidOnly(preset.key === 'invoiced'); setApproveOnly(preset.key === 'approve');
-    setStubsOnly(preset.key === 'stubs'); setAcctOnly(false);
+    setState(preset.key === 'stubs' || preset.key === 'acct' ? 'all' : 'open'); setQ(''); setLateOnly(preset.key === 'late'); setUnpaidOnly(preset.key === 'invoiced'); setApproveOnly(preset.key === 'approve');
+    setStubsOnly(preset.key === 'stubs'); setAcctOnly(preset.key === 'acct');
   }, [preset]);
 
   const linesByOrder = useMemo(() => {
@@ -186,6 +186,7 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
                         {toApprove > 0 && <span className="ot-pill warn" title="Quoted, and no e-mail to the vendor approving it yet">Approve quote</span>}
                         {bible && (bible.ok ? <span className="ot-pill ok" title={quoteBibleSummary(bible, venueName).sub}>In bible</span>
                           : bible.off.some(x => x.state !== 'no-bible') && <span className="ot-pill warn" title={quoteBibleSummary(bible, venueName).sub}>Check bible</span>)}
+                        {notAcct.has(o.id) && <span className="ot-pill warn" title={`No e-mail to hwoodap@ / hwoodga@iqbackoffice.com names ${notAcct.get(o.id)!.join(', ')} yet`}>Send to accounting</span>}
                         {stubSend.has(o.id) && <span className={`ot-pill ${stubSend.get(o.id) ? 'crit' : 'warn'}`}
                           title="Paid recently: send the check stub to the vendor (To send)">{stubSend.get(o.id) ? 'Stub overdue' : 'Send stub'}</span>}</td>
                       <td className="venue">{o.venue_id === MULTIPLE_VENUES ? vIds.map(v => venueName(v)).join(', ') : o.venue_id ? venueName(o.venue_id) : 'Warehouse stock'}
@@ -199,7 +200,6 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
                       <td>
                         <span className={`ot-pill ${PAY_TONE[pay.state]}`}>{pay.label}</span>
                         {pay.invoices.length > 0 && <div className="t2 mono" title={pay.invoices.join(', ')}>{pay.invoices[0]}{pay.invoices.length > 1 ? ` +${pay.invoices.length - 1}` : ''}</div>}
-                        {notAcct.has(o.id) && <div className="t2" style={{ color: 'var(--ot-warn)' }} title={`No e-mail to hwoodap@ / hwoodga@iqbackoffice.com names ${notAcct.get(o.id)!.join(', ')} yet`}>not sent to accounting</div>}
                         {noStub.get(o.id) && !stubSend.has(o.id) ? <div className="t2" style={{ color: 'var(--ot-warn)' }}>no check stub{noStub.get(o.id)! > 1 ? ` (${noStub.get(o.id)})` : ''}</div> : null}
                         {pay.state === 'unpaid' && pay.oldestDays != null && <div className="t2">{pay.oldestDays ? `${pay.oldestDays} day${pay.oldestDays === 1 ? '' : 's'} waiting` : 'invoiced today'}</div>}
                       </td>

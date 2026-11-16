@@ -7,7 +7,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ACCOUNTING_MAILBOXES, accountingBoxes, accountingLabel, acctMailVerdict, firstAccountingMail, invoicesNamedIn, trackableInvoice, vendorMentioned,
   type AcctMail, type OtLine, type OtOrder } from '../src/lib/orderTracker';
-import { accountingOf, accountingText, notSentToAccounting } from '../src/lib/orderTrackerView';
+import { accountingOf, accountingText, attentionItems, notSentToAccounting, ordersNotSentToAccounting, trackerKpis } from '../src/lib/orderTrackerView';
 import { followupsDue, paymentRequestsDue } from '../src/lib/orderFollowups';
 
 let passed = 0;
@@ -138,6 +138,22 @@ check('sent (an e-mail to AP / GA, or a payment request) or paid -> not listed',
 check('archived orders and cancelled lines are left out; a completed order still owes it', !miss.has(D.id) && same(miss.get(E.id), ['INV-2026-666666']));
 check('an invoice # typed on a line still before Invoiced counts (as the Payment column reads it)', same(miss.get(F.id), ['I051432']));
 
+// ── v1.21 the bell and the tile, like quotes to approve ─────────────
+{
+  const today = '2026-11-16';
+  const L = order('OSE-0060'), M = order('CUS-0061');
+  const ls = [line(L, 'INV-2026-100001', { invoice_date: '2026-11-02' }), line(L, 'INV-2026-100002', { invoice_date: '2026-11-10' }),
+    line(M, 'INV-2026-100003', { invoice_date: '2026-11-13' }), line(M, 'INV-2026-100004', { ...sentAP })];
+  const w = ordersNotSentToAccounting([L, M], ls, today);
+  check('per order: its unsent invoices and days since the oldest was invoiced, oldest first',
+    same(w.map(x => [x.order.order_number, x.invoices, x.days]), [['OSE-0060', ['INV-2026-100001', 'INV-2026-100002'], 14], ['CUS-0061', ['INV-2026-100003'], 3]]), w.map(x => [x.order.order_number, x.invoices, x.days]));
+  const k = trackerKpis({ orders: [L, M], lines: ls, items: [], moves: [] }, today);
+  check('the tile: orders and invoices not sent', k.acct === 2 && k.acctInvoices === 3, [k.acct, k.acctInvoices]);
+  const bell = attentionItems({ orders: [L, M], lines: ls, items: [], moves: [] }, today, 0, x => `$${x}`).filter(a => a.title.startsWith('Send to accounting'));
+  check('the bell: one "Send to accounting" item per order, opening it', bell.length === 2 && bell[0].title === 'Send to accounting: EE Mercantile OSE-0060'
+    && bell[0].sub === 'INV-2026-100001, INV-2026-100002 · no e-mail to AP / GA yet · invoiced 14 days ago' && bell[0].sev === 'warn' && same(bell[0].act, { kind: 'order', id: L.id }), bell);
+}
+
 // ── To send: our own e-mail to AP / GA is the payment request (the pull sets pay_requested_at); a vendor's is not ─
 const venueName = () => 'Delilah Dallas';
 const P = order('OSE-0057');
@@ -165,7 +181,18 @@ check('reminders: with accounting but past its ETA -> still ask the vendor for a
     ov.includes('Not sent to accounting <span className="num">{notAcct.size}</span>') && ov.includes('if (acctOnly && !notAcct.has(r.o.id)) return false;')
     && ov.includes("onClick={() => { setAcctOnly(true); setState('all'); }}") && ov.includes('setStubsOnly(false); setAcctOnly(false); setState(\'all\'); };')
     && ov.indexOf('Stubs to send <span') < ov.indexOf('Not sent to accounting <span'));
-  check('Orders: the Payment column says "not sent to accounting" on such an order', ov.includes('{notAcct.has(o.id) && <div className="t2"') && ov.includes('>not sent to accounting</div>}'));
+  check('v1.21 Orders: a "Send to accounting" pill on such an order, beside "Approve quote" (the user: "similar to the quoted items")',
+    ov.includes('{notAcct.has(o.id) && <span className="ot-pill warn"') && ov.includes('>Send to accounting</span>}') && !ov.includes('>not sent to accounting</div>}'));
+  check('v1.21 Orders: the "acct" preset opens the filter on all orders', ov.includes("| 'stubs' | 'acct'; n: number }") && ov.includes("setState(preset.key === 'stubs' || preset.key === 'acct' ? 'all' : 'open');")
+    && ov.includes("setAcctOnly(preset.key === 'acct');"));
+  const ot = src('src/screens/OrderTracker.tsx');
+  check('v1.21 a "To accounting" tile beside "Quotes to approve" that opens that filter; the tiles fit 7 across',
+    ot.includes("onClick={() => kpi('acct')}") && ot.includes('<span className="lbl">To accounting</span>') && ot.indexOf('Quotes to approve</span>') < ot.indexOf('To accounting</span>')
+    && src('src/components/orderTracker/tracker.css').includes('.ot-kpis { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr));'));
+  const drv = src('src/components/orderTracker/OrderDrawer.tsx');
+  check('v1.21 the order: a "Send to accounting" note with "I’ve sent it, check now" (this order’s invoices only), like the quote approval',
+    drv.includes('<b>Send to accounting.</b>') && drv.includes('onClick={() => void checkAcct()}') && drv.includes('const r = await checkAccounting(order.id);')
+    && src('src/lib/orderMail.ts').includes("({ action: 'accounting', order_id })"));
   const dr = src('src/components/orderTracker/OrderDrawer.tsx');
   check('the order: an Accounting column per invoice — "Sent to AP · 10/28" (who / subject on hover), "Not sent" while unpaid',
     dr.includes('<th>Payment</th><th>Accounting</th><th>PDF</th>') && dr.includes('Sent to {accountingText(acct)}') && dr.includes('>Not sent</span>}')
@@ -197,6 +224,10 @@ check('reminders: with accounting but past its ETA -> still ask the vendor for a
     check('pull: in number order from where the last pull stopped (acct_cursor), cleared once through them all; failures counted; never failing the pull',
       fn.includes("const after = todo.findIndex(t => t.tok.localeCompare(cursor) > 0);") && fn.includes("update({ acct_cursor: checked < order.length ? lastTok : null })")
       && fn.includes('the next pull goes on from there') && fn.includes("stats.acct_error = msg(e).slice(0, 300);"));
+    check('v1.21 "check now": one order’s invoices only, the pulls’ place in the list left alone, found / requested returned',
+      fn.includes("if (action === 'accounting') {") && fn.includes('await accountingPhase(sb, stats, Date.now(), orderId);')
+      && fn.includes('if (onlyOrder && !ls.some(l => l.order_id === onlyOrder)) continue;') && fn.includes('if (lastTok && !onlyOrder) await')
+      && fn.includes('return json(200, { found: stats.acct_sent ?? 0, requested: stats.acct_requested ?? 0,'));
     check('pull: still reads the new API keys (the legacy ones are disabled since 11/15)', fn.includes('const SUPABASE_SERVICE_ROLE_KEY = NEW_SECRET_KEY();')
       && fn.includes('const SUPABASE_ANON_KEY = NEW_PUBLISHABLE_KEY();'));
     const mig = sibling('supabase', 'migrations', '0174_kount_ot_acct_sent.sql');

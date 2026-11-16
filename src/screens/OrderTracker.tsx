@@ -199,6 +199,8 @@ export function OrderTracker({ user, today: todayProp, load = loadTracker, loadM
                 <span className="hint">{kpis.unpaidInvoices ? `${kpis.unpaidInvoices} invoice${kpis.unpaidInvoices === 1 ? '' : 's'} · oldest ${kpis.oldestUnpaidDays}d` : 'no invoices waiting'}</span></button>
               <button type="button" className={`ot-kpi${kpis.approve ? ' warn' : ' good'}`} onClick={() => kpi('approve')} title="Quoted lines stay here until you e-mail the vendor the go-ahead (approved / good to go / yes)"><span className="lbl">Quotes to approve</span><span className="val">{kpis.approve || 'None'}</span>
                 <span className="hint">{kpis.approve ? `${kpis.approveLines} line${kpis.approveLines === 1 ? '' : 's'} · no approval e-mail yet` : 'every quote answered'}</span></button>
+              <button type="button" className={`ot-kpi${kpis.acct ? ' warn' : ' good'}`} onClick={() => kpi('acct')} title="Unpaid invoices stay here until an e-mail to hwoodap@ or hwoodga@iqbackoffice.com names them (checked each morning)"><span className="lbl">To accounting</span><span className="val">{kpis.acct || 'None'}</span>
+                <span className="hint">{kpis.acct ? `${kpis.acctInvoices} invoice${kpis.acctInvoices === 1 ? '' : 's'} · not e-mailed to AP / GA` : 'every invoice sent'}</span></button>
               <button type="button" className={`ot-kpi${kpis.reorder ? ' warn' : ' good'}`} onClick={() => kpi('warehouse')}><span className="lbl">Warehouse</span><span className="val">{kpis.reorder ? `${kpis.reorder} to reorder` : 'OK'}</span>
                 <span className="hint">{kpis.reorder ? 'at or below reorder point' : kpis.soon ? `${kpis.soon} within 30 days` : 'no reorders due'}</span></button>
             </div>

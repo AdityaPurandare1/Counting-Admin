@@ -89,6 +89,8 @@ export interface TrackerKpis {
   reorder: number; soon: number;
   /** open orders with a Quoted line h.wood has not e-mailed its approval for (0157), and those lines */
   approve: number; approveLines: number;
+  /** v1.21 orders with an unpaid invoice no e-mail to accounting (AP / GA) has named yet, and those invoices */
+  acct: number; acctInvoices: number;
 }
 interface Data { orders: OtOrder[]; lines: OtLine[]; items: OtItem[]; moves: OtMove[]; documents?: OtDocument[]; bibles?: BibleText[]; followups?: StubSentMark[] }
 const byOrder = (lines: OtLine[]) => {
@@ -117,6 +119,7 @@ export function trackerKpis(data: Data, today: string): TrackerKpis {
     oldestUnpaidDays: pays.reduce((m, p) => Math.max(m, p.oldestDays ?? 0), 0),
     reorder: stock.filter(r => r.state === 'reorder now').length, soon: stock.filter(r => r.state === 'reorder soon').length,
     ...(() => { const w = ordersAwaitingApproval(data.orders, data.lines, today); return { approve: w.length, approveLines: w.reduce((s, x) => s + x.lines.length, 0) }; })(),
+    ...(() => { const m = notSentToAccounting(data.orders, data.lines); return { acct: m.size, acctInvoices: [...m.values()].reduce((s, v) => s + v.length, 0) }; })(),
   };
 }
 
@@ -148,6 +151,12 @@ export function attentionItems(data: Data, today: string, inboxWaiting: number, 
   for (const w of ordersAwaitingApproval(data.orders, data.lines, today)) {
     out.push({ sev: 'warn', title: `Approve the quote: ${w.order.vendor_name} ${w.order.order_number ?? ''}`.trim(),
       sub: `${w.quotes.length ? `Quote ${w.quotes.join(', ')}` : `${w.lines.length} quoted line${w.lines.length > 1 ? 's' : ''}`} · no approval e-mail yet${w.days ? ` · ${w.days} day${w.days === 1 ? '' : 's'}` : ''}`,
+      act: { kind: 'order', id: w.order.id } });
+  }
+  // v1.21 an invoice nobody has e-mailed to accounting (AP / GA, 0174): it is not paid until they have it
+  for (const w of ordersNotSentToAccounting(data.orders, data.lines, today)) {
+    out.push({ sev: 'warn', title: `Send to accounting: ${w.order.vendor_name} ${w.order.order_number ?? ''}`.trim(),
+      sub: `${w.invoices.join(', ')} · no e-mail to AP / GA yet${w.days ? ` · invoiced ${w.days} day${w.days === 1 ? '' : 's'} ago` : ''}`,
       act: { kind: 'order', id: w.order.id } });
   }
   // quoted items not in the venue's bible by item number (v1.07); a venue with no bible is said once
@@ -549,4 +558,18 @@ export function notSentToAccounting(orders: ReadonlyArray<OtOrder>, lines: Reado
   }
   for (const v of out.values()) v.sort();
   return out;
+}
+
+/** v1.21 the same per order, for the bell: its invoices and how long since the oldest was invoiced; oldest first. */
+export function ordersNotSentToAccounting(orders: ReadonlyArray<OtOrder>, lines: ReadonlyArray<OtLine>, today: string):
+    Array<{ order: OtOrder; invoices: string[]; days: number }> {
+  const byId = new Map(orders.map(o => [o.id, o]));
+  const out: Array<{ order: OtOrder; invoices: string[]; days: number }> = [];
+  for (const [orderId, invoices] of notSentToAccounting(orders, lines)) {
+    const inv = new Set(invoices);
+    const since = lines.filter(l => l.order_id === orderId && l.status !== 'CANCELLED' && inv.has(invoiceToken(l.invoice_number)))
+      .map(l => l.invoice_date ?? l.status_at.slice(0, 10)).sort()[0];
+    out.push({ order: byId.get(orderId)!, invoices, days: since ? Math.max(0, daysFrom(since, today)) : 0 });
+  }
+  return out.sort((a, b) => b.days - a.days || String(a.order.order_number).localeCompare(String(b.order.order_number)));
 }
