@@ -4,7 +4,7 @@ import { createClient } from '@supabase/supabase-js';
  *  app's `counting-app.html` in lockstep so both clients stay aligned. */
 export const SUPABASE_URL = 'https://mnraeesscqsaappkaldb.supabase.co';
 export const SUPABASE_ANON_KEY =
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1ucmFlZXNzY3FzYWFwcGthbGRiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjI2MzkxNzQsImV4cCI6MjA3ODIxNTE3NH0.QaPiMs48H9nsH7wGNhi_1jYRQ_YAPGLduxSpYOrz1ug';
+  'sb_publishable_SIqcOuq1_xvj4XzpK1dWbw_OOJTPcYg';
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   realtime: { params: { eventsPerSecond: 2 } },
