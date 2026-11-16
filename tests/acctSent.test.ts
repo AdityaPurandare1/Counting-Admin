@@ -5,7 +5,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { ACCOUNTING_MAILBOXES, accountingBoxes, accountingLabel, acctMailVerdict, firstAccountingMail, invoicesNamedIn, vendorMentioned,
+import { ACCOUNTING_MAILBOXES, accountingBoxes, accountingLabel, acctMailVerdict, firstAccountingMail, invoicesNamedIn, trackableInvoice, vendorMentioned,
   type AcctMail, type OtLine, type OtOrder } from '../src/lib/orderTracker';
 import { accountingOf, accountingText, notSentToAccounting } from '../src/lib/orderTrackerView';
 import { followupsDue, paymentRequestsDue } from '../src/lib/orderFollowups';
@@ -76,6 +76,12 @@ check('a number with letters only Outlook found (inside the PDF) counts; digits 
   && v('1685034', 'A.R.C. Warewash', mail({ subject: 'New payment request from ARC - invoice 1685034', from: 'quickbooks@notification.intuit.com', fromName: 'A.R.C. Warewash & Laundry Solutions via QuickBooks' })) === 'yes'
   && v('90069', 'A.R.C. Warewash', mail({ body: 'Delilah, Los Angeles, CA 90069' })) === 'no' && v('1685034', 'A.R.C. Warewash', mail({ body: 'invoice 1685034' })) === 'no');
 check('no attachments and not named -> no', v('INV-2026-348798', 'EE Mercantile', mail({ subject: 'Re: Delilah Dallas' })) === 'no');
+check('re-review: written only as part of another number -> that other invoice, not this one (no Outlook-only yes)',
+  v('INV-46284', 'Maison Louis Marie', mail({ subject: 'Payment Request - Maison Louis Marie INV-46284-2', hasAttachments: true }), ['INV-46284-2.pdf']) === 'no'
+  && v('I051432', 'Everything Promo', mail({ subject: 'Your Invoice I051432-1 From Everything Promo', hasAttachments: true }), ['I051432-1.pdf']) === 'no');
+check('re-review: a number the check cannot read ("TBD", "INV 46284", "A12") is never found',
+  ['TBD', 'INV 46284', 'A12', 'SEE PDF'].every(t => v(t, 'EE Mercantile', mail({ subject: t, hasAttachments: true }), ['x.pdf']) === 'no')
+  && !trackableInvoice('TBD') && !trackableInvoice('1011') && trackableInvoice('12345') && trackableInvoice('i051432') && trackableInvoice('INV-46284'));
 
 // ── the e-mails -> what the lines keep ──────────────────────────────
 const hit = firstAccountingMail([
@@ -176,17 +182,21 @@ check('reminders: with accounting but past its ETA -> still ask the vendor for a
   if (fn) {
     check('pull: the accounting step runs once the run files its invoices (the last call of a chained pull), timed from the run start',
       fn.includes('if (!chain) await accountingPhase(sb, stats, startedMs);') && fn.includes('const until = Math.min(Date.now() + ACCT_BUDGET_MS, startedMs + ACCT_RUN_LIMIT_MS);'));
-    check('pull: only invoices not paid and not found yet are searched; a line added later copies the stamp',
-      fn.includes("if (ls.some(l => statusRank(l.status) >= statusRank('PAID'))) continue;") && fn.includes('const missing = ls.filter(l => !l.acct_sent_at).map(l => l.id);'));
-    check('pull: one Outlook search per invoice number; each e-mail judged by acctMailVerdict, attachment names read only when asked',
-      fn.includes('/me/messages?$search=${encodeURIComponent(`"${t.tok.replace(') && fn.includes("let v = acctMailVerdict(t.tok, t.vendor, mail);")
-      && fn.includes("if (v === 'attachments') {") && fn.includes('v = acctMailVerdict(t.tok, t.vendor, mail, (atts.value ?? []).map(a => a.name ?? \'\'));'));
-    check('pull: all the invoice lines stamped in one update; our own e-mail also sets the payment request',
-      fn.includes("const hit = firstAccountingMail(hits, OWN_DOMAINS);") && fn.includes("acct_sent_subject: hit.subject, acct_message_id: hit.messageId }).in('id', ids);")
-      && fn.includes(".update({ pay_requested_at: ownAt }).in('id', unrequested);"));
-    check('pull: a daily rotation, one invoice failing skips only it, what was left or failed is said, never failing the pull',
-      fn.includes('const start = Math.floor(Date.now() / 86_400_000) % todo.length;') && fn.includes('failed++;')
-      && fn.includes('unpaid invoices (time limit); the rest on the next pulls') && fn.includes("stats.acct_error = msg(e).slice(0, 300);"));
+    check('pull: unpaid invoices only, searchable numbers only; a line added later copies the stamp (a failure there is counted, not fatal)',
+      fn.includes("if (ls.some(l => statusRank(l.status) >= statusRank('PAID'))) continue;") && fn.includes('if (!trackableInvoice(t)) continue;')
+      && fn.includes('const missing = ls.filter(l => !l.acct_sent_at).map(l => l.id);') && fn.includes('if (error) fail(error); else stats.acct_sent'));
+    check('pull: found by a vendor’s own e-mail -> still searched for ours (the payment request); found with ours -> done',
+      fn.includes('if (ls.every(l => l.pay_requested_at)) continue;') && fn.includes('stamped: !!found });')
+      && fn.includes('const stamp = t.stamped ? {} : { acct_sent_at: hit.at,'));
+    check('pull: each number searched as words and in attachments (Outlook’s plain search is from / subject / body only); each e-mail judged once',
+      fn.includes('for (const term of [q, `attachment:${q}`]) {') && fn.includes('if (seen.has(m.id)) continue;')
+      && fn.includes("let v = acctMailVerdict(t.tok, t.vendor, mail);") && fn.includes("if (v === 'attachments') {"));
+    check('pull: the stamp and our payment request in the same update; the rest of the lines get the stamp',
+      fn.includes("const hit = firstAccountingMail(hits, OWN_DOMAINS);") && fn.includes(".update({ ...stamp, pay_requested_at: ownAt }).in('id', requested);")
+      && fn.includes(".update(stamp).in('id', rest);"));
+    check('pull: in number order from where the last pull stopped (acct_cursor), cleared once through them all; failures counted; never failing the pull',
+      fn.includes("const after = todo.findIndex(t => t.tok.localeCompare(cursor) > 0);") && fn.includes("update({ acct_cursor: checked < order.length ? lastTok : null })")
+      && fn.includes('the next pull goes on from there') && fn.includes("stats.acct_error = msg(e).slice(0, 300);"));
     check('pull: still reads the new API keys (the legacy ones are disabled since 11/15)', fn.includes('const SUPABASE_SERVICE_ROLE_KEY = NEW_SECRET_KEY();')
       && fn.includes('const SUPABASE_ANON_KEY = NEW_PUBLISHABLE_KEY();'));
     const mig = sibling('supabase', 'migrations', '0174_kount_ot_acct_sent.sql');
@@ -195,6 +205,9 @@ check('reminders: with accounting but past its ETA -> still ask the vendor for a
     check('0174: a line moved to another invoice loses the stamps and the payment request', !!mig
       && mig.includes('if public.kount_ot_inv_token(new.invoice_number) is distinct from public.kount_ot_inv_token(old.invoice_number) then')
       && mig.includes('new.pay_requested_at := null; new.ap_query_no := null;'));
+    check('0174: the payment-request stamps (0153) also leave updated_at alone; the check’s place is kept (acct_cursor)', !!mig
+      && mig.includes("'{updated_at,acct_sent_at,acct_sent_to,acct_sent_by,acct_sent_subject,acct_message_id,pay_requested_at,ap_query_no}'::text[]")
+      && mig.includes('alter table public.kount_ot_mail_account add column if not exists acct_cursor text;'));
   } else console.log('  (Counting-App not next to this repo: the pull checks are skipped)');
 }
 
