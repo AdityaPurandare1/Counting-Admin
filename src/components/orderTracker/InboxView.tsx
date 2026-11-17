@@ -3,7 +3,7 @@ import { Btn, Card, Pill } from '@/components/atoms';
 import { DOC_KIND_LABEL, headlineStatus, STATUS_LABEL, trackingUrl, type OtLine, type OtOrder } from '@/lib/orderTracker';
 import { addTracking, documentUrl } from '@/lib/orderTrackerData';
 import {
-  disconnectMail, findInMail, findSummary, morningPullAlert, pastPullConfirm, pastPullDefaultDay, pullPast, inboxGroups, isPaymentStub, isTrackingEmail, mailStatus, pollConnect, pullNow, setAutoCreate, setDocKinds, setInboxState, setVendorDomains, startConnect,
+  disconnectMail, findInMail, findSummary, morningPullAlert, pastPullConfirm, pastPullDefaultDay, pullPast, inboxGroups, isPaymentStub, isTrackingEmail, mailStatus, pollConnect, pullNow, setAutoCreate, setDocKinds, setInboxState, setVendorDomains, startConnect, stubCheckLine,
   type DeviceCode, type InboxItem, type MailStatus,
 } from '@/lib/orderMail';
 import { errBox, fmtMoney, linkBtn, okBox, picker, shortDate, smallInput, subTxt } from './shared';
@@ -222,10 +222,11 @@ function MailCard({ onChanged }: { onChanged: () => void }) {
           {run && (
             <div style={{ ...subTxt, marginTop: 6 }}>
               Last pull {new Date(run.finished_at ?? run.started_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} ({run.trigger}):
-              {' '}{run.new_pdfs} new PDF{run.new_pdfs === 1 ? '' : 's'}, {run.applied} applied, {run.tracking ? `${run.tracking} tracking, ` : ''}{run.paid ? `${run.paid} paid (R365), ` : ''}{run.approved ? `${run.approved} quote line${run.approved === 1 ? '' : 's'} approved, ` : ''}{run.acct_sent ? `${run.acct_sent} invoice line${run.acct_sent === 1 ? '' : 's'} found sent to accounting, ` : ''}{run.stubs ? `${run.stubs} check stub${run.stubs === 1 ? '' : 's'} / payment proof${run.stubs === 1 ? '' : 's'} filed, ` : ''}{run.proofs_read ? `${run.proofs_read} payment proof${run.proofs_read === 1 ? '' : 's'} read, ` : ''}{run.paid_by_proof ? `${run.paid_by_proof} line${run.paid_by_proof === 1 ? '' : 's'} marked paid from a payment proof, ` : ''}{run.pending} waiting, {run.ignored} skipped
+              {' '}{run.new_pdfs} new PDF{run.new_pdfs === 1 ? '' : 's'}, {run.applied} applied, {run.tracking ? `${run.tracking} tracking, ` : ''}{run.paid ? `${run.paid} paid (R365), ` : ''}{run.approved ? `${run.approved} quote line${run.approved === 1 ? '' : 's'} approved, ` : ''}{run.acct_sent ? `${run.acct_sent} invoice line${run.acct_sent === 1 ? '' : 's'} found sent to accounting, ` : ''}{run.stubs ? `${run.stubs} check stub${run.stubs === 1 ? '' : 's'} / payment proof${run.stubs === 1 ? '' : 's'} filed, ` : ''}{run.proofs_read ? `${run.proofs_read} payment proof${run.proofs_read === 1 ? '' : 's'} read, ` : ''}{run.paid_by_proof ? `${run.paid_by_proof} line${run.paid_by_proof === 1 ? '' : 's'} marked paid from a payment proof, ` : ''}{run.stubs_sent ? `${run.stubs_sent} stub${run.stubs_sent === 1 ? '' : 's'} found sent to the vendor, ` : ''}{run.pending} waiting, {run.ignored} skipped
               {run.failed ? `, ${run.failed} not read` : ''}{run.remaining ? `, ${run.remaining} still to read` : ''}.
               {run.acct_error && <div style={{ color: 'var(--ot-warn)' }}>Sent-to-accounting check: {run.acct_error}</div>}
               {run.stub_note && <div style={{ color: 'var(--ot-ink-3)' }}>{run.stub_note}</div>}
+              {stubCheckLine(run.stub_check) && <div style={{ color: 'var(--ot-ink-3)' }}>Stubs checked again hourly (10:30-5:30). {stubCheckLine(run.stub_check)}</div>}
             </div>
           )}
           {(() => { const a = morningPullAlert(s); return a && <div style={errBox}><b>{a.title}.</b> {a.sub}</div>; })()}

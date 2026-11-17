@@ -11,7 +11,7 @@ import {
   planDocRows, planDocumentSave, documentChecks, decideMailDocument, extractTracking, trackingUrl, orderForEmail, venueForDoc, filterByVenue, sortOrders, orderVenueIds,
   planStorageLine, storageMoveRows, isStorageLine, autoOrderNumber, lineOutsideSubtotal, orderForReferences,
   keepOtherAttachment, isSpreadsheet, sheetUpdates, itemLocation, EE_WAREHOUSE, linePack, qtyInItemUnits, lineDeliversTo,
-  laClock, morningFetchDone, scheduledPullDue, morningPullMissed,
+  laClock, morningFetchDone, scheduledPullDue, morningPullMissed, stubCheckDue,
   awaitingApproval, approvalPhrase, replyText, findApproval, planQuoteApprovals, ordersAwaitingApproval, quoteKey, searchableQuote,
   type ReadDoc, type MailSource, type MailMessage,
   type OtItem, type OtLine, type OtMove, type OtOrder, type OtDocument, type OtTracking, type DocLine, type DocReview,
@@ -1424,6 +1424,13 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   check('summer: 9:00 PDT (16 UTC) pulls, 13:50 PDT (20:50 UTC) catches up', scheduledPullDue('2026-07-09T16:30:00Z', at('2026-07-10T16:00:00Z')) && scheduledPullDue('2026-07-09T16:30:00Z', at('2026-07-10T20:50:00Z')));
   check('warning from 10:00 when not read', morningPullMissed(yesterday, at('2026-11-10T18:05:00Z')) && !morningPullMissed(yesterday, at('2026-11-10T17:30:00Z')));
   check('no warning once read', !morningPullMissed('2026-11-10T20:12:00Z', at('2026-11-10T21:00:00Z')));
+  // 0175: the stubs checked again hourly, 10:30-17:30, once the morning pull has read the mail
+  const readAt9 = '2026-11-10T17:03:00Z';
+  check('stub check: 10:30 and 17:30 run, 9:30 and 18:30 do not', stubCheckDue(readAt9, at('2026-11-10T18:30:00Z')) && stubCheckDue(readAt9, at('2026-11-11T01:30:00Z'))
+    && !stubCheckDue(readAt9, at('2026-11-10T17:30:00Z')) && !stubCheckDue(readAt9, at('2026-11-11T02:30:00Z')));
+  check('stub check: not before the morning pull has read today\'s mail (it reads the stubs itself)', !stubCheckDue(yesterday, at('2026-11-10T20:30:00Z')) && !stubCheckDue(null, at('2026-11-10T20:30:00Z')));
+  check('stub check: a Pull now at 11:40 counts as the morning', stubCheckDue('2026-11-10T19:40:00Z', at('2026-11-10T21:30:00Z')));
+  check('stub check: summer (PDT) 10:30 = 17:30 UTC', stubCheckDue('2026-07-10T16:05:00Z', at('2026-07-10T17:30:00Z')) && !stubCheckDue('2026-07-10T16:05:00Z', at('2026-07-10T16:30:00Z')));
 
   const st = (over: Partial<MailStatus> = {}): MailStatus => ({
     mailbox: 'apurandare@hwoodgroup.com', connected: true, connected_by: null, connected_at: null, signing_in: false, vendor_domains: ['eemercantile.co'],

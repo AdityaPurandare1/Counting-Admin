@@ -4,14 +4,17 @@ import { documentUrl, logFollowup, undoFollowup, type TrackerData } from '@/lib/
 import { FOLLOW_AFTER, followupsDue, mailtoLink, paymentRequestsDue, type FollowUp, type OrderMail, type PayRequest } from '@/lib/orderFollowups';
 import { errBox, fmtMoney, linkBtn, shortDate, subTxt } from './shared';
 import { RECENT_PAID_DAYS, STUB_SENT_NOTE, stubsToSend, type StubToSend } from '@/lib/orderTrackerView';
+import { stubCheckLine, type StubCheck } from '@/lib/orderMail';
 import { stubEmail } from '@/lib/stubMail';
 import { messageLink } from '@/lib/orderMail';
 import { openPaymentDraft } from './payDraft';
 
 /** v1.04 To send: payment requests for new invoices and follow-ups on quiet orders, each one click from a
  *  filled-in e-mail (src/lib/orderFollowups.ts). Compose opens it in Outlook and logs it (Undo if not sent). */
-export function ToSend({ data, mails, today, venueName, me, meName = null, onOpenOrder, onReload }: {
+export function ToSend({ data, mails, today, venueName, me, meName = null, stubCheck = null, onOpenOrder, onReload }: {
   data: TrackerData; mails: OrderMail[]; today: string; venueName: (id: string | null) => string; me: string; meName?: string | null;
+  /** v1.22 (0175): the latest hourly stub check (mail status last_run.stub_check) */
+  stubCheck?: StubCheck | null;
   onOpenOrder: (orderId: string) => void; onReload: () => void;
 }) {
   const full = { ...data, followups: data.followups ?? [] };
@@ -101,7 +104,8 @@ export function ToSend({ data, mails, today, venueName, me, meName = null, onOpe
         <div style={{ fontWeight: 700 }}>Check stubs to send {stubs.length > 0 && <Pill tone={stubs.some(g => g.overdue) ? 'critical' : 'gold'} size="sm">{stubs.length}</Pill>}</div>
         <div style={subTxt}>Paid in the last {RECENT_PAID_DAYS} days and the stub not sent to the vendor yet, by payment run (Thursday / Friday) — send each by the next business day.
           Reprint it in R365 (Accounts Payable → AP Transactions → the payment → Action → Check Stub Reprint), then send it with the e-mail below and attach the PDF.
-          The next mail pull files the stub on the order and it leaves this list.</div>
+          Your sent mail is checked for stubs at the 9 o'clock pull and again every hour from 10:30 to 5:30: a stub you send leaves this list within the hour.</div>
+        {stubCheckLine(stubCheck) && <div style={{ ...subTxt, marginTop: 6 }}>{stubCheckLine(stubCheck)}</div>}
         {stubNote && <div style={{ ...subTxt, marginTop: 6 }}>{stubNote}</div>}
         {stubMarked && <div style={{ ...subTxt, marginTop: 6 }}>Marked sent: {stubMarked.label}.{' '}
           <button style={{ ...linkBtn, fontSize: 12 }} onClick={() => void run(async () => { for (const x of stubMarked.ids) await undoFollowup(x); setStubMarked(null); onReload(); })}>Undo</button></div>}

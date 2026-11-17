@@ -217,7 +217,7 @@ export function OrderTracker({ user, today: todayProp, load = loadTracker, loadM
               mails={inbox} me={{ email: user.email, name: user.name }} />}
             {view === 'inbox' && <InboxView items={inbox} orders={data.orders} lines={data.lines} onReview={i => { setReviewing(i); setDocFile(null); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
               onOpenOrder={id => { setFocusOrder(id); setView('orders'); }} onChanged={() => void reload()} />}
-            {view === 'tosend' && <ToSend data={data} mails={inbox} today={today} venueName={venueName} me={user.email} meName={user.name}
+            {view === 'tosend' && <ToSend data={data} mails={inbox} today={today} venueName={venueName} me={user.email} meName={user.name} stubCheck={mailSt?.last_run?.stub_check ?? null}
               onOpenOrder={id => { setFocusOrder(id); setView('orders'); }} onReload={() => void reload()} />}
             {view === 'warehouse' && <WarehouseView data={data} today={today} venueName={venueName} onReload={() => void reload()} />}
             {view === 'bibles' && <BibleView data={data} today={today} />}

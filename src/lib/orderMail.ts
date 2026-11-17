@@ -47,7 +47,26 @@ export interface MailRun {
   paid_by_proof?: number; stubs?: number;
   /** v1.21: payment proof files the reader read / why the stub step stopped short (the next pull reads the rest) */
   proofs_read?: number; stub_note?: string;
+  /** v1.22 (0175): stubs on file from an internal e-mail found sent on to the vendor / the latest hourly stub check */
+  stubs_sent?: number; stub_check?: StubCheck;
   remaining?: number; error: string | null; reconnect: boolean;
+}
+
+/** v1.22 (0175): the stub step run again once an hour, 10:30-17:30, after the morning pull (last_run.stub_check). */
+export interface StubCheck {
+  started_at: string; finished_at: string; stubs: number; stubs_sent: number; proofs_read: number; paid_by_proof: number;
+  note: string | null; error: string | null; reconnect?: boolean;
+}
+
+/** What To send and the Inbox say about today's latest hourly stub check, or null when none ran today. */
+export function stubCheckLine(c: StubCheck | null | undefined, now: Date = new Date()): string | null {
+  if (!c?.finished_at || !Number.isFinite(Date.parse(c.finished_at)) || laClock(new Date(c.finished_at)).day !== laClock(now).day) return null;
+  const t = new Date(c.finished_at).toLocaleTimeString('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric', minute: '2-digit' }).toLowerCase();
+  if (c.error) return `The stub check at ${t} stopped: ${c.reconnect ? 'the Outlook sign-in has expired (reconnect it in the Inbox)' : c.error.slice(0, 160)}.`;
+  const s = (k: number, one: string, many = `${one}s`) => `${k} ${k === 1 ? one : many}`;
+  const parts = [c.stubs ? `${s(c.stubs, 'stub / payment proof', 'stubs / payment proofs')} filed` : '', c.stubs_sent ? `${s(c.stubs_sent, 'stub')} found sent to the vendor` : '',
+    c.paid_by_proof ? `${s(c.paid_by_proof, 'line')} marked paid` : ''].filter(Boolean);
+  return `Last checked ${t}: ${parts.length ? parts.join(', ') : 'nothing new'}.${c.note ? ` ${c.note}` : ''}`;
 }
 
 /** The 9 o'clock pull has not read today's mail (0160): what the bell and the Inbox say, or null. From 10:00 in

@@ -3,10 +3,11 @@
  * ... so that I can pull the check stub and send it to the vendor on time" and "things are sent for payment every
  * thursday and friday". Calendar: Tue 11/10/2026 -> last week's run was Thu 11/5 - Fri 11/6.  npm test
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { attentionItems, nextBusinessDay, paymentRun, stubsToSend } from '../src/lib/orderTrackerView';
 import { stubEmail } from '../src/lib/stubMail';
+import { stubCheckLine, type StubCheck } from '../src/lib/orderMail';
 import type { OtDocument, OtLine, OtOrder } from '../src/lib/orderTracker';
 
 let passed = 0;
@@ -141,6 +142,48 @@ check('the To send count includes the stubs', /\+ stubsToSend\(data\.orders, dat
   check('the chip clears it (red when any is overdue); Clear filters resets it; a "stubs" preset opens it',
     /ot-fchip \$\{stubOverdue \? 'crit' : 'warn'\}/.test(ov) && /setApproveOnly\(false\); setStubsOnly\(false\);/.test(ov) && /setStubsOnly\(preset\.key === 'stubs'\)/.test(ov)
     && /\.ot-fchip\.crit \{/.test(src('src/components/orderTracker/tracker.css')));
+}
+
+
+// ── v1.22 (0175): stubs checked again during the day. The user, 11/17: "if the stubs are sent, can we get them checked
+// again during the day after the daily run please" ──
+{
+  const sc = (over: Partial<StubCheck> = {}): StubCheck => ({ started_at: '2026-11-17T22:30:01Z', finished_at: '2026-11-17T22:30:40Z', stubs: 0, stubs_sent: 0,
+    proofs_read: 0, paid_by_proof: 0, note: null, error: null, ...over });
+  const now = new Date('2026-11-17T23:10:00Z');
+  check('stub check line: nothing new', stubCheckLine(sc(), now) === 'Last checked 2:30 pm: nothing new.', stubCheckLine(sc(), now));
+  check('stub check line: what it found', stubCheckLine(sc({ stubs: 1, stubs_sent: 2, paid_by_proof: 3 }), now)
+    === 'Last checked 2:30 pm: 1 stub / payment proof filed, 2 stubs found sent to the vendor, 3 lines marked paid.', stubCheckLine(sc({ stubs: 1, stubs_sent: 2, paid_by_proof: 3 }), now));
+  check('stub check line: an expired sign-in says reconnect', /stopped: the Outlook sign-in has expired/.test(stubCheckLine(sc({ error: 'invalid_grant', reconnect: true }), now) ?? ''));
+  check('stub check line: yesterday\'s check / none -> nothing', stubCheckLine(sc(), new Date('2026-11-18T18:00:00Z')) === null && stubCheckLine(null, now) === null);
+  const toSend = src('src/components/orderTracker/ToSend.tsx');
+  check('To send: says stubs are checked again hourly and shows the last check', /again every hour from 10:30 to 5:30/.test(toSend) && /stubCheckLine\(stubCheck\)/.test(toSend)
+    && /stubCheck=\{mailSt\?\.last_run\?\.stub_check \?\? null\}/.test(src('src/screens/OrderTracker.tsx')));
+  check('Inbox: the last pull line shows the hourly check and stubs found sent', /stubCheckLine\(run\.stub_check\)/.test(src('src/components/orderTracker/InboxView.tsx'))
+    && /run\.stubs_sent/.test(src('src/components/orderTracker/InboxView.tsx')));
+
+  const sibling = (...parts: string[]) => { const p = join(process.env.COUNTING_APP_DIR ?? join(process.cwd(), '..', 'Counting-App'), ...parts); return existsSync(p) ? readFileSync(p, 'utf8') : null; };
+  const fn = sibling('supabase', 'functions', 'kount-order-mail', 'index.ts');
+  const mig = sibling('supabase', 'migrations', '0175_kount_ot_mail_stub_checks.sql');
+  if (fn && mig) {
+    check("function stub_check: the cron secret, stubCheckDue, the pull lock, then the stub step alone over 2 days",
+      /action === 'cron' \|\| action === 'continue' \|\| action === 'stub_check'/.test(fn) && /if \(!stubCheckDue\(acctNow\?\.last_fetch_at \?\? null\)\)/.test(fn)
+      && /background\(runStubCheck\(sb\)\)/.test(fn) && /const STUB_CHECK_DAYS = 2;/.test(fn) && /await stubPhase\(sb, tok\.access_token, 0, stats, STUB_CHECK_DAYS\);/.test(fn));
+    const run = fn.slice(fn.indexOf('async function runStubCheck'), fn.indexOf('/** A vendor\'s own payment receipt'));
+    check("function stub_check: the morning's last_run stays, the check is kept in it; the lock is released",
+      /last_run: prev \? \{ \.\.\.prev, stub_check: check \}/.test(run) && /running_since: null/.test(run) && !/fetchPhase|r365PaidPhase|accountingPhase/.test(run));
+    check('the same stub sent on to the vendor (same file, filed from an internal e-mail first) counts as sent',
+      /if \(toVendor && dup\.storage_path\)/.test(fn) && /async function markStubSent/.test(fn) && /d\.parsed\?\.to_vendor !== false\) continue;/.test(fn) && /to_vendor: true, sent_message_id: messageId/.test(fn));
+    const stub = fn.slice(fn.indexOf('async function stubPhase'), fn.indexOf('async function markPaidFromProof'));
+    check('the read limit is checked between e-mails, never inside one (an e-mail with a row is not looked at again)',
+      stub.indexOf('if (reads >= STUB_READS_MAX || Date.now() > until) { cut = true; break; }') > stub.indexOf('if (filed?.length) continue;')
+      && stub.indexOf('if (reads >= STUB_READS_MAX || Date.now() > until) { cut = true; break; }') < stub.indexOf('for (const a of files)'));
+    check('a read payment proof naming no invoice is kept (ignored), so the hourly check does not read it again',
+      /A payment proof naming no invoice the tracker knows/.test(stub) && /if \(!proof\) \{ await sb\.storage\.from\(BUCKET\)\.remove\(\[path\]\); continue; \}/.test(stub));
+    check('0175: hourly at :30, gated on 10-17 Los Angeles, the morning read, Outlook connected; anon JWT + cron secret',
+      /cron\.schedule\('kount-order-mail-stubs', '30 \* \* \* \*'/.test(mig) && /between 10 and 17/.test(mig) && /a\.last_fetch_at >= /.test(mig)
+      && /a\.token_secret_id is not null/.test(mig) && /kount_edge_anon_jwt/.test(mig) && /kount_order_mail_cron/.test(mig) && /"action":"stub_check"/.test(mig));
+  } else console.log('  (skipped: no Counting-App next to this repo)');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
