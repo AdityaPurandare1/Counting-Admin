@@ -45,6 +45,9 @@ export interface FollowUp {
 export interface Email { to: string[]; cc: string[]; subject: string; body: string }
 export interface PayRequest {
   order: OtOrder; venue: string; invoices: string[]; lines: OtLine[];
+  /** v1.22 where the e-mail's details come from: the invoice PDF as read when it was filed, or (no PDF / not read)
+   *  the order's lines - then the person checks it */
+  source: 'invoice' | 'order';
   subtotal: number; tax: number; total: number; invoiceDate: string | null;
   /** the invoice PDFs on the order (download to attach) */
   docs: OtDocument[];
@@ -192,25 +195,34 @@ export function paymentRequestsDue(data: { orders: OtOrder[]; lines: OtLine[]; d
       const linesTotal = ls.reduce((s, l) => s + (Number(l.qty) || 0) * (Number(l.unit_price) || 0), 0);
       const parsedOf = (d: OtDocument) => (d as OtDocument & { parsed?: { subtotal?: number; total?: number } | null }).parsed ?? null;
       const allPdfs = invoices.every(i => docs.some(d => normText(d.doc_number) === normText(i)));
-      const total = allPdfs ? docs.reduce((s, d) => s + (Number(d.total ?? parsedOf(d)?.total) || 0), 0) : linesTotal;
-      const subtotal = allPdfs ? docs.reduce((s, d) => s + (Number(parsedOf(d)?.subtotal) || Number(d.total) || 0), 0) : linesTotal;
-      const tax = Math.max(0, Math.round((total - subtotal) * 100) / 100);
-      const venue = venueName(venueId || null);
+      // v1.22 the user: "the details mentioned in the email comes from the invoice" - what the invoice PDF says, as read
+      // when it was filed (its items, total, shipping, tax, terms). Not for an invoice the order splits over several
+      // venues (its lines are not all this venue's), nor without the PDF or its reading: then the order's lines, said so.
+      const read = allPdfs && byVenue.size === 1 ? readInvoices(docs) : null;
+      const total = read ? read.total : allPdfs ? docs.reduce((s, d) => s + (Number(d.total ?? parsedOf(d)?.total) || 0), 0) : linesTotal;
+      const subtotal = read ? read.product : allPdfs ? docs.reduce((s, d) => s + (Number(parsedOf(d)?.subtotal) || Number(d.total) || 0), 0) : linesTotal;
+      const tax = read ? read.tax : Math.max(0, Math.round((total - subtotal) * 100) / 100);
+      const venue = venueId ? venueName(venueId) : read?.billTo || venueName(null);
       const ee = /e\s*&?\s*e\s*mercantile/i.test(o.vendor_name);
       const vendor = ee ? 'EE Mercantile' : o.vendor_name;
       const date = docs.map(d => d.doc_date).filter((x): x is string => !!x).sort()[0] ?? null;
-      const cat = payCategory(ls);
-      const items = ls.map(l => `${l.description}${l.sku ? ` (${l.sku}, qty ${l.qty}${l.unit ? ' ' + l.unit : ''})` : l.qty ? ` (qty ${l.qty}${l.unit ? ' ' + l.unit : ''})` : ''}`).join(', ');
+      // a fee-only invoice (shipping, delivery) is named for the fee; otherwise for the goods on it
+      const feeOnly = read ? read.product <= 0 && (read.freight > 0 || read.fee > 0) : false;
+      const cat = read ? (feeOnly ? (read.freight > 0 ? 'Shipping Fee' : 'Fees') : payCategory(read.products.map(l => ({ description: String(l.description ?? '') }))))
+        : payCategory(ls);
+      const items = read ? invoiceItems(feeOnly ? read.others : read.products, !feeOnly)
+        : ls.map(l => `${l.description}${l.sku ? ` (${l.sku}, qty ${l.qty}${l.unit ? ' ' + l.unit : ''})` : l.qty ? ` (qty ${l.qty}${l.unit ? ' ' + l.unit : ''})` : ''}`).join(', ');
       const two = invoices.length > 1;
       // no PDF and no prices: the amount is not known, so it is left for the person (never a $0.00 request, 11/10)
       const known = total > 0;
-      const fee = /shipping|delivery/i.test(cat) && !/&/.test(cat);
+      const fee = read ? feeOnly : /shipping|delivery/i.test(cat) && !/&/.test(cat);
       const amount = !known ? 'not known (no invoice PDF or prices in the tracker): fill it in from the invoice'
+        : read ? invoiceAmount(read)
         : !allPdfs ? `${money(total)} before tax (the invoice PDF is not in the tracker — check the amount)`
         : tax > 0 && subtotal > 0 ? `${money(total)} (incl. ${(Math.round(tax / subtotal * 10000) / 100).toFixed(2)}% tax of ${money(tax)})`
         : `${money(total)} (${fee ? `${cat.toLowerCase().replace(/s$/, '')} only; ` : ''}no tax)`;
       out.push({
-        order: o, venue, invoices, lines: ls, subtotal, tax, total, invoiceDate: date, docs,
+        order: o, venue, invoices, lines: ls, source: read ? 'invoice' : 'order', subtotal, tax, total, invoiceDate: date, docs,
         email: {
           to: [AP_TO], cc: AP_CC.filter(c => c !== me),
           // v1.21 the user's example (Hursh's 11/16 "Payment Request – EE Mercantile (Lady Delilah Bag Shipping Fee)
@@ -220,7 +232,7 @@ export function paymentRequestsDue(data: { orders: OtOrder[]; lines: OtLine[]; d
           body: `Hi,\n\nPlease find the attached ${two ? `${invoices.length} invoices` : 'invoice'} from ${vendor} for the ${fee ? `${cat.toLowerCase()} on the ${venue} order` : `${cat.toLowerCase()} ordered for ${venue}`}. `
             + `Kindly confirm once the ${two ? 'invoices have' : 'invoice has'} been processed so I can coordinate with the supplier and arrange delivery.\n\n`
             + `Invoice #: ${invoices.join(', ')}\nVendor: ${ee ? 'EE Mercantile LLC' : o.vendor_name}\nAmount: ${amount}\nVenue: ${venue}\nItem: ${items}\n`
-            + `Terms: Due on Receipt`
+            + `Terms: ${read?.terms || 'Due on Receipt'}`
             + `${AP_CC.includes(APPROVER) && me !== APPROVER ? "\n\nI've also included Ahmed for approval, if needed." : ''}`,
         },
       });
@@ -230,6 +242,58 @@ export function paymentRequestsDue(data: { orders: OtOrder[]; lines: OtLine[]; d
 }
 
 const DASH = '–';
+
+/** v1.22 one line of an invoice as the reader saw it (kount_ot_documents.parsed.lines) */
+interface ReadLine { line_kind?: string; description?: string; sku?: string; qty?: number; unit?: string; line_total?: number }
+export interface InvoiceRead {
+  total: number; product: number; freight: number; tax: number; fee: number;
+  /** "7.25%" when the tax lines print one rate */
+  taxRate: string | null;
+  products: ReadLine[]; others: ReadLine[];
+  terms: string | null; billTo: string | null;
+}
+const r2 = (x: number) => Math.round(x * 100) / 100;
+/** What the invoice PDFs say, from their reading (null when one has no reading of its lines): the total as printed,
+ *  the product / freight / tax / fee amounts from its lines, the tax rate printed on the tax line, the terms. */
+export function readInvoices(docs: ReadonlyArray<OtDocument>): InvoiceRead | null {
+  type Parsed = { total?: number; terms?: string; bill_to?: string; lines?: ReadLine[] };
+  const ps = docs.map(d => (d as OtDocument & { parsed?: Parsed | null }).parsed ?? null);
+  if (!ps.length || ps.some(p => !p || !Array.isArray(p.lines) || !p.lines.length)) return null;
+  const lines = ps.flatMap(p => p!.lines!);
+  const kind = (l: ReadLine) => l.line_kind || 'product';
+  const sum = (k: string) => r2(lines.filter(l => kind(l) === k).reduce((s, l) => s + (Number(l.line_total) || 0), 0));
+  const product = sum('product'), freight = sum('freight'), tax = sum('tax'), fee = sum('fee'), discount = sum('discount');
+  const printed = r2(ps.reduce((s, p) => s + (Number(p!.total) || 0), 0));
+  const rates = [...new Set(lines.filter(l => kind(l) === 'tax').map(l => /([0-9]+(?:[.][0-9]+)?)\s*%/.exec(l.description ?? '')?.[1]).filter((x): x is string => !!x))];
+  const terms = [...new Set(ps.map(p => String(p!.terms ?? '').trim()).filter(Boolean))];
+  const named = (l: ReadLine) => String(l.description ?? '').trim() !== '';
+  return {
+    total: printed || r2(product + freight + tax + fee - Math.abs(discount)), product, freight, tax, fee,
+    taxRate: rates.length === 1 ? `${rates[0]}%` : null,
+    products: lines.filter(l => kind(l) === 'product' && named(l)), others: lines.filter(l => (kind(l) === 'freight' || kind(l) === 'fee') && named(l)),
+    terms: terms.length ? terms.join(' / ') : null, billTo: ps.map(p => String(p!.bill_to ?? '').trim()).find(Boolean) ?? null,
+  };
+}
+
+/** "Libbey Collins 10.5 oz (2510, qty 6 cs), ..." from the invoice's lines; the first 6, then "and N more". */
+export function invoiceItems(ls: ReadonlyArray<ReadLine>, withQty = true): string {
+  const one = (l: ReadLine) => {
+    const q = withQty && Number(l.qty) ? `qty ${Number(l.qty)}${l.unit ? ' ' + l.unit : ''}` : '';
+    const inner = [withQty ? String(l.sku ?? '').trim() : '', q].filter(Boolean).join(', ');
+    return `${String(l.description ?? '').trim()}${inner ? ` (${inner})` : ''}`;
+  };
+  const shown = ls.slice(0, 6).map(one);
+  return shown.join(', ') + (ls.length > 6 ? `, and ${ls.length - 6} more` : '');
+}
+
+/** "$702.42 (incl. $48.86 shipping and 7.00% tax of $42.76)", "$319.68 (shipping fee only; no tax)". */
+export function invoiceAmount(r: InvoiceRead): string {
+  const feeOnly = r.product <= 0 && (r.freight > 0 || r.fee > 0);
+  const taxPart = r.tax > 0 ? `${r.taxRate ? r.taxRate + ' ' : ''}tax of ${money(r.tax)}` : '';
+  if (feeOnly) return `${money(r.total)} (${r.freight > 0 ? 'shipping fee' : 'fees'} only; ${taxPart ? `incl. ${taxPart}` : 'no tax'})`;
+  const parts = [r.freight > 0 ? `${money(r.freight)} shipping` : '', r.fee > 0 ? `${money(r.fee)} fees` : '', taxPart].filter(Boolean);
+  return `${money(r.total)} (${parts.length ? `incl. ${parts.join(' and ')}` : 'no tax'})`;
+}
 
 /** v1.21 a new e-mail in Outlook on the web, filled in (to, cc, subject, message): where Draft in Outlook falls back
  *  to when it can't make the draft itself. Attachments can't ride along; the PDFs are downloaded beside it. */

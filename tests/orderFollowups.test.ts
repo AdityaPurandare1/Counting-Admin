@@ -5,7 +5,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { AP_CC, AP_TO, businessDaysBetween, followupsDue, lastActivity, mailtoLink, outlookComposeLink, payCategory, paymentRequestsDue, signedBody, vendorContact, type OrderMail, type OtFollowup } from '../src/lib/orderFollowups';
+import { AP_CC, AP_TO, businessDaysBetween, followupsDue, invoiceAmount, invoiceItems, lastActivity, mailtoLink, outlookComposeLink, payCategory, paymentRequestsDue, readInvoices, signedBody, vendorContact, type OrderMail, type OtFollowup } from '../src/lib/orderFollowups';
 import { findApproval, isOwnSender, paymentRequestOf, type MailMessage, type OtDocument, type OtLine, type OtOrder, type OtTracking } from '../src/lib/orderTracker';
 const sibling = (...parts: string[]) => { const p = join(process.env.COUNTING_APP_DIR ?? join(process.cwd(), '..', 'Counting-App'), ...parts); return existsSync(p) ? readFileSync(p, 'utf8') : null; };
 
@@ -195,6 +195,59 @@ check('business days: Fri -> Wed = 3, Fri -> Mon = 1, same day = 0, weekend only
   const view = readFileSync(join(process.cwd(), 'src/components/orderTracker/ToSend.tsx'), 'utf8');
   check('To send: Compose opens the e-mail and logs it; payment requests download the invoice to attach',
     /window\.location\.href = mailtoLink\(/.test(view) && /logFollowup\(/.test(view) && /window\.open\(await documentUrl\(path\)/.test(view) && /onPdf\(d\.storage_path!\)/.test(view));
+}
+
+// ── v1.22 the payment request written from the invoice (its reading when it was filed) ──
+{
+  // INV-2026-879085 as the reader saw it (prod, 11/16): a product line, the 7% tax line, the shipping line
+  const inv = (num: string, lines: Array<Record<string, unknown>>, total: number, extra: Record<string, unknown> = {}) => ({
+    id: 'doc-' + num, order_id: '', kind: 'invoice', doc_number: num, doc_date: '2026-09-23', vendor_name: 'EE Mercantile', total, file_name: `Invoice-${num}.pdf`,
+    storage_path: `docs/${num}.pdf`, created_at: '2026-09-23T17:00:00Z', parsed: { doc_number: num, total, terms: '', bill_to: 'Delilah Miami', lines, ...extra } }) as unknown as OtDocument;
+  const mi = order({ order_number: 'OSE-0016', vendor_name: 'EE Mercantile', venue_id: 'v1' });
+  const ml = line(mi, { description: 'Wine coaster', sku: null, qty: 20, unit: null, unit_price: 0, status: 'INVOICED', invoice_number: 'INV-2026-879085' });
+  const d1 = { ...inv('INV-2026-879085', [
+    { line_kind: 'product', description: 'BAUSCHER HEPP - WINE COASTER 4.25" SS / 1', sku: '06.2177.6040', qty: 20, unit: '', line_total: 610.8 },
+    { line_kind: 'tax', description: 'Tax 7.00% (FL · Miami, Miami-Dade County, FL)', sku: '', qty: 0, unit: '', line_total: 42.76 },
+    { line_kind: 'freight', description: 'Shipping', sku: '', qty: 1, unit: '', line_total: 48.86 },
+  ], 702.42), order_id: mi.id } as OtDocument;
+  const r = readInvoices([d1]);
+  check('read: total as printed, product / shipping / tax from its lines, the rate printed on the tax line',
+    !!r && r.total === 702.42 && r.product === 610.8 && r.freight === 48.86 && r.tax === 42.76 && r.taxRate === '7.00%' && r.terms === null && r.billTo === 'Delilah Miami', r);
+  check('amount: "$702.42 (incl. $48.86 shipping and 7.00% tax of $42.76)"', invoiceAmount(r!) === '$702.42 (incl. $48.86 shipping and 7.00% tax of $42.76)', invoiceAmount(r!));
+  const [pm] = paymentRequestsDue({ orders: [mi], lines: [ml], documents: [d1], followups: [] }, venueName);
+  check('the e-mail is written from the invoice: its item (code, qty), amount with shipping and tax, "written from the invoice"',
+    pm?.source === 'invoice' && pm.email.body.includes('Item: BAUSCHER HEPP - WINE COASTER 4.25" SS / 1 (06.2177.6040, qty 20)')
+    && pm.email.body.includes('Amount: $702.42 (incl. $48.86 shipping and 7.00% tax of $42.76)') && pm.email.subject.endsWith('INV-2026-879085 – $702.42')
+    && pm.total === 702.42 && pm.tax === 42.76, pm?.email);
+  check('... terms: printed on the invoice when read, else Due on Receipt', pm.email.body.includes('Terms: Due on Receipt')
+    && paymentRequestsDue({ orders: [mi], lines: [ml], documents: [{ ...d1, parsed: { ...(d1 as unknown as { parsed: Record<string, unknown> }).parsed, terms: 'Net 30' } } as unknown as OtDocument], followups: [] }, venueName)[0].email.body.includes('Terms: Net 30'));
+
+  // INV-2026-396769: only a shipping fee for another invoice's items
+  const fo = order({ order_number: 'OSE-0035', vendor_name: 'EE Mercantile', venue_id: 'v1' });
+  const fl = line(fo, { description: 'Shipping fee', status: 'INVOICED', invoice_number: 'INV-2026-396769', qty: 1, unit_price: 0 });
+  const d2 = { ...inv('INV-2026-396769', [{ line_kind: 'freight', description: 'Shipping Fee - For items under INV-2026-418553', sku: '', qty: 1, unit: '', line_total: 319.68 }], 319.68,
+    { terms: 'Due on Receipt' }), order_id: fo.id } as OtDocument;
+  const [pf] = paymentRequestsDue({ orders: [fo], lines: [fl], documents: [d2], followups: [] }, venueName);
+  check('a shipping-fee-only invoice: "(Delilah LA Shipping Fee)", the fee line as the item, "(shipping fee only; no tax)", "on the ... order"',
+    pf?.email.subject === 'Payment Request – EE Mercantile (Delilah LA Shipping Fee) INV-2026-396769 – $319.68'
+    && pf.email.body.includes('Item: Shipping Fee - For items under INV-2026-418553' + String.fromCharCode(10))
+    && pf.email.body.includes('Amount: $319.68 (shipping fee only; no tax)') && pf.email.body.includes('for the shipping fee on the Delilah LA order.'), pf?.email);
+  // INV-2026-236646: a shipping fee with tax
+  const r3 = readInvoices([inv('INV-2026-236646', [{ line_kind: 'freight', description: 'Delilah Miami UPS returns CS 1', qty: 1, line_total: 373.5 },
+    { line_kind: 'tax', description: 'Tax 7.00% (FL · Miami, Miami-Dade County, FL)', qty: 0, line_total: 26.15 }], 399.65)]);
+  check('a shipping fee with tax: "$399.65 (shipping fee only; incl. 7.00% tax of $26.15)"', invoiceAmount(r3!) === '$399.65 (shipping fee only; incl. 7.00% tax of $26.15)', invoiceAmount(r3!));
+  check('items: the first 6, then "and N more"; no qty for fee lines',
+    invoiceItems(Array.from({ length: 8 }, (_, k) => ({ description: `Item ${k + 1}`, qty: 2, unit: 'cs' }))) === 'Item 1 (qty 2 cs), Item 2 (qty 2 cs), Item 3 (qty 2 cs), Item 4 (qty 2 cs), Item 5 (qty 2 cs), Item 6 (qty 2 cs), and 2 more'
+    && invoiceItems([{ description: 'Shipping', qty: 1 }], false) === 'Shipping');
+  check('not read (no lines in its reading) -> null, and the order lines are used, said so',
+    readInvoices([{ ...d1, parsed: { total: 702.42 } } as unknown as OtDocument]) === null && readInvoices([]) === null
+    && paymentRequestsDue({ orders: [mi], lines: [ml], documents: [{ ...d1, parsed: { total: 702.42 } } as unknown as OtDocument], followups: [] }, venueName)[0].source === 'order');
+  // an invoice split over two venues of the order: its lines are not all one venue's -> the order's lines
+  const two = order({ order_number: 'OSE-0060', vendor_name: 'EE Mercantile', venue_id: 'v1' });
+  const t1 = line(two, { description: 'Glass A', status: 'INVOICED', invoice_number: 'INV-2026-200001', venue_id: 'v1', qty: 1, unit_price: 10 });
+  const t2 = line(two, { description: 'Glass B', status: 'INVOICED', invoice_number: 'INV-2026-200001', venue_id: 'v2', qty: 1, unit_price: 10 });
+  const d3 = { ...inv('INV-2026-200001', [{ line_kind: 'product', description: 'Glass A', qty: 1, line_total: 10 }, { line_kind: 'product', description: 'Glass B', qty: 1, line_total: 10 }], 20), order_id: two.id } as OtDocument;
+  check('an invoice split over venues: each venue request from its own lines', paymentRequestsDue({ orders: [two], lines: [t1, t2], documents: [d3], followups: [] }, venueName).every(x => x.source === 'order'));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

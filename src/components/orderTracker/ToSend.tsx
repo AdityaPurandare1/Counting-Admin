@@ -189,7 +189,8 @@ function PayRow({ p, onDraft, onCopy, onPdf, onOpen }: { p: PayRequest; onDraft:
     <div style={row}>
       <div style={{ flex: '1 1 360px', minWidth: 0 }}>
         <div style={{ fontWeight: 600, fontSize: 13 }}>{p.venue} · {p.invoices.join(', ')} · {fmtMoney(p.total)}</div>
-        <div style={subTxt}>{p.order.order_number ?? 'No order #'} · {p.order.vendor_name}{p.invoiceDate ? ` · invoiced ${shortDate(p.invoiceDate)}` : ''}{p.docs.length ? '' : ' · no invoice PDF in the tracker'}</div>
+        <div style={subTxt}>{p.order.order_number ?? 'No order #'} · {p.order.vendor_name}{p.invoiceDate ? ` · invoiced ${shortDate(p.invoiceDate)}` : ''}{p.docs.length ? '' : ' · no invoice PDF in the tracker'}
+          {p.source === 'invoice' ? ' · written from the invoice' : <span style={{ color: 'var(--ot-warn)' }}> · written from the order lines (the invoice was not read) - check it</span>}</div>
         <div style={{ fontSize: 12, marginTop: 4, color: 'var(--fg-secondary)', overflowWrap: 'anywhere' }}>{p.email.subject}</div>
       </div>
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
