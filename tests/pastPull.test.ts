@@ -52,7 +52,7 @@ if (fn) {
   check('stubs: any invoice number a tracked order carries is read, not only E&E\'s (so a non-E&E stub can clear)',
     stub.includes('...trackedInvoicesIn(own, data)') && stub.includes("const own = String(m.uniqueBody?.content ?? '');") && /function trackedInvoicesIn/.test(fn) && /t\.length >= 4 && \/\\d\/\.test\(t\)/.test(fn));
   check('stubs: whether it went to someone outside h.wood is kept (internal = on file, not sent)',
-    /toRecipients,ccRecipients/.test(stub) && /parsed: \{ kind: 'payment', invoices, to_vendor: toVendor \}/.test(stub)
+    /toRecipients,ccRecipients/.test(stub) && /parsed: \{ kind: 'payment', invoices, to_vendor: toVendor[ ,]/.test(stub)
     && /to_vendor: \(row\.parsed as \{ to_vendor: boolean \}\)\.to_vendor/.test(fn));
   check('past e-mails: a time limit, and a cut-short pull says to run it again', /const BACKFILL_FETCH_MS = 90_000;/.test(fn)
     && /if \(Date\.now\(\) > until\) return false;/.test(fn) && /Pulled part of \$\{only \?\? 'the vendors'\}' e-mails \(time limit\)/.test(fn));

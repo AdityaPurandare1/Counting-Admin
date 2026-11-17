@@ -197,7 +197,7 @@ check('business days: Fri -> Wed = 3, Fri -> Mon = 1, same day = 0, weekend only
     /window\.location\.href = mailtoLink\(/.test(view) && /logFollowup\(/.test(view) && /window\.open\(await documentUrl\(path\)/.test(view) && /onPdf\(d\.storage_path!\)/.test(view));
 }
 
-// ── v1.22 the payment request written from the invoice (its reading when it was filed) ──
+// ── v1.21 the payment request written from the invoice (its reading when it was filed) ──
 {
   // INV-2026-879085 as the reader saw it (prod, 11/16): a product line, the 7% tax line, the shipping line
   const inv = (num: string, lines: Array<Record<string, unknown>>, total: number, extra: Record<string, unknown> = {}) => ({

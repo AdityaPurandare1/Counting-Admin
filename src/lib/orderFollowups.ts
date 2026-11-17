@@ -45,7 +45,7 @@ export interface FollowUp {
 export interface Email { to: string[]; cc: string[]; subject: string; body: string }
 export interface PayRequest {
   order: OtOrder; venue: string; invoices: string[]; lines: OtLine[];
-  /** v1.22 where the e-mail's details come from: the invoice PDF as read when it was filed, or (no PDF / not read)
+  /** v1.21 where the e-mail's details come from: the invoice PDF as read when it was filed, or (no PDF / not read)
    *  the order's lines - then the person checks it */
   source: 'invoice' | 'order';
   subtotal: number; tax: number; total: number; invoiceDate: string | null;
@@ -195,7 +195,7 @@ export function paymentRequestsDue(data: { orders: OtOrder[]; lines: OtLine[]; d
       const linesTotal = ls.reduce((s, l) => s + (Number(l.qty) || 0) * (Number(l.unit_price) || 0), 0);
       const parsedOf = (d: OtDocument) => (d as OtDocument & { parsed?: { subtotal?: number; total?: number } | null }).parsed ?? null;
       const allPdfs = invoices.every(i => docs.some(d => normText(d.doc_number) === normText(i)));
-      // v1.22 the user: "the details mentioned in the email comes from the invoice" - what the invoice PDF says, as read
+      // v1.21 the user: "the details mentioned in the email comes from the invoice" - what the invoice PDF says, as read
       // when it was filed (its items, total, shipping, tax, terms). Not for an invoice the order splits over several
       // venues (its lines are not all this venue's), nor without the PDF or its reading: then the order's lines, said so.
       const read = allPdfs && byVenue.size === 1 ? readInvoices(docs) : null;
@@ -243,7 +243,7 @@ export function paymentRequestsDue(data: { orders: OtOrder[]; lines: OtLine[]; d
 
 const DASH = '–';
 
-/** v1.22 one line of an invoice as the reader saw it (kount_ot_documents.parsed.lines) */
+/** v1.21 one line of an invoice as the reader saw it (kount_ot_documents.parsed.lines) */
 interface ReadLine { line_kind?: string; description?: string; sku?: string; qty?: number; unit?: string; line_total?: number }
 export interface InvoiceRead {
   total: number; product: number; freight: number; tax: number; fee: number;

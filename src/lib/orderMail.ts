@@ -45,6 +45,8 @@ export interface MailRun {
   acct_checked?: number; acct_sent?: number; acct_error?: string;
   /** 11/17: invoice lines marked Paid from our own card / online payment proof (screenshots) e-mailed in their thread */
   paid_by_proof?: number; stubs?: number;
+  /** v1.21: payment proof files the reader read / why the stub step stopped short (the next pull reads the rest) */
+  proofs_read?: number; stub_note?: string;
   remaining?: number; error: string | null; reconnect: boolean;
 }
 
