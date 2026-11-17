@@ -50,7 +50,7 @@ if (fn) {
 if (fn) {
   const stub = fn.slice(fn.indexOf('async function stubPhase'), fn.indexOf('async function attachStub'));
   check('stubs: any invoice number a tracked order carries is read, not only E&E\'s (so a non-E&E stub can clear)',
-    /\.\.\.trackedInvoicesIn\(m\.uniqueBody\?\.content, data\)/.test(stub) && /function trackedInvoicesIn/.test(fn) && /t\.length >= 4 && \/\\d\/\.test\(t\)/.test(fn));
+    stub.includes('...trackedInvoicesIn(own, data)') && stub.includes("const own = String(m.uniqueBody?.content ?? '');") && /function trackedInvoicesIn/.test(fn) && /t\.length >= 4 && \/\\d\/\.test\(t\)/.test(fn));
   check('stubs: whether it went to someone outside h.wood is kept (internal = on file, not sent)',
     /toRecipients,ccRecipients/.test(stub) && /parsed: \{ kind: 'payment', invoices, to_vendor: toVendor \}/.test(stub)
     && /to_vendor: \(row\.parsed as \{ to_vendor: boolean \}\)\.to_vendor/.test(fn));

@@ -222,7 +222,7 @@ function MailCard({ onChanged }: { onChanged: () => void }) {
           {run && (
             <div style={{ ...subTxt, marginTop: 6 }}>
               Last pull {new Date(run.finished_at ?? run.started_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} ({run.trigger}):
-              {' '}{run.new_pdfs} new PDF{run.new_pdfs === 1 ? '' : 's'}, {run.applied} applied, {run.tracking ? `${run.tracking} tracking, ` : ''}{run.paid ? `${run.paid} paid (R365), ` : ''}{run.approved ? `${run.approved} quote line${run.approved === 1 ? '' : 's'} approved, ` : ''}{run.acct_sent ? `${run.acct_sent} invoice line${run.acct_sent === 1 ? '' : 's'} found sent to accounting, ` : ''}{run.pending} waiting, {run.ignored} skipped
+              {' '}{run.new_pdfs} new PDF{run.new_pdfs === 1 ? '' : 's'}, {run.applied} applied, {run.tracking ? `${run.tracking} tracking, ` : ''}{run.paid ? `${run.paid} paid (R365), ` : ''}{run.approved ? `${run.approved} quote line${run.approved === 1 ? '' : 's'} approved, ` : ''}{run.acct_sent ? `${run.acct_sent} invoice line${run.acct_sent === 1 ? '' : 's'} found sent to accounting, ` : ''}{run.stubs ? `${run.stubs} check stub${run.stubs === 1 ? '' : 's'} / payment proof${run.stubs === 1 ? '' : 's'} filed, ` : ''}{run.paid_by_proof ? `${run.paid_by_proof} line${run.paid_by_proof === 1 ? '' : 's'} paid by card (proof e-mailed), ` : ''}{run.pending} waiting, {run.ignored} skipped
               {run.failed ? `, ${run.failed} not read` : ''}{run.remaining ? `, ${run.remaining} still to read` : ''}.
               {run.acct_error && <div style={{ color: 'var(--ot-warn)' }}>Sent-to-accounting check: {run.acct_error}</div>}
             </div>

@@ -43,6 +43,8 @@ export interface MailRun {
   approved?: number; approval_error?: string;
   /** v1.20 (0174): unpaid invoices searched for an e-mail to accounting / their lines found sent / what was left or failed */
   acct_checked?: number; acct_sent?: number; acct_error?: string;
+  /** 11/17: invoice lines marked Paid from our own card / online payment proof (screenshots) e-mailed in their thread */
+  paid_by_proof?: number; stubs?: number;
   remaining?: number; error: string | null; reconnect: boolean;
 }
 

@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react';
 import { Btn, Card, Pill } from '@/components/atoms';
-import { documentUrl, downloadDocument, logFollowup, undoFollowup, type TrackerData } from '@/lib/orderTrackerData';
-import { FOLLOW_AFTER, followupsDue, mailtoLink, outlookComposeLink, paymentRequestsDue, signedBody, type FollowUp, type OrderMail, type PayRequest } from '@/lib/orderFollowups';
+import { documentUrl, logFollowup, undoFollowup, type TrackerData } from '@/lib/orderTrackerData';
+import { FOLLOW_AFTER, followupsDue, mailtoLink, paymentRequestsDue, type FollowUp, type OrderMail, type PayRequest } from '@/lib/orderFollowups';
 import { errBox, fmtMoney, linkBtn, shortDate, subTxt } from './shared';
 import { RECENT_PAID_DAYS, STUB_SENT_NOTE, stubsToSend, type StubToSend } from '@/lib/orderTrackerView';
 import { stubEmail } from '@/lib/stubMail';
-import { draftMail, messageLink } from '@/lib/orderMail';
+import { messageLink } from '@/lib/orderMail';
+import { openPaymentDraft } from './payDraft';
 
 /** v1.04 To send: payment requests for new invoices and follow-ups on quiet orders, each one click from a
  *  filled-in e-mail (src/lib/orderFollowups.ts). Compose opens it in Outlook and logs it (Undo if not sent). */
@@ -73,26 +74,10 @@ export function ToSend({ data, mails, today, venueName, me, meName = null, onOpe
     const w = window.open('', '_blank');
     void run(async () => {
       setPayNote(null);
-      try {
-        const files = p.docs.filter(d => d.storage_path);
-        const r = await draftMail({ to: p.email.to, cc: p.email.cc, subject: p.email.subject, text: signedBody(p.email.body, meName ?? me),
-          document_ids: files.map(d => d.id) });
-        if (r.drafted && r.link) {
-          if (w) { w.opener = null; w.location.href = r.link; } else window.open(r.link, '_blank', 'noopener');
-          setPayNote(`The draft is in your Outlook Drafts${r.attached ? ` with the invoice PDF${r.attached > 1 ? 's' : ''} attached` : ''}${r.skipped?.length ? ` (not attached: ${r.skipped.join(', ')})` : ''} - check it and Send.`);
-        } else {
-          const link = outlookComposeLink(p.email);
-          if (w) { w.opener = null; w.location.href = link; } else window.open(link, '_blank', 'noopener');
-          for (const d of files) await downloadDocument(d.storage_path!, d.file_name || `${d.doc_number ?? 'invoice'}.pdf`);
-          const why = r.reason === 'not_granted' ? 'Outlook does not let the tracker make drafts yet (IT has to approve Mail.ReadWrite for the Order Tracker app)'
-            : r.reason === 'not_owner' ? `the connected mailbox is ${r.mailbox ?? "someone else's"}`
-            : r.reason === 'not_connected' ? 'Outlook is not connected in the Inbox' : `the draft could not be made${r.detail ? ` (${r.detail})` : ''}`;
-          setPayNote(`A new e-mail is open in Outlook, filled in${files.length ? `, and the invoice PDF${files.length > 1 ? 's are' : ' is'} downloaded - drag ${files.length > 1 ? 'them' : 'it'} in and Send` : ' - attach the invoice and Send'}. (No draft: ${why}.)`);
-        }
-        const id = await logFollowup({ order_id: p.order.id, kind: 'payment', invoice_numbers: p.invoices, note: p.email.subject.slice(0, 200) });
-        setLogged({ id, label: p.email.subject });
-        onReload();
-      } catch (e) { w?.close(); throw e; }   // never leave a blank tab behind
+      const r = await openPaymentDraft(p, { email: me, name: meName }, w);
+      setPayNote(r.note);
+      setLogged({ id: r.logId, label: p.email.subject });
+      onReload();
     });
   };
   const copyPay = (p: PayRequest) => {

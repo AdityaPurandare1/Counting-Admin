@@ -16,6 +16,8 @@ import { SENT_SOURCE, orderTiming, timingText } from '@/lib/leadTime';
 import { checkQuoteAgainstBible, lineBibleText, quoteBibleSummary } from '@/lib/quoteBible';
 import { checkAccounting, checkApprovals } from '@/lib/orderMail';
 import { approvalDrafts, type ApprovalDraft, type ThreadMail } from '@/lib/quoteApprovalMail';
+import { paymentRequestsDue, type PayRequest } from '@/lib/orderFollowups';
+import { openPaymentDraft } from './payDraft';
 import { QuoteApprovalDialog } from './QuoteApprovalDialog';
 import { fmtMoney, shortDate } from './shared';
 import { AttachStubButton, DocChip, Icon, isOtherDoc } from './ui';
@@ -92,6 +94,24 @@ export function OrderDrawer({ order, lines, docs, data, today, venueName, onClos
   // v1.21 this order's unpaid invoices no e-mail to accounting (AP / GA) has named yet, like a quote to approve
   const [acctMsg, setAcctMsg] = useState<string | null>(null);
   const toAccounting = useMemo(() => (order ? notSentToAccounting([order], lines).get(order.id) ?? [] : []), [order, lines]);
+  // v1.21 the user: "it only shows I've sent it check now. Not the send email with the template filled in format with
+  // attachments" - the payment request for those invoices (as To send writes it: from the invoice, to AP, the PDF
+  // attached), one per venue of the order; composed already or not yet at Invoiced, it is offered all the same
+  const payReqs = useMemo<PayRequest[]>(() => {
+    if (!order || !toAccounting.length) return [];
+    const want = new Set(toAccounting);
+    const ls = lines.filter(l => l.status !== 'CANCELLED' && !!l.invoice_number && want.has(invoiceToken(l.invoice_number)))
+      .map(l => ({ ...l, status: 'INVOICED' as const, pay_requested_at: null }));
+    return paymentRequestsDue({ orders: [order], lines: ls, documents: data.documents, followups: [] }, venueName, me?.email ?? '');
+  }, [order, lines, toAccounting, data.documents, venueName, me]);
+  const draftAcct = (r: PayRequest) => {
+    const w = window.open('', '_blank');
+    void run(async () => {
+      const res = await openPaymentDraft(r, { email: me?.email ?? '', name: me?.name ?? null }, w);
+      setAcctMsg(`${res.note} Once it is sent, "I've sent it, check now" clears this.`);
+      onReload();
+    });
+  };
   const checkAcct = () => run(async () => {
     if (!order) return;
     const r = await checkAccounting(order.id);
@@ -176,6 +196,11 @@ export function OrderDrawer({ order, lines, docs, data, today, venueName, onClos
                 been e-mailed to AP or GA (hwoodap@ / hwoodga@iqbackoffice.com) yet; {toAccounting.length > 1 ? 'they stay' : 'it stays'} flagged until that e-mail is found.
                 {acctMsg && <><br />{acctMsg}</>}
               </span>
+              {payReqs.map(r => (
+                <button key={r.venue + r.invoices.join()} type="button" className="ot-btn sm primary" disabled={busy} onClick={() => draftAcct(r)}
+                  title={`${r.email.subject}\nTo ${r.email.to.join(', ')} - cc ${r.email.cc.join(', ')}${r.docs.length ? ' - the invoice PDF attached' : ' - no invoice PDF in the tracker'}`}>
+                  Draft in Outlook{payReqs.length > 1 ? ` (${r.venue})` : ''}</button>
+              ))}
               <button type="button" className="ot-btn sm" disabled={busy} onClick={() => void checkAcct()}
                 title="Look in the mailbox for your e-mail to AP / GA now (the 9 o'clock pull also checks)">I've sent it, check now</button>
             </div>

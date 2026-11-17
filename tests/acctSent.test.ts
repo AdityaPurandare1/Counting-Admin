@@ -245,16 +245,26 @@ check('reminders: with accounting but past its ETA -> still ask the vendor for a
 // ── v1.21 payment requests drafted in Outlook ───────────────────────
 {
   const ts = src('src/components/orderTracker/ToSend.tsx');
-  check('To send: "Draft in Outlook" makes the draft with the invoice PDFs (document ids) and opens it; the tab opened in the click',
-    ts.includes('<Btn variant="primary" size="sm" onClick={onDraft}>Draft in Outlook</Btn>') && ts.includes("const w = window.open('', '_blank');")
-    && ts.includes('const r = await draftMail({ to: p.email.to, cc: p.email.cc, subject: p.email.subject, text: signedBody(p.email.body, meName ?? me),')
-    && ts.includes('document_ids: files.map(d => d.id) });'));
+  const pd = src('src/components/orderTracker/payDraft.ts');
+  const dr = src('src/components/orderTracker/OrderDrawer.tsx');
+  check('one helper drafts it: the draft with the invoice PDFs (document ids), opened in the tab opened in the click',
+    pd.includes('const r = await draftMail({ to: p.email.to, cc: p.email.cc, subject: p.email.subject, text: signedBody(p.email.body, who.name ?? who.email),')
+    && pd.includes('document_ids: files.map(d => d.id) });') && pd.includes("if (w) { w.opener = null; w.location.href = r.link; }"));
   check('... no draft (IT has not granted it, another mailbox, not connected): a new e-mail filled in + the PDFs downloaded, and it says why',
-    ts.includes('const link = outlookComposeLink(p.email);') && ts.includes("for (const d of files) await downloadDocument(d.storage_path!, d.file_name || `${d.doc_number ?? 'invoice'}.pdf`);")
-    && ts.includes('IT has to approve Mail.ReadWrite for the Order Tracker app'));
-  check('... either way it is logged (Undo) and leaves the list; a blank tab is closed on an error',
-    ts.includes("const id = await logFollowup({ order_id: p.order.id, kind: 'payment', invoice_numbers: p.invoices, note: p.email.subject.slice(0, 200) });")
-    && ts.includes('} catch (e) { w?.close(); throw e; }   // never leave a blank tab behind'));
+    pd.includes('const link = outlookComposeLink(p.email);') && pd.includes("for (const d of files) await downloadDocument(d.storage_path!, d.file_name || `${d.doc_number ?? 'invoice'}.pdf`);")
+    && pd.includes('IT has to approve Mail.ReadWrite for the Order Tracker app'));
+  check('... either way it is logged (To send stops listing it); a blank tab is closed on an error',
+    pd.includes("const logId = await logFollowup({ order_id: p.order.id, kind: 'payment', invoice_numbers: p.invoices, note: p.email.subject.slice(0, 200) });")
+    && pd.includes('w?.close();'));
+  check('To send: "Draft in Outlook" uses it (Undo kept)', ts.includes('<Btn variant="primary" size="sm" onClick={onDraft}>Draft in Outlook</Btn>')
+    && ts.includes("const r = await openPaymentDraft(p, { email: me, name: meName }, w);") && ts.includes('setLogged({ id: r.logId, label: p.email.subject });')
+    && !ts.includes('draftMail('));
+  check('v1.21 the order\u2019s "Send to accounting" note: "Draft in Outlook" (one per venue) beside "I\u2019ve sent it, check now" (the user: "it only shows I\u2019ve sent it check now")',
+    dr.includes('Draft in Outlook{payReqs.length > 1 ? ` (${r.venue})` : \'\'}</button>') && dr.includes('const res = await openPaymentDraft(r, { email: me?.email ?? \'\', name: me?.name ?? null }, w);')
+    && dr.indexOf('Draft in Outlook{payReqs') < dr.indexOf("I've sent it, check now</button>", dr.indexOf('<b>Send to accounting.</b>')));
+  check('... written as To send writes it, for exactly the invoices the note names, offered even if composed before or not yet at Invoiced',
+    dr.includes('const ls = lines.filter(l => l.status !== \'CANCELLED\' && !!l.invoice_number && want.has(invoiceToken(l.invoice_number)))')
+    && dr.includes("return paymentRequestsDue({ orders: [order], lines: ls, documents: data.documents, followups: [] }, venueName, me?.email ?? '');"));
   const fn = sibling('supabase', 'functions', 'kount-order-mail', 'index.ts');
   const graph = sibling('supabase', 'functions', 'kount-order-mail', 'graph.ts');
   if (fn && graph) {
@@ -271,7 +281,7 @@ check('reminders: with accounting but past its ETA -> still ask the vendor for a
 // no raw control bytes in what this version touched (the editor once turned regex escapes into them)
 {
   const files = ['src/lib/orderTracker.ts', 'src/lib/orderTrackerView.ts', 'src/lib/orderFollowups.ts', 'src/lib/orderMail.ts', 'src/components/orderTracker/OrdersView.tsx',
-    'src/components/orderTracker/OrderDrawer.tsx', 'src/components/orderTracker/InboxView.tsx', 'src/components/orderTracker/ToSend.tsx', 'src/lib/orderTrackerData.ts'];
+    'src/components/orderTracker/OrderDrawer.tsx', 'src/components/orderTracker/InboxView.tsx', 'src/components/orderTracker/ToSend.tsx', 'src/lib/orderTrackerData.ts', 'src/components/orderTracker/payDraft.ts'];
   const bad = files.filter(f => [...src(f)].some(ch => { const c = ch.charCodeAt(0); return c < 32 && c !== 9 && c !== 10 && c !== 13; }));
   check('no raw control bytes in the changed files', bad.length === 0, bad);
 }
