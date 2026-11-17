@@ -22,6 +22,8 @@ export const NAV: Array<{ group: string; items: NavItem[] }> = [
   { group: 'Purchasing', items: [
     { to: '/order-tracker', label: 'Order tracker', key: 'purchasing:order-tracker' },
     { to: '/order-prices', label: 'Order prices', key: 'purchasing:order-prices' },
+    // v1.23 (0176): the bible items checked weekly against the web, exact items only
+    { to: '/price-check', label: 'Price check', key: 'purchasing:order-prices' },
     { to: '/purchase-prices', label: 'Liquor & wine prices', key: 'purchasing:liquor-wine' },
     { to: '/order-tracker-view', label: 'Order tracker (view)', key: 'purchasing:order-tracker-view' },
   ] },

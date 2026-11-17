@@ -80,9 +80,9 @@ check('keys are project:feature and each sits in its own project', FEATURES.ever
 
 // the sidebar: the same links per role as before, plus User access for admins
 const OLD_SIDEBAR: Record<Role, string[]> = {
-  admin: ['/overview', '/venues', '/variance', '/item-history', '/counts', '/recount', '/summary', '/issues', '/ai', '/order-tracker', '/order-prices', '/purchase-prices',
+  admin: ['/overview', '/venues', '/variance', '/item-history', '/counts', '/recount', '/summary', '/issues', '/ai', '/order-tracker', '/order-prices', '/price-check', '/purchase-prices',
     '/approvals', '/stock', '/food', '/reports', '/transfers', '/catalog', '/venue-settings', '/security'],
-  corporate: ['/overview', '/venues', '/variance', '/item-history', '/counts', '/recount', '/summary', '/issues', '/ai', '/order-tracker', '/order-prices', '/purchase-prices',
+  corporate: ['/overview', '/venues', '/variance', '/item-history', '/counts', '/recount', '/summary', '/issues', '/ai', '/order-tracker', '/order-prices', '/price-check', '/purchase-prices',
     '/approvals', '/stock', '/food', '/reports', '/transfers', '/catalog', '/venue-settings'],
   venue_manager: ['/overview', '/venues', '/variance', '/item-history', '/counts', '/recount', '/summary', '/issues', '/ai', '/approvals', '/stock', '/reports', '/transfers'],
   manager: ['/overview', '/venues', '/variance', '/item-history', '/counts', '/recount', '/summary', '/issues', '/ai', '/approvals', '/stock', '/food', '/reports', '/transfers'],
