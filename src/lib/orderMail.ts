@@ -137,6 +137,11 @@ export const pastPullConfirm = (domain: string, day: string) =>
   + 'What clearly belongs to an order goes on it. Documents older than 30 days start no new orders (they wait in the Inbox for you), '
   + 'and older tracking numbers are added without moving lines. The 9 o\'clock pull is not affected.';
 export const checkApprovals = () => invokeMail<{ approved: number; error: string | null }>({ action: 'approvals' });
+/** v1.21: the e-mail as a real draft in the connected Outlook mailbox, these tracker documents attached; link opens
+ *  it in Outlook. drafted = false with a reason when the tracker can't (not_granted: IT has not given the app
+ *  Mail.ReadWrite; not_owner: someone else's mailbox is connected; not_connected). */
+export const draftMail = (p: { to: string[]; cc: string[]; subject: string; text: string; document_ids: string[] }) =>
+  invokeMail<{ drafted: boolean; link?: string | null; attached?: number; skipped?: string[]; reason?: 'not_granted' | 'not_owner' | 'not_connected'; mailbox?: string | null; detail?: string | null }>({ action: 'draft_mail', ...p });
 /** v1.21: look in the mailbox now for e-mails to accounting (AP / GA) naming this order's unpaid invoices (0174):
  *  found = lines marked sent, requested = lines whose payment request (our own e-mail) was found. */
 export const checkAccounting = (order_id: string) =>

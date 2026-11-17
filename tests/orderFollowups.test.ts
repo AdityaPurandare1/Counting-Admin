@@ -5,7 +5,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { AP_TO, businessDaysBetween, followupsDue, lastActivity, mailtoLink, payCategory, paymentRequestsDue, vendorContact, type OrderMail, type OtFollowup } from '../src/lib/orderFollowups';
+import { AP_CC, AP_TO, businessDaysBetween, followupsDue, lastActivity, mailtoLink, outlookComposeLink, payCategory, paymentRequestsDue, signedBody, vendorContact, type OrderMail, type OtFollowup } from '../src/lib/orderFollowups';
 import { findApproval, isOwnSender, paymentRequestOf, type MailMessage, type OtDocument, type OtLine, type OtOrder, type OtTracking } from '../src/lib/orderTracker';
 const sibling = (...parts: string[]) => { const p = join(process.env.COUNTING_APP_DIR ?? join(process.cwd(), '..', 'Counting-App'), ...parts); return existsSync(p) ? readFileSync(p, 'utf8') : null; };
 
@@ -81,7 +81,9 @@ check('business days: Fri -> Wed = 3, Fri -> Mon = 1, same day = 0, weekend only
 // ── payment requests ────────────────────────────────────────────────
 {
   check('category words from the lines', payCategory([{ description: 'LIBBEY - CONTOUR GOBLET GLASS 16 OZ/ 12' }, { description: 'STEELITE- DESSERT FORK MONZA- 7"/ 12' }]) === 'Glassware & Flatware'
-    && payCategory([{ description: 'Matchbook 2500 pcs/case' }]) === 'Matches' && payCategory([{ description: 'Shipping Fee - For items under INV-2026-418553' }]) === 'Shipping'
+    && payCategory([{ description: 'Matchbook 2500 pcs/case' }]) === 'Matches' && payCategory([{ description: 'Shipping Fee - For items under INV-2026-418553' }]) === 'Shipping Fee'
+    && payCategory([{ description: 'Shipping fee for Lady Delilah custom bags' }]) === 'Shipping Fee'
+    && payCategory([{ description: 'Libbey Collins glass' }, { description: 'Shipping' }]) === 'Glassware & Shipping Fee'
     && payCategory([{ description: 'Mystery' }]) === 'Order');
 
   const la = order({ order_number: 'OSE-0029', vendor_name: 'EE Mercantile', venue_id: 'v1' });
@@ -90,12 +92,36 @@ check('business days: Fri -> Wed = 3, Fri -> Mon = 1, same day = 0, weekend only
   const pdf = { id: 'd1', order_id: la.id, kind: 'invoice', doc_number: 'INV-2026-086418', doc_date: '2026-10-29', vendor_name: 'EE Mercantile', total: 2397.33,
     file_name: 'Invoice-INV-2026-086418.pdf', storage_path: 'docs/x.pdf', created_at: '2026-10-29T22:02:00Z', parsed: { subtotal: 2235.27, total: 2397.33 } } as OtDocument;
   const [p] = paymentRequestsDue({ orders: [la], lines: [g, f], documents: [pdf], followups: [] }, venueName, 'apurandare@hwoodgroup.com');
-  check('Delilah LA INV-2026-086418: the subject Hursh wrote', p?.email.subject === 'Payment Request - EE Mercantile (Delilah LA Glassware & Flatware) INV-2026-086418 - $2,397.33', p?.email.subject);
+  // v1.21 the user's example (11/16): "Payment Request – EE Mercantile (Lady Delilah Bag Shipping Fee) INV-2026-522228 – $3,233.00"
+  check('Delilah LA INV-2026-086418: the subject as the team writes it, with en dashes', p?.email.subject === 'Payment Request – EE Mercantile (Delilah LA Glassware & Flatware) INV-2026-086418 – $2,397.33', p?.email.subject);
   check('... amount and tax from the invoice ($2,397.33 incl. 7.25% tax of $162.06)', p.email.body.includes('Amount: $2,397.33 (incl. 7.25% tax of $162.06)') && p.tax === 162.06);
-  check('... items with item # and qty, invoice date, terms, Ahmed for approval', p.email.body.includes('Item: Libbey Contour Goblet Glass 16 oz (9156, qty 6 cs), Steelite Monza Dessert Fork 7" (5340Z023, qty 17 dz)')
-    && p.email.body.includes('Invoice Date: October 29, 2026') && p.email.body.includes('Terms: Due on Receipt') && p.email.body.includes("I've also included Ahmed for approval."));
-  check('... to AP, copying the team but not the person composing; the PDF to attach', p.email.to.join() === AP_TO && !p.email.cc.includes('apurandare@hwoodgroup.com')
-    && p.email.cc.includes('aameziane@hwoodgroup.com') && p.docs.length === 1);
+  check('... the lines of the example in order: Invoice #, Vendor (EE Mercantile LLC), Amount, Venue, Item, Terms, then Ahmed "if needed"',
+    p.email.body.includes(`Invoice #: INV-2026-086418\nVendor: EE Mercantile LLC\nAmount: $2,397.33 (incl. 7.25% tax of $162.06)\nVenue: Delilah LA\nItem: Libbey Contour Goblet Glass 16 oz (9156, qty 6 cs), Steelite Monza Dessert Fork 7" (5340Z023, qty 17 dz)\nTerms: Due on Receipt\n\nI've also included Ahmed for approval, if needed.`)
+    && p.email.body.startsWith('Hi,\n\nPlease find the attached invoice from EE Mercantile for the glassware & flatware ordered for Delilah LA. Kindly confirm once the invoice has been processed so I can coordinate with the supplier and arrange delivery.')
+    && !p.email.body.includes('Invoice Date') && !p.email.body.includes('Thank you,'), p.email.body);
+  check('... to hwoodap@, cc Cara, Ahmed, Porfirio and Stephanie (the user list), never the person composing; the PDF to attach',
+    p.email.to.join() === AP_TO && AP_TO === 'hwoodap@iqbackoffice.com' && p.email.cc.join() === 'cconnor@hwoodgroup.com,aameziane@hwoodgroup.com,pcaamal@hwoodgroup.com,spineda@hwoodgroup.com'
+    && !p.email.cc.includes('apurandare@hwoodgroup.com') && !p.email.cc.includes('hjariwala@hwoodgroup.com') && p.docs.length === 1);
+  check('... composed by Cara: she is left off the copy list', !paymentRequestsDue({ orders: [la], lines: [g, f], documents: [pdf], followups: [] }, venueName, 'cconnor@hwoodgroup.com')[0].email.cc.includes('cconnor@hwoodgroup.com')
+    && AP_CC.length === 4);
+  {
+    // a shipping fee with no tax: "(shipping fee only; no tax)" as in the example
+    const ship = line(la, { description: 'Shipping fee for Lady Delilah custom bags', qty: 1, unit_price: 3233, status: 'INVOICED', invoice_number: 'INV-2026-522228' });
+    const shipPdf = { ...pdf, id: 'd2', doc_number: 'INV-2026-522228', total: 3233, parsed: { subtotal: 3233, total: 3233 } } as OtDocument;
+    const [sp] = paymentRequestsDue({ orders: [la], lines: [ship], documents: [shipPdf], followups: [] }, venueName);
+    check('a shipping fee with no tax, as in the example: "(Delilah LA Shipping Fee)", "Amount: $3,233.00 (shipping fee only; no tax)"',
+      sp?.email.subject === 'Payment Request – EE Mercantile (Delilah LA Shipping Fee) INV-2026-522228 – $3,233.00'
+      && sp.email.body.includes('Amount: $3,233.00 (shipping fee only; no tax)') && sp.email.body.includes('for the shipping fee on the Delilah LA order. Kindly confirm'), sp?.email);
+  }
+  {
+    const e = { to: [AP_TO], cc: ['cconnor@hwoodgroup.com', 'aameziane@hwoodgroup.com'], subject: 'Payment Request – EE Mercantile (X) INV-1 – $1.00', body: 'Hi,\n\nInvoice #: INV-1' };
+    const link = outlookComposeLink(e);
+    check('Draft in Outlook falls back to a new e-mail in Outlook on the web, everything filled in',
+      link.startsWith('https://outlook.office.com/mail/deeplink/compose?to=hwoodap%40iqbackoffice.com&cc=cconnor%40hwoodgroup.com%3Baameziane%40hwoodgroup.com&subject=Payment%20Request%20%E2%80%93%20')
+      && link.includes('&body=Hi%2C%0A%0AInvoice%20%23%3A%20INV-1'), link);
+    check('a draft the app makes ends "Thank you," and the name (Outlook adds no signature to it)',
+      signedBody('Hi,', 'Aditya Purandare') === 'Hi,\n\nThank you,\nAditya Purandare' && signedBody('Hi,', null) === 'Hi,\n\nThank you,');
+  }
 
   const requested = paymentRequestsDue({ orders: [la], lines: [{ ...g, pay_requested_at: '2026-10-29T22:08:37Z' } as OtLine, { ...f, pay_requested_at: '2026-10-29T22:08:37Z' } as OtLine], documents: [pdf], followups: [] }, venueName);
   const composed = paymentRequestsDue({ orders: [la], lines: [g, f], documents: [pdf], followups: [sent(la, 'payment', TODAY, ['INV-2026-086418'])] }, venueName);

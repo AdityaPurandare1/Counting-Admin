@@ -343,6 +343,17 @@ export async function applyDocument(p: ApplyDocument): Promise<string> {
   return data as string;
 }
 
+/** v1.21 a stored document saved to the computer under its own name (to attach it to an e-mail). */
+export async function downloadDocument(storagePath: string, fileName: string): Promise<void> {
+  const { data, error } = await supabase.storage.from(DOC_BUCKET).download(storagePath);
+  if (error || !data) fail('Could not download the file', error);
+  const url = URL.createObjectURL(data);
+  const a = document.createElement('a');
+  a.href = url; a.download = fileName; a.rel = 'noopener';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
+}
+
 /** A short-lived link to open a stored PDF (the bucket is private). */
 export async function documentUrl(storagePath: string): Promise<string> {
   const { data, error } = await supabase.storage.from(DOC_BUCKET).createSignedUrl(storagePath, 600);

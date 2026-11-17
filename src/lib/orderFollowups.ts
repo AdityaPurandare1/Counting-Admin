@@ -21,8 +21,9 @@ export const FOLLOW_AFTER = 3;      // business days with no update
 export const MAX_TRIES = 2;         // follow-ups to a vendor with no reply, then a note to the person instead
 
 export const AP_TO = 'hwoodap@iqbackoffice.com';
-/** who the team copies on payment requests (Hursh's of 10/29); the person composing is left out */
-export const AP_CC = ['hjariwala@hwoodgroup.com', 'apurandare@hwoodgroup.com', 'spineda@hwoodgroup.com', 'pcaamal@hwoodgroup.com', 'aameziane@hwoodgroup.com'];
+/** who payment requests copy (the user, 11/16: "cc - Cara connor, ahmed, porfirio and stephanie"); the person
+ *  composing is left out */
+export const AP_CC = ['cconnor@hwoodgroup.com', 'aameziane@hwoodgroup.com', 'pcaamal@hwoodgroup.com', 'spineda@hwoodgroup.com'];
 const APPROVER = 'aameziane@hwoodgroup.com';
 
 /** a logged follow-up / payment request (kount_ot_followups) */
@@ -158,11 +159,15 @@ const WORDS: Array<[RegExp, string]> = [
   [/\bplate|bowl|platter|saucer|cup\b|mug/i, 'Plateware'],
   [/\bmatch/i, 'Matches'], [/\bnapkin|linen|towel/i, 'Linens'], [/\bcoaster|doil/i, 'Coasters'],
   [/\bbag|box|tote|liner|wrap|container/i, 'Packaging'], [/\bmint/i, 'Mints'], [/\bpick|stir|straw/i, 'Bar Supplies'],
-  [/\bwarehous|delivery\b/i, 'Delivery Fees'], [/\bshipping|freight|ups\b|fedex/i, 'Shipping'],
+  [/\bwarehous|delivery\b/i, 'Delivery Fees'], [/\bshipping|freight|ups\b|fedex/i, 'Shipping Fee'],
 ];
-/** "Glassware & Flatware" from what the lines are (the words the team uses in the subject); at most two. */
+/** a line that is only a fee: "Shipping fee for Lady Delilah custom bags", "Delivery - ...", "UPS shipping" */
+const FEE_LINE = /^\s*(?:shipping|freight|delivery|warehous|ups\b|fedex)|\b(?:shipping|freight|delivery)\s+(?:fee|charge)/i;
+/** "Glassware & Flatware" from what the lines are (the words the team uses in the subject); at most two. An invoice
+ *  of fees only is named for the fee (v1.21, the user's "Lady Delilah Bag Shipping Fee"), not for what it shipped. */
 export function payCategory(ls: Pick<OtLine, 'description'>[]): string {
-  const hit = WORDS.filter(([re]) => ls.some(l => re.test(l.description))).map(([, w]) => w);
+  const feesOnly = ls.length > 0 && ls.every(l => FEE_LINE.test(l.description));
+  const hit = WORDS.filter(([re, w]) => (!feesOnly || w === 'Delivery Fees' || w === 'Shipping Fee') && ls.some(l => re.test(l.description))).map(([, w]) => w);
   return [...new Set(hit)].slice(0, 2).join(' & ') || 'Order';
 }
 
@@ -191,31 +196,52 @@ export function paymentRequestsDue(data: { orders: OtOrder[]; lines: OtLine[]; d
       const subtotal = allPdfs ? docs.reduce((s, d) => s + (Number(parsedOf(d)?.subtotal) || Number(d.total) || 0), 0) : linesTotal;
       const tax = Math.max(0, Math.round((total - subtotal) * 100) / 100);
       const venue = venueName(venueId || null);
-      const vendor = /e\s*&?\s*e\s*mercantile/i.test(o.vendor_name) ? 'EE Mercantile' : o.vendor_name;
+      const ee = /e\s*&?\s*e\s*mercantile/i.test(o.vendor_name);
+      const vendor = ee ? 'EE Mercantile' : o.vendor_name;
       const date = docs.map(d => d.doc_date).filter((x): x is string => !!x).sort()[0] ?? null;
       const cat = payCategory(ls);
       const items = ls.map(l => `${l.description}${l.sku ? ` (${l.sku}, qty ${l.qty}${l.unit ? ' ' + l.unit : ''})` : l.qty ? ` (qty ${l.qty}${l.unit ? ' ' + l.unit : ''})` : ''}`).join(', ');
       const two = invoices.length > 1;
       // no PDF and no prices: the amount is not known, so it is left for the person (never a $0.00 request, 11/10)
       const known = total > 0;
+      const fee = /shipping|delivery/i.test(cat) && !/&/.test(cat);
       const amount = !known ? 'not known (no invoice PDF or prices in the tracker): fill it in from the invoice'
         : !allPdfs ? `${money(total)} before tax (the invoice PDF is not in the tracker — check the amount)`
-        : tax > 0 && subtotal > 0 ? `${money(total)} (incl. ${(Math.round(tax / subtotal * 10000) / 100).toFixed(2)}% tax of ${money(tax)})` : money(total);
+        : tax > 0 && subtotal > 0 ? `${money(total)} (incl. ${(Math.round(tax / subtotal * 10000) / 100).toFixed(2)}% tax of ${money(tax)})`
+        : `${money(total)} (${fee ? `${cat.toLowerCase().replace(/s$/, '')} only; ` : ''}no tax)`;
       out.push({
         order: o, venue, invoices, lines: ls, subtotal, tax, total, invoiceDate: date, docs,
         email: {
           to: [AP_TO], cc: AP_CC.filter(c => c !== me),
-          subject: `Payment Request - ${vendor} (${venue} ${cat}) ${invoices.join(' & ')} - ${known ? money(total) : '$____'}`,
-          body: `Hi,\n\nPlease find the attached ${two ? `${invoices.length} invoices` : 'invoice'} from ${vendor} for the ${cat.toLowerCase()} ordered for ${venue}. `
+          // v1.21 the user's example (Hursh's 11/16 "Payment Request – EE Mercantile (Lady Delilah Bag Shipping Fee)
+          // INV-2026-522228 – $3,233.00"): en dashes, the vendor's legal name, no invoice-date line; the sign-off is
+          // the person's Outlook signature
+          subject: `Payment Request ${DASH} ${vendor} (${venue} ${cat}) ${invoices.join(' & ')} ${DASH} ${known ? money(total) : '$____'}`,
+          body: `Hi,\n\nPlease find the attached ${two ? `${invoices.length} invoices` : 'invoice'} from ${vendor} for the ${fee ? `${cat.toLowerCase()} on the ${venue} order` : `${cat.toLowerCase()} ordered for ${venue}`}. `
             + `Kindly confirm once the ${two ? 'invoices have' : 'invoice has'} been processed so I can coordinate with the supplier and arrange delivery.\n\n`
-            + `Invoice #: ${invoices.join(', ')}\nVendor: ${o.vendor_name}\nAmount: ${amount}\nVenue: ${venue}\nItem: ${items}\n`
-            + `${date ? `Invoice Date: ${longDate(date)}\n` : ''}Terms: Due on Receipt\n\n`
-            + `${AP_CC.includes(APPROVER) && me !== APPROVER ? "I've also included Ahmed for approval.\n\n" : ''}Thank you,`,
+            + `Invoice #: ${invoices.join(', ')}\nVendor: ${ee ? 'EE Mercantile LLC' : o.vendor_name}\nAmount: ${amount}\nVenue: ${venue}\nItem: ${items}\n`
+            + `Terms: Due on Receipt`
+            + `${AP_CC.includes(APPROVER) && me !== APPROVER ? "\n\nI've also included Ahmed for approval, if needed." : ''}`,
         },
       });
     }
   }
   return out;
+}
+
+const DASH = '–';
+
+/** v1.21 a new e-mail in Outlook on the web, filled in (to, cc, subject, message): where Draft in Outlook falls back
+ *  to when it can't make the draft itself. Attachments can't ride along; the PDFs are downloaded beside it. */
+export function outlookComposeLink(e: Email): string {
+  const q = [`to=${encodeURIComponent(e.to.join(';'))}`, e.cc.length ? `cc=${encodeURIComponent(e.cc.join(';'))}` : '',
+    `subject=${encodeURIComponent(e.subject)}`, `body=${encodeURIComponent(e.body)}`].filter(Boolean).join('&');
+  return `https://outlook.office.com/mail/deeplink/compose?${q}`;
+}
+
+/** What a draft made by the app ends with (Outlook adds no signature to it): "Thank you," and the name. */
+export function signedBody(body: string, name: string | null | undefined): string {
+  return `${body}\n\nThank you,${name?.trim() ? `\n${name.trim()}` : ''}`;
 }
 
 /** A filled-in e-mail to open in Outlook (plain text; the signature is Outlook's). */

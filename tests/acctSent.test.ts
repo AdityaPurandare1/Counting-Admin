@@ -242,10 +242,36 @@ check('reminders: with accounting but past its ETA -> still ask the vendor for a
   } else console.log('  (Counting-App not next to this repo: the pull checks are skipped)');
 }
 
+// ── v1.21 payment requests drafted in Outlook ───────────────────────
+{
+  const ts = src('src/components/orderTracker/ToSend.tsx');
+  check('To send: "Draft in Outlook" makes the draft with the invoice PDFs (document ids) and opens it; the tab opened in the click',
+    ts.includes('<Btn variant="primary" size="sm" onClick={onDraft}>Draft in Outlook</Btn>') && ts.includes("const w = window.open('', '_blank');")
+    && ts.includes('const r = await draftMail({ to: p.email.to, cc: p.email.cc, subject: p.email.subject, text: signedBody(p.email.body, meName ?? me),')
+    && ts.includes('document_ids: files.map(d => d.id) });'));
+  check('... no draft (IT has not granted it, another mailbox, not connected): a new e-mail filled in + the PDFs downloaded, and it says why',
+    ts.includes('const link = outlookComposeLink(p.email);') && ts.includes("for (const d of files) await downloadDocument(d.storage_path!, d.file_name || `${d.doc_number ?? 'invoice'}.pdf`);")
+    && ts.includes('IT has to approve Mail.ReadWrite for the Order Tracker app'));
+  check('... either way it is logged (Undo) and leaves the list; a blank tab is closed on an error',
+    ts.includes("const id = await logFollowup({ order_id: p.order.id, kind: 'payment', invoice_numbers: p.invoices, note: p.email.subject.slice(0, 200) });")
+    && ts.includes('} catch (e) { w?.close(); throw e; }   // never leave a blank tab behind'));
+  const fn = sibling('supabase', 'functions', 'kount-order-mail', 'index.ts');
+  const graph = sibling('supabase', 'functions', 'kount-order-mail', 'graph.ts');
+  if (fn && graph) {
+    check('function draft_mail: only the connected mailbox owner, a Mail.ReadWrite token asked for only here, not_granted when IT has not given it',
+      fn.includes("if (action === 'draft_mail') {") && fn.includes("if (String(acct.mailbox ?? '').toLowerCase() !== caller.email) return json(200, { drafted: false, reason: 'not_owner'")
+      && fn.includes('token = (await refreshAccess(String(refresh), DRAFT_SCOPE)).access_token;') && graph.includes("export const DRAFT_SCOPE = 'https://graph.microsoft.com/Mail.ReadWrite';"));
+    check('... the tracker documents attached (3 MB each at most), the draft made in Drafts, its Outlook link returned - never sent',
+      fn.includes("const { data: docs, error: dErr } = await sb.from('kount_ot_documents').select('id, kind, doc_number, file_name, storage_path, order_id').in('id', docIds as string[]);")
+      && fn.includes("if (bytes.length > 3 * 1024 * 1024) { skipped.push(name); continue; }") && fn.includes("await graphPostJson<{ id?: string; webLink?: string }>(token, '/me/messages', {")
+      && fn.includes('return json(200, { drafted: true, link: draft.webLink ?? null, attached: attachments.length, skipped });'));
+  }
+}
+
 // no raw control bytes in what this version touched (the editor once turned regex escapes into them)
 {
   const files = ['src/lib/orderTracker.ts', 'src/lib/orderTrackerView.ts', 'src/lib/orderFollowups.ts', 'src/lib/orderMail.ts', 'src/components/orderTracker/OrdersView.tsx',
-    'src/components/orderTracker/OrderDrawer.tsx', 'src/components/orderTracker/InboxView.tsx'];
+    'src/components/orderTracker/OrderDrawer.tsx', 'src/components/orderTracker/InboxView.tsx', 'src/components/orderTracker/ToSend.tsx', 'src/lib/orderTrackerData.ts'];
   const bad = files.filter(f => [...src(f)].some(ch => { const c = ch.charCodeAt(0); return c < 32 && c !== 9 && c !== 10 && c !== 13; }));
   check('no raw control bytes in the changed files', bad.length === 0, bad);
 }

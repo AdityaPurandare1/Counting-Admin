@@ -1,11 +1,11 @@
 import { useMemo, useState } from 'react';
 import { Btn, Card, Pill } from '@/components/atoms';
-import { documentUrl, logFollowup, undoFollowup, type TrackerData } from '@/lib/orderTrackerData';
-import { FOLLOW_AFTER, followupsDue, mailtoLink, paymentRequestsDue, type FollowUp, type OrderMail, type PayRequest } from '@/lib/orderFollowups';
+import { documentUrl, downloadDocument, logFollowup, undoFollowup, type TrackerData } from '@/lib/orderTrackerData';
+import { FOLLOW_AFTER, followupsDue, mailtoLink, outlookComposeLink, paymentRequestsDue, signedBody, type FollowUp, type OrderMail, type PayRequest } from '@/lib/orderFollowups';
 import { errBox, fmtMoney, linkBtn, shortDate, subTxt } from './shared';
 import { RECENT_PAID_DAYS, STUB_SENT_NOTE, stubsToSend, type StubToSend } from '@/lib/orderTrackerView';
 import { stubEmail } from '@/lib/stubMail';
-import { messageLink } from '@/lib/orderMail';
+import { draftMail, messageLink } from '@/lib/orderMail';
 
 /** v1.04 To send: payment requests for new invoices and follow-ups on quiet orders, each one click from a
  *  filled-in e-mail (src/lib/orderFollowups.ts). Compose opens it in Outlook and logs it (Undo if not sent). */
@@ -65,6 +65,41 @@ export function ToSend({ data, mails, today, venueName, me, meName = null, onOpe
     onReload();
   });
   const pdf = (path: string) => run(async () => { window.open(await documentUrl(path), '_blank', 'noopener'); });
+  // v1.21 the user: "new emails can be drafted in the app and opened in outlook to be sent" - a real draft with the
+  // invoice PDF attached when the tracker may make one, else a new e-mail filled in and the PDF downloaded to attach.
+  // The tab is opened in the click (so it isn't blocked), then pointed at the draft / the new e-mail.
+  const [payNote, setPayNote] = useState<string | null>(null);
+  const draftPay = (p: PayRequest) => {
+    const w = window.open('', '_blank');
+    void run(async () => {
+      setPayNote(null);
+      try {
+        const files = p.docs.filter(d => d.storage_path);
+        const r = await draftMail({ to: p.email.to, cc: p.email.cc, subject: p.email.subject, text: signedBody(p.email.body, meName ?? me),
+          document_ids: files.map(d => d.id) });
+        if (r.drafted && r.link) {
+          if (w) { w.opener = null; w.location.href = r.link; } else window.open(r.link, '_blank', 'noopener');
+          setPayNote(`The draft is in your Outlook Drafts${r.attached ? ` with the invoice PDF${r.attached > 1 ? 's' : ''} attached` : ''}${r.skipped?.length ? ` (not attached: ${r.skipped.join(', ')})` : ''} - check it and Send.`);
+        } else {
+          const link = outlookComposeLink(p.email);
+          if (w) { w.opener = null; w.location.href = link; } else window.open(link, '_blank', 'noopener');
+          for (const d of files) await downloadDocument(d.storage_path!, d.file_name || `${d.doc_number ?? 'invoice'}.pdf`);
+          const why = r.reason === 'not_granted' ? 'Outlook does not let the tracker make drafts yet (IT has to approve Mail.ReadWrite for the Order Tracker app)'
+            : r.reason === 'not_owner' ? `the connected mailbox is ${r.mailbox ?? "someone else's"}`
+            : r.reason === 'not_connected' ? 'Outlook is not connected in the Inbox' : `the draft could not be made${r.detail ? ` (${r.detail})` : ''}`;
+          setPayNote(`A new e-mail is open in Outlook, filled in${files.length ? `, and the invoice PDF${files.length > 1 ? 's are' : ' is'} downloaded - drag ${files.length > 1 ? 'them' : 'it'} in and Send` : ' - attach the invoice and Send'}. (No draft: ${why}.)`);
+        }
+        const id = await logFollowup({ order_id: p.order.id, kind: 'payment', invoice_numbers: p.invoices, note: p.email.subject.slice(0, 200) });
+        setLogged({ id, label: p.email.subject });
+        onReload();
+      } catch (e) { w?.close(); throw e; }   // never leave a blank tab behind
+    });
+  };
+  const copyPay = (p: PayRequest) => {
+    const text = `To: ${p.email.to.join('; ')}\nCc: ${p.email.cc.join('; ')}\nSubject: ${p.email.subject}\n\n${p.email.body}`;
+    (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject(new Error('no clipboard')))
+      .then(() => setPayNote('Copied: to, cc, subject and message.'), () => setPayNote('Could not copy - open the order and copy it by hand.'));
+  };
   const vendorOnes = follows.filter(f => f.to === 'vendor'), ours = follows.filter(f => f.to === 'self');
 
   return (
@@ -97,10 +132,11 @@ export function ToSend({ data, mails, today, venueName, me, meName = null, onOpe
 
       <Card padding={16}>
         <div style={{ fontWeight: 700 }}>Payment requests {pays.length > 0 && <Pill tone="gold" size="sm">{pays.length}</Pill>}</div>
-        <div style={subTxt}>Invoices with no payment request yet (none found in the mailbox). Compose opens it to AP, filled in as the team writes them — attach the invoice PDF.</div>
+        <div style={subTxt}>Invoices with no payment request yet (none found in the mailbox). Draft in Outlook writes it to AP (hwoodap@iqbackoffice.com, cc Cara, Ahmed,
+          Porfirio and Stephanie) as the team writes them, the invoice PDF attached, and opens it in Outlook to check and Send.</div>
+        {payNote && <div style={{ ...subTxt, marginTop: 6 }}>{payNote}</div>}
         {pays.length === 0 && <div style={{ marginTop: 8, fontSize: 13, color: 'var(--fg-muted)' }}>Nothing to request.</div>}
-        {pays.map(p => <PayRow key={p.order.id + p.venue} p={p}
-          onCompose={() => void compose({ orderId: p.order.id, kind: 'payment', invoices: p.invoices, label: p.email.subject, email: p.email })}
+        {pays.map(p => <PayRow key={p.order.id + p.venue} p={p} onDraft={() => draftPay(p)} onCopy={() => copyPay(p)}
           onPdf={pdf} onOpen={() => onOpenOrder(p.order.id)} />)}
       </Card>
 
@@ -148,7 +184,7 @@ function StubRow({ g, email, onOpen, onReply, onCopy, onMarkSent }: { g: StubToS
   );
 }
 
-function PayRow({ p, onCompose, onPdf, onOpen }: { p: PayRequest; onCompose: () => void; onPdf: (path: string) => void; onOpen: () => void }) {
+function PayRow({ p, onDraft, onCopy, onPdf, onOpen }: { p: PayRequest; onDraft: () => void; onCopy: () => void; onPdf: (path: string) => void; onOpen: () => void }) {
   return (
     <div style={row}>
       <div style={{ flex: '1 1 360px', minWidth: 0 }}>
@@ -159,7 +195,8 @@ function PayRow({ p, onCompose, onPdf, onOpen }: { p: PayRequest; onCompose: () 
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
         {p.docs.filter(d => d.storage_path).map(d => <button key={d.id} style={{ ...linkBtn, fontSize: 12 }} onClick={() => onPdf(d.storage_path!)}>{d.doc_number ?? 'Invoice'} PDF</button>)}
         <Btn variant="ghost" size="sm" onClick={onOpen}>Open order</Btn>
-        <Btn variant="primary" size="sm" onClick={onCompose}>Compose</Btn>
+        <Btn variant="secondary" size="sm" onClick={onCopy}>Copy text</Btn>
+        <Btn variant="primary" size="sm" onClick={onDraft}>Draft in Outlook</Btn>
       </div>
     </div>
   );
