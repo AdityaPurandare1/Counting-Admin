@@ -250,5 +250,22 @@ check('business days: Fri -> Wed = 3, Fri -> Mon = 1, same day = 0, weekend only
   check('an invoice split over venues: each venue request from its own lines', paymentRequestsDue({ orders: [two], lines: [t1, t2], documents: [d3], followups: [] }, venueName).every(x => x.source === 'order'));
 }
 
+// -- v1.25: the user, 11/18 (a screenshot of the e-mail): "It doesnt add people in CC yet". Outlook on the web's compose
+// link takes only to / subject / body; the fallback opens a mailto link, which carries the Cc.
+{
+  const o = order({ order_number: 'OSE-0300', vendor_name: 'EE Mercantile', venue_id: 'v1' });
+  const l1 = line(o, { description: 'BSC - delivery 10/28/2026 SKU: BS-EUROTTE (2) SKU: BS-FOILLOGO (2)', qty: 1, unit_price: 35.06, status: 'INVOICED', invoice_number: 'INV-2026-794351' });
+  const [r] = paymentRequestsDue({ orders: [o], lines: [l1], documents: [], followups: [] }, venueName, 'apurandare@hwoodgroup.com');
+  const link = mailtoLink(r.email);
+  check('the mailto carries To, the three on Cc, the subject and the body',
+    link.startsWith('mailto:hwoodap%40iqbackoffice.com?cc=aameziane%40hwoodgroup.com%2Cpcaamal%40hwoodgroup.com%2Cspineda%40hwoodgroup.com&subject=Payment%20Request')
+    && link.includes('&body=Hi%2C'), link.slice(0, 200));
+  check('... a payment request fits in a mailto (Outlook takes about 2,000 characters)', link.length < 1900, link.length);
+  const pd = readFileSync(join(process.cwd(), 'src/components/orderTracker/payDraft.ts'), 'utf8');
+  check('no draft: the mailto opens (the pre-opened tab closed); only one too long for it falls back to the web link, and the note names who to Cc',
+    /const mailto = mailtoFor\(p\.email\);/.test(pd) && /if \(mailto\) \{ try \{ w\?\.close\(\); \}/.test(pd) && /openMailto\(mailto\)/.test(pd)
+    && /Add \$\{p\.email\.cc\.join\(', '\)\} on Cc/.test(pd) && /export const MAILTO_MAX = 1900;/.test(pd));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);
