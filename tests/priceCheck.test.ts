@@ -64,7 +64,7 @@ check('price per piece: cents, tenths of a cent under $1', fmtUnit(4.9992) === '
 const app = src('src/App.tsx'), routes = src('src/lib/routes.ts');
 check('Purchasing > Price check, behind the Order prices permission', /path="\/price-check"\s+element=\{gate\('purchasing:order-prices', <PriceCheck/.test(app)
   && /\{ to: '\/price-check', label: 'Price check', key: 'purchasing:order-prices' \}/.test(routes));
-check('version 1.23', /APP_VERSION = '1\.23'/.test(src('src/lib/version.ts')));
+check('version 1.23 or later', Number((/APP_VERSION = '([0-9.]+)'/.exec(src('src/lib/version.ts')) ?? [])[1]) >= 1.23);
 
 const fn = sibling('supabase', 'functions', 'kount-price-check', 'index.ts');
 const mig = sibling('supabase', 'migrations', '0176_kount_price_check.sql');

@@ -99,11 +99,11 @@ check('business days: Fri -> Wed = 3, Fri -> Mon = 1, same day = 0, weekend only
     p.email.body.includes(`Invoice #: INV-2026-086418\nVendor: EE Mercantile LLC\nAmount: $2,397.33 (incl. 7.25% tax of $162.06)\nVenue: Delilah LA\nItem: Libbey Contour Goblet Glass 16 oz (9156, qty 6 cs), Steelite Monza Dessert Fork 7" (5340Z023, qty 17 dz)\nTerms: Due on Receipt\n\nI've also included Ahmed for approval, if needed.`)
     && p.email.body.startsWith('Hi,\n\nPlease find the attached invoice from EE Mercantile for the glassware & flatware ordered for Delilah LA. Kindly confirm once the invoice has been processed so I can coordinate with the supplier and arrange delivery.')
     && !p.email.body.includes('Invoice Date') && !p.email.body.includes('Thank you,'), p.email.body);
-  check('... to hwoodap@, cc Cara, Ahmed, Porfirio and Stephanie (the user list), never the person composing; the PDF to attach',
-    p.email.to.join() === AP_TO && AP_TO === 'hwoodap@iqbackoffice.com' && p.email.cc.join() === 'cconnor@hwoodgroup.com,aameziane@hwoodgroup.com,pcaamal@hwoodgroup.com,spineda@hwoodgroup.com'
+  check('... to hwoodap@, cc Ahmed, Porfirio and Stephanie (the user list, 11/18), never the person composing; the PDF to attach',
+    p.email.to.join() === AP_TO && AP_TO === 'hwoodap@iqbackoffice.com' && p.email.cc.join() === 'aameziane@hwoodgroup.com,pcaamal@hwoodgroup.com,spineda@hwoodgroup.com'
     && !p.email.cc.includes('apurandare@hwoodgroup.com') && !p.email.cc.includes('hjariwala@hwoodgroup.com') && p.docs.length === 1);
-  check('... composed by Cara: she is left off the copy list', !paymentRequestsDue({ orders: [la], lines: [g, f], documents: [pdf], followups: [] }, venueName, 'cconnor@hwoodgroup.com')[0].email.cc.includes('cconnor@hwoodgroup.com')
-    && AP_CC.length === 4);
+  check('... composed by Porfirio: he is left off the copy list; Cara is no longer copied (11/18)', !paymentRequestsDue({ orders: [la], lines: [g, f], documents: [pdf], followups: [] }, venueName, 'pcaamal@hwoodgroup.com')[0].email.cc.includes('pcaamal@hwoodgroup.com')
+    && AP_CC.length === 3 && !AP_CC.includes('cconnor@hwoodgroup.com'));
   {
     // a shipping fee with no tax: "(shipping fee only; no tax)" as in the example
     const ship = line(la, { description: 'Shipping fee for Lady Delilah custom bags', qty: 1, unit_price: 3233, status: 'INVOICED', invoice_number: 'INV-2026-522228' });

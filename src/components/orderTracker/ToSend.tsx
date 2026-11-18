@@ -121,7 +121,7 @@ export function ToSend({ data, mails, today, venueName, me, meName = null, stubC
 
       <Card padding={16}>
         <div style={{ fontWeight: 700 }}>Payment requests {pays.length > 0 && <Pill tone="gold" size="sm">{pays.length}</Pill>}</div>
-        <div style={subTxt}>Invoices with no payment request yet (none found in the mailbox). Draft in Outlook writes it to AP (hwoodap@iqbackoffice.com, cc Cara, Ahmed,
+        <div style={subTxt}>Invoices with no payment request yet (none found in the mailbox). Draft in Outlook writes it to AP (hwoodap@iqbackoffice.com, cc Ahmed,
           Porfirio and Stephanie) as the team writes them, the invoice PDF attached, and opens it in Outlook to check and Send.</div>
         {payNote && <div style={{ ...subTxt, marginTop: 6 }}>{payNote}</div>}
         {pays.length === 0 && <div style={{ marginTop: 8, fontSize: 13, color: 'var(--fg-muted)' }}>Nothing to request.</div>}

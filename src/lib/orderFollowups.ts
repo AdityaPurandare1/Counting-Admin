@@ -21,9 +21,10 @@ export const FOLLOW_AFTER = 3;      // business days with no update
 export const MAX_TRIES = 2;         // follow-ups to a vendor with no reply, then a note to the person instead
 
 export const AP_TO = 'hwoodap@iqbackoffice.com';
-/** who payment requests copy (the user, 11/16: "cc - Cara connor, ahmed, porfirio and stephanie"); the person
+/** who payment requests copy, by default (the user, 11/18: "I want 3 emails to be default in CC which are
+ *  aameziane@hwoodgroup.com, pcaamal@hwoodgroup.com, spineda@hwoodgroup.com" - Cara no longer copied); the person
  *  composing is left out */
-export const AP_CC = ['cconnor@hwoodgroup.com', 'aameziane@hwoodgroup.com', 'pcaamal@hwoodgroup.com', 'spineda@hwoodgroup.com'];
+export const AP_CC = ['aameziane@hwoodgroup.com', 'pcaamal@hwoodgroup.com', 'spineda@hwoodgroup.com'];
 const APPROVER = 'aameziane@hwoodgroup.com';
 
 /** a logged follow-up / payment request (kount_ot_followups) */
