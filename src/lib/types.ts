@@ -261,6 +261,8 @@ export interface VenueRow {
   store_aliases: string[];
   ordinal: number;
   is_active: boolean;
+  /** v1.25 (0177): operating -> payment requests to hwoodap@, preopening -> hwoodga@ */
+  accounting_stage?: 'operating' | 'preopening';
   created_at: string;
   updated_at: string;
 }

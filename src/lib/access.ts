@@ -52,15 +52,21 @@ const VENUES_BASELINE: Array<{ id: string; name: string }> = [
 
 const VENUES_CACHE_KEY = 'kount_admin_venues_cache_v1';
 
-function loadVenuesCache(): Array<{ id: string; name: string }> | null {
+function loadVenuesCache(): Array<{ id: string; name: string; stage?: 'operating' | 'preopening' }> | null {
   try {
     const raw = localStorage.getItem(VENUES_CACHE_KEY);
-    return raw ? JSON.parse(raw) as Array<{ id: string; name: string }> : null;
+    return raw ? JSON.parse(raw) as Array<{ id: string; name: string; stage?: 'operating' | 'preopening' }> : null;
   } catch { return null; }
 }
 
-export const VENUES: Array<{ id: string; name: string }> =
+export const VENUES: Array<{ id: string; name: string; stage?: 'operating' | 'preopening' }> =
   loadVenuesCache() ?? VENUES_BASELINE.slice();
+
+/** v1.25 (0177): a venue's accounting stage (operating / pre-opening), which picks the mailbox for its payment requests.
+ *  Unknown (not loaded, the warehouse) = null, which is operating. */
+export function venueStage(id: string | null): 'operating' | 'preopening' | null {
+  return (id && VENUES.find(v => v.id === id)?.stage) || null;
+}
 
 /** Pull the live venues table and refresh `VENUES` + cache in localStorage.
  *  Silent fallback to existing list on error so a Supabase outage doesn't
@@ -71,14 +77,15 @@ export async function refreshVenues(): Promise<Array<{ id: string; name: string 
   try {
     const { data, error } = await supabase
       .from('kount_venues')
-      .select('id, name, ordinal')
+      .select('id, name, ordinal, accounting_stage')
       .eq('is_active', true)
       .order('ordinal')
       .order('name');
     if (error || !data) return VENUES;
-    const mapped = (data as Array<{ id: string; name: string; ordinal: number }>).map(v => ({
+    const mapped = (data as Array<{ id: string; name: string; ordinal: number; accounting_stage?: string | null }>).map(v => ({
       id: v.id,
       name: v.name,
+      stage: (v.accounting_stage === 'preopening' ? 'preopening' : 'operating') as 'operating' | 'preopening',
     }));
     if (mapped.length > 0) {
       VENUES.length = 0;

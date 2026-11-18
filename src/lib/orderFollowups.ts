@@ -21,6 +21,15 @@ export const FOLLOW_AFTER = 3;      // business days with no update
 export const MAX_TRIES = 2;         // follow-ups to a vendor with no reply, then a note to the person instead
 
 export const AP_TO = 'hwoodap@iqbackoffice.com';
+/** v1.25 (0177): pre-opening venues' payment requests go to GA (the user, 11/18: "The hwoodap email is for operating
+ *  and hwoodga is for preopening") */
+export const AP_GA_TO = 'hwoodga@iqbackoffice.com';
+export type VenueStage = 'operating' | 'preopening';
+/** The accounting mailbox for a venue's payment requests: pre-opening -> GA, anything else (operating, the warehouse,
+ *  a venue not known yet) -> AP. */
+export function accountingTo(stage: VenueStage | null | undefined): string {
+  return stage === 'preopening' ? AP_GA_TO : AP_TO;
+}
 /** who payment requests copy, by default (the user, 11/18: "I want 3 emails to be default in CC which are
  *  aameziane@hwoodgroup.com, pcaamal@hwoodgroup.com, spineda@hwoodgroup.com" - Cara no longer copied); the person
  *  composing is left out */
@@ -180,7 +189,8 @@ export function payCategory(ls: Pick<OtLine, 'description'>[]): string {
  *  and venue, written as the team writes them. Amount = the invoice PDF's total (tax and shipping as billed);
  *  without the PDF, the lines' total before tax (said so). */
 export function paymentRequestsDue(data: { orders: OtOrder[]; lines: OtLine[]; documents: OtDocument[]; followups: OtFollowup[] },
-                                   venueName: (id: string | null) => string, me = ''): PayRequest[] {
+                                   venueName: (id: string | null) => string, me = '',
+                                   stageOf: (venueId: string | null) => VenueStage | null | undefined = () => null): PayRequest[] {
   const composed = new Set(data.followups.filter(f => f.kind === 'payment').flatMap(f => (f.invoice_numbers ?? []).map(normText)));
   const out: PayRequest[] = [];
   for (const o of data.orders) {
@@ -225,7 +235,8 @@ export function paymentRequestsDue(data: { orders: OtOrder[]; lines: OtLine[]; d
       out.push({
         order: o, venue, invoices, lines: ls, source: read ? 'invoice' : 'order', subtotal, tax, total, invoiceDate: date, docs,
         email: {
-          to: [AP_TO], cc: AP_CC.filter(c => c !== me),
+          // v1.25: the venue's accounting stage picks the mailbox (operating -> AP, pre-opening -> GA)
+          to: [accountingTo(stageOf(venueId || o.venue_id || null))], cc: AP_CC.filter(c => c !== me),
           // v1.21 the user's example (Hursh's 11/16 "Payment Request – EE Mercantile (Lady Delilah Bag Shipping Fee)
           // INV-2026-522228 – $3,233.00"): en dashes, the vendor's legal name, no invoice-date line; the sign-off is
           // the person's Outlook signature

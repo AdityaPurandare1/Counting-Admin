@@ -5,7 +5,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { AP_CC, AP_TO, businessDaysBetween, followupsDue, invoiceAmount, invoiceItems, lastActivity, mailtoLink, outlookComposeLink, payCategory, paymentRequestsDue, readInvoices, signedBody, vendorContact, type OrderMail, type OtFollowup } from '../src/lib/orderFollowups';
+import { AP_CC, AP_GA_TO, AP_TO, accountingTo, businessDaysBetween, followupsDue, invoiceAmount, invoiceItems, lastActivity, mailtoLink, outlookComposeLink, payCategory, paymentRequestsDue, readInvoices, signedBody, vendorContact, type OrderMail, type OtFollowup, type VenueStage } from '../src/lib/orderFollowups';
 import { findApproval, isOwnSender, paymentRequestOf, type MailMessage, type OtDocument, type OtLine, type OtOrder, type OtTracking } from '../src/lib/orderTracker';
 const sibling = (...parts: string[]) => { const p = join(process.env.COUNTING_APP_DIR ?? join(process.cwd(), '..', 'Counting-App'), ...parts); return existsSync(p) ? readFileSync(p, 'utf8') : null; };
 
@@ -265,6 +265,31 @@ check('business days: Fri -> Wed = 3, Fri -> Mon = 1, same day = 0, weekend only
   check('no draft: the mailto opens (the pre-opened tab closed); only one too long for it falls back to the web link, and the note names who to Cc',
     /const mailto = mailtoFor\(p\.email\);/.test(pd) && /if \(mailto\) \{ try \{ w\?\.close\(\); \}/.test(pd) && /openMailto\(mailto\)/.test(pd)
     && /Add \$\{p\.email\.cc\.join\(', '\)\} on Cc/.test(pd) && /export const MAILTO_MAX = 1900;/.test(pd));
+}
+
+// -- v1.26 (0177): the user, 11/18: "tag venues as preopening and operating so that emails are sent to the correct
+// accounting email. The hwoodap email is for operating and hwoodga is for preopening ... currently all venues are operating"
+{
+  const o = order({ order_number: 'OSE-0200', vendor_name: 'EE Mercantile', venue_id: 'v14' });
+  const a = line(o, { description: 'Libbey Collins 10.5 oz', venue_id: 'v14', qty: 1, unit_price: 100, status: 'INVOICED', invoice_number: 'INV-2026-200001' });
+  const b = line(o, { description: 'Libbey Collins 10.5 oz', venue_id: 'v1', qty: 1, unit_price: 100, status: 'INVOICED', invoice_number: 'INV-2026-200002' });
+  const stage = (id: string | null): VenueStage | null => (id === 'v14' ? 'preopening' : id === 'v1' ? 'operating' : null);
+  const reqs = paymentRequestsDue({ orders: [o], lines: [a, b], documents: [], followups: [] }, venueName, '', stage);
+  const toOf = (inv: string) => reqs.find(r => r.invoices.includes(inv))?.email.to.join();
+  check('a pre-opening venue -> hwoodga@, an operating one -> hwoodap@ (an order split over the two: each part its own)',
+    toOf('INV-2026-200001') === 'hwoodga@iqbackoffice.com' && toOf('INV-2026-200002') === 'hwoodap@iqbackoffice.com', reqs.map(r => [r.invoices, r.email.to]));
+  check('no stage known (the warehouse, venues not loaded) -> AP; called without a lookup -> AP',
+    accountingTo(null) === AP_TO && accountingTo(undefined) === AP_TO && accountingTo('operating') === AP_TO && accountingTo('preopening') === AP_GA_TO
+    && AP_GA_TO === 'hwoodga@iqbackoffice.com' && paymentRequestsDue({ orders: [o], lines: [a], documents: [], followups: [] }, venueName)[0].email.to.join() === AP_TO);
+  const rd = (f: string) => readFileSync(join(process.cwd(), f), 'utf8');
+  check('Venue settings shows and saves the stage; the venue list reads it; both callers pass it',
+    /accounting_stage: stage,/.test(rd('src/screens/VenueSettings.tsx')) && /Pre-opening/.test(rd('src/screens/VenueSettings.tsx'))
+    && /\.select\('id, name, ordinal, accounting_stage'\)/.test(rd('src/lib/access.ts'))
+    && /paymentRequestsDue\(full, venueName, me, venueStage\)/.test(rd('src/components/orderTracker/ToSend.tsx'))
+    && /venueName, me\?\.email \?\? '', venueStage\)/.test(rd('src/components/orderTracker/OrderDrawer.tsx')));
+  const mig = sibling('supabase', 'migrations', '0177_kount_venue_accounting_stage.sql');
+  if (mig) check('0177: every venue operating by default; only operating / preopening',
+    /add column if not exists accounting_stage text not null default 'operating'/.test(mig) && /check \(accounting_stage in \('operating', 'preopening'\)\)/.test(mig));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

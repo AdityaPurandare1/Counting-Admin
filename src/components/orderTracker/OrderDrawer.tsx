@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { VENUES } from '@/lib/access';
+import { VENUES, venueStage } from '@/lib/access';
 import {
   STATUSES, STATUS_LABEL, MULTIPLE_VENUES, ALL_STATUSES, autoOrderNumber, awaitingApproval, extractTracking, isLate, orderState, orderVenues, receivedForLine, statusRank, trackingUrl,
   type LineStatus, type OtDocument, type OtLine, type OtOrder,
@@ -102,7 +102,7 @@ export function OrderDrawer({ order, lines, docs, data, today, venueName, onClos
     const want = new Set(toAccounting);
     const ls = lines.filter(l => l.status !== 'CANCELLED' && !!l.invoice_number && want.has(invoiceToken(l.invoice_number)))
       .map(l => ({ ...l, status: 'INVOICED' as const, pay_requested_at: null }));
-    return paymentRequestsDue({ orders: [order], lines: ls, documents: data.documents, followups: [] }, venueName, me?.email ?? '');
+    return paymentRequestsDue({ orders: [order], lines: ls, documents: data.documents, followups: [] }, venueName, me?.email ?? '', venueStage);
   }, [order, lines, toAccounting, data.documents, venueName, me]);
   const draftAcct = (r: PayRequest) => {
     const w = window.open('', '_blank');

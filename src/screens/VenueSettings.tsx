@@ -129,6 +129,7 @@ export function VenueSettings({ user }: Props) {
                   <th style={{ padding: '8px 6px' }}>Address</th>
                   <th style={{ padding: '8px 6px', width: 70 }}>Zones</th>
                   <th style={{ padding: '8px 6px', width: 80 }}>Aliases</th>
+                  <th style={{ padding: '8px 6px', width: 90 }}>Accounting</th>
                   <th style={{ padding: '8px 6px', width: 80 }}>Status</th>
                   <th style={{ padding: '8px 6px', width: 80 }}></th>
                 </tr>
@@ -142,6 +143,8 @@ export function VenueSettings({ user }: Props) {
                     <td style={{ padding: '10px 6px', color: 'var(--fg-muted)', fontSize: 12 }}>{v.address || '—'}</td>
                     <td style={{ padding: '10px 6px', fontSize: 12 }}>{v.default_zones?.length ?? 0}</td>
                     <td style={{ padding: '10px 6px', fontSize: 12 }}>{v.store_aliases?.length ?? 0}</td>
+                    <td style={{ padding: '10px 6px', fontSize: 12 }} title={v.accounting_stage === 'preopening' ? 'hwoodga@iqbackoffice.com' : 'hwoodap@iqbackoffice.com'}>
+                      {v.accounting_stage === 'preopening' ? 'Pre-opening' : 'Operating'}</td>
                     <td style={{ padding: '10px 6px' }}>
                       <Pill tone={v.is_active ? 'positive' : 'ghost'} size="sm">{v.is_active ? 'active' : 'inactive'}</Pill>
                     </td>
@@ -212,6 +215,7 @@ function VenueFormModal({
   const [savedDefaultZones, setSavedDefaultZones] = useState((initial?.default_zones ?? []).join('\n'));
   const [storeAliases,  setStoreAliases]  = useState((initial?.store_aliases ?? []).join('\n'));
   const [isActive,      setIsActive]      = useState<boolean>(initial?.is_active ?? true);
+  const [stage,         setStage]         = useState<'operating' | 'preopening'>(initial?.accounting_stage === 'preopening' ? 'preopening' : 'operating');
   const [busy,          setBusy]          = useState(false);
   const [err,           setErr]           = useState<string | null>(null);
 
@@ -349,6 +353,7 @@ function VenueFormModal({
       store_aliases: parseList(storeAliases).map(a => a.toLowerCase()),
       ordinal: ord,
       is_active: isActive,
+      accounting_stage: stage,
     };
     const q = mode === 'create'
       ? supabase.from('kount_venues').insert(payload).select().single()
@@ -531,6 +536,20 @@ function VenueFormModal({
             placeholder={'delilah la\ndelilah - la\ndelilah west hollywood'}/>
           <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 4 }}>
             Stored lowercase. Lets the AVT upload flow map Craftable's store-name spelling variants to this venue id.
+          </div>
+        </Field>
+
+        <Field label="Accounting">
+          <div style={{ display: 'flex', gap: 16, fontSize: 13, flexWrap: 'wrap' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input type="radio" name="accounting_stage" checked={stage === 'operating'} onChange={() => setStage('operating')} /> Operating
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input type="radio" name="accounting_stage" checked={stage === 'preopening'} onChange={() => setStage('preopening')} /> Pre-opening
+            </label>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginTop: 4 }}>
+            Where its payment requests go: operating to hwoodap@iqbackoffice.com, pre-opening to hwoodga@iqbackoffice.com.
           </div>
         </Field>
 

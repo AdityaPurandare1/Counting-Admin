@@ -8,6 +8,7 @@ import { stubCheckLine, type StubCheck } from '@/lib/orderMail';
 import { stubEmail } from '@/lib/stubMail';
 import { messageLink } from '@/lib/orderMail';
 import { openPaymentDraft } from './payDraft';
+import { venueStage } from '@/lib/access';
 
 /** v1.04 To send: payment requests for new invoices and follow-ups on quiet orders, each one click from a
  *  filled-in e-mail (src/lib/orderFollowups.ts). Compose opens it in Outlook and logs it (Undo if not sent). */
@@ -18,7 +19,7 @@ export function ToSend({ data, mails, today, venueName, me, meName = null, stubC
   onOpenOrder: (orderId: string) => void; onReload: () => void;
 }) {
   const full = { ...data, followups: data.followups ?? [] };
-  const pays = useMemo(() => paymentRequestsDue(full, venueName, me), [data, venueName, me]); // eslint-disable-line react-hooks/exhaustive-deps
+  const pays = useMemo(() => paymentRequestsDue(full, venueName, me, venueStage), [data, venueName, me]); // eslint-disable-line react-hooks/exhaustive-deps
   const follows = useMemo(() => followupsDue(full, mails, today, venueName, me), [data, mails, today, venueName, me]); // eslint-disable-line react-hooks/exhaustive-deps
   const [err, setErr] = useState<string | null>(null);
   const [logged, setLogged] = useState<{ id: string; label: string } | null>(null);
@@ -121,8 +122,8 @@ export function ToSend({ data, mails, today, venueName, me, meName = null, stubC
 
       <Card padding={16}>
         <div style={{ fontWeight: 700 }}>Payment requests {pays.length > 0 && <Pill tone="gold" size="sm">{pays.length}</Pill>}</div>
-        <div style={subTxt}>Invoices with no payment request yet (none found in the mailbox). Draft in Outlook writes it to AP (hwoodap@iqbackoffice.com, cc Ahmed,
-          Porfirio and Stephanie) as the team writes them, the invoice PDF attached, and opens it in Outlook to check and Send.</div>
+        <div style={subTxt}>Invoices with no payment request yet (none found in the mailbox). Draft in Outlook writes it to accounting (hwoodap@iqbackoffice.com for an operating venue, hwoodga@ for a pre-opening
+          one, as set in Venue settings; cc Ahmed, Porfirio and Stephanie) as the team writes them, the invoice PDF attached, and opens it in Outlook to check and Send.</div>
         {payNote && <div style={{ ...subTxt, marginTop: 6 }}>{payNote}</div>}
         {pays.length === 0 && <div style={{ marginTop: 8, fontSize: 13, color: 'var(--fg-muted)' }}>Nothing to request.</div>}
         {pays.map(p => <PayRow key={p.order.id + p.venue} p={p} onDraft={() => draftPay(p)} onCopy={() => copyPay(p)}

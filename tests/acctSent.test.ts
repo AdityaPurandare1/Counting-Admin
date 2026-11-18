@@ -264,7 +264,7 @@ check('reminders: with accounting but past its ETA -> still ask the vendor for a
     && dr.indexOf('Draft in Outlook{payReqs') < dr.indexOf("I've sent it, check now</button>", dr.indexOf('<b>Send to accounting.</b>')));
   check('... written as To send writes it, for exactly the invoices the note names, offered even if composed before or not yet at Invoiced',
     dr.includes('const ls = lines.filter(l => l.status !== \'CANCELLED\' && !!l.invoice_number && want.has(invoiceToken(l.invoice_number)))')
-    && dr.includes("return paymentRequestsDue({ orders: [order], lines: ls, documents: data.documents, followups: [] }, venueName, me?.email ?? '');"));
+    && dr.includes("return paymentRequestsDue({ orders: [order], lines: ls, documents: data.documents, followups: [] }, venueName, me?.email ?? '', venueStage);"));
   const fn = sibling('supabase', 'functions', 'kount-order-mail', 'index.ts');
   const graph = sibling('supabase', 'functions', 'kount-order-mail', 'graph.ts');
   if (fn && graph) {
