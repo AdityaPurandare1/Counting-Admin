@@ -573,3 +573,55 @@ export function ordersNotSentToAccounting(orders: ReadonlyArray<OtOrder>, lines:
   }
   return out.sort((a, b) => b.days - a.days || String(a.order.order_number).localeCompare(String(b.order.order_number)));
 }
+
+/* ── v1.28 "Follow up": orders gone quiet (0178) ──────────────────────── */
+
+/** The user, 11/18: "for any order without a new email in the thread for over 3 days, needs a status marker saying
+ *  followup required or something ... it should also have a filter for those". */
+export const QUIET_DAYS = 3;
+/** An order gone quiet: whole days since its last e-mail (in Los Angeles), that e-mail's day and sender, or - no
+ *  e-mail on file at all - the day it went to the vendor / was ordered / was added, with known = false. */
+export interface QuietOrder { days: number; since: string; from: string | null; known: boolean }
+type QuietFields = { last_email_at?: string | null; last_email_from?: string | null; last_vendor_email_at?: string | null };
+
+const laDay = (iso: string) => new Date(iso).toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+
+/** An open order with a line not delivered yet whose last e-mail is more than QUIET_DAYS days old. The last e-mail is
+ *  the latest of: the newest message in its threads, any sender (0178, the hourly check), the vendor's newest e-mail
+ *  about it (0153), and a follow-up to the vendor logged from To send. Null when it is not quiet, or done. */
+export function quietOrder(o: OtOrder & QuietFields, lines: ReadonlyArray<OtLine>, today: string,
+                           followups: ReadonlyArray<Pick<OtFollowup, 'order_id' | 'kind' | 'created_at'>> = []): QuietOrder | null {
+  if (o.archived_at || o.completed_at) return null;
+  if (!lines.some(l => l.order_id === o.id && l.status !== 'CANCELLED' && statusRank(l.status) < statusRank('DELIVERED'))) return null;
+  const mails: Array<{ at: string; from: string | null }> = [];
+  if (o.last_email_at) mails.push({ at: o.last_email_at, from: o.last_email_from ?? null });
+  if (o.last_vendor_email_at) mails.push({ at: o.last_vendor_email_at, from: null });
+  for (const f of followups) if (f.order_id === o.id && f.kind === 'vendor' && f.created_at) mails.push({ at: f.created_at, from: 'follow-up from To send' });
+  const ok = mails.filter(m => Number.isFinite(Date.parse(m.at))).sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+  const last = ok[0];
+  const since = last ? laDay(last.at) : (o.sent_on ?? o.ordered_on ?? (o.created_at ? laDay(o.created_at) : null));
+  if (!since) return null;
+  const days = daysFrom(since, today);
+  return days > QUIET_DAYS ? { days, since, from: last ? (last.from || null) : null, known: !!last } : null;
+}
+
+/** quietOrder for every order: order id -> how quiet. */
+export function quietOrders(orders: ReadonlyArray<OtOrder & QuietFields>, lines: ReadonlyArray<OtLine>, today: string,
+                            followups: ReadonlyArray<Pick<OtFollowup, 'order_id' | 'kind' | 'created_at'>> = []): Map<string, QuietOrder> {
+  const byOrder = new Map<string, OtLine[]>();
+  for (const l of lines) (byOrder.get(l.order_id) ?? byOrder.set(l.order_id, []).get(l.order_id)!).push(l);
+  const out = new Map<string, QuietOrder>();
+  for (const o of orders) {
+    const q = quietOrder(o, byOrder.get(o.id) ?? [], today, followups);
+    if (q) out.set(o.id, q);
+  }
+  return out;
+}
+
+/** The marker's hover text: "No e-mail since 11/12 (jemma@eemercantile.co) - 6 days". */
+export function quietText(q: QuietOrder): string {
+  const [, m, d] = q.since.split('-');
+  const day = `${Number(m)}/${Number(d)}`;
+  return q.known ? `No e-mail in this order's threads since ${day}${q.from ? ` (${q.from})` : ''} - ${q.days} days`
+    : `No e-mail on file for this order; ordered ${day} - ${q.days} days`;
+}

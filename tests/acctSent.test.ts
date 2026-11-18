@@ -179,7 +179,7 @@ check('reminders: with accounting but past its ETA -> still ask the vendor for a
   const ov = src('src/components/orderTracker/OrdersView.tsx');
   check('Orders: a "Not sent to accounting N" button beside the stubs one, a chip that clears it, Clear filters resets it',
     ov.includes('Not sent to accounting <span className="num">{notAcct.size}</span>') && ov.includes('if (acctOnly && !notAcct.has(r.o.id)) return false;')
-    && ov.includes("onClick={() => { setAcctOnly(true); setState('all'); }}") && ov.includes('setStubsOnly(false); setAcctOnly(false); setState(\'all\'); };')
+    && ov.includes("onClick={() => { setAcctOnly(true); setState('all'); }}") && ov.includes('setStubsOnly(false); setAcctOnly(false); setQuietOnly(false); setState(\'all\'); };')
     && ov.indexOf('Stubs to send <span') < ov.indexOf('Not sent to accounting <span'));
   check('v1.21 Orders: a "Send to accounting" pill on such an order, beside "Approve quote" (the user: "similar to the quoted items")',
     ov.includes('{notAcct.has(o.id) && <span className="ot-pill warn"') && ov.includes('>Send to accounting</span>}') && !ov.includes('>not sent to accounting</div>}'));

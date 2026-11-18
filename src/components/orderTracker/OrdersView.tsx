@@ -3,7 +3,7 @@ import {
   ORDER_SORTS, awaitingApproval, filterByVenue, headlineStatus, isLate, isoDay, lineTotal, orderState, orderVenueIds, receivedForLine, sortOrders, MULTIPLE_VENUES,
   type OrderSort, type OrderState, type OtDocument, type OtLine,
 } from '@/lib/orderTracker';
-import { FULFILLMENT, fulfillmentOf, fulfillmentStep, lastUpdate, nextEta, notSentToAccounting, orderCategory, paymentOf, stubsToGet, stubsToSend, timeAgo, type PaymentView } from '@/lib/orderTrackerView';
+import { FULFILLMENT, fulfillmentOf, fulfillmentStep, lastUpdate, nextEta, notSentToAccounting, orderCategory, paymentOf, quietOrders, quietText, stubsToGet, stubsToSend, timeAgo, type PaymentView } from '@/lib/orderTrackerView';
 import type { TrackerData } from '@/lib/orderTrackerData';
 import { orderTiming, timingText } from '@/lib/leadTime';
 import { quoteBibleChecks, quoteBibleSummary } from '@/lib/quoteBible';
@@ -39,6 +39,9 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
   // v1.20 the user: "scan if those invoices are being sent to accounting" (hwoodap@ / hwoodga@iqbackoffice.com) —
   // orders with an unpaid invoice no e-mail to either has named yet; open and completed, like stubs
   const [acctOnly, setAcctOnly] = useState(false);
+  // v1.28 the user (11/18): "for any order without a new email in the thread for over 3 days, needs a status marker saying
+  // followup required ... it should also have a filter for those" (0178: the hourly check stamps each order's last e-mail)
+  const [quietOnly, setQuietOnly] = useState(false);
   const [openId, setOpenId] = useState<string | null>(focusOrderId);
   const [viewing, setViewing] = useState<OtDocument | null>(null);
   useEffect(() => { if (focusOrderId) setOpenId(focusOrderId); }, [focusOrderId]);
@@ -46,7 +49,7 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
   useEffect(() => {
     if (!preset) return;
     setState(preset.key === 'stubs' || preset.key === 'acct' ? 'all' : 'open'); setQ(''); setLateOnly(preset.key === 'late'); setUnpaidOnly(preset.key === 'invoiced'); setApproveOnly(preset.key === 'approve');
-    setStubsOnly(preset.key === 'stubs'); setAcctOnly(preset.key === 'acct');
+    setStubsOnly(preset.key === 'stubs'); setAcctOnly(preset.key === 'acct'); setQuietOnly(false);
   }, [preset]);
 
   const linesByOrder = useMemo(() => {
@@ -78,6 +81,8 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
   }, [data.orders, data.lines, data.documents, data.followups, today]);
   // v1.20 unpaid invoices not e-mailed to accounting yet, per order
   const notAcct = useMemo(() => notSentToAccounting(data.orders, data.lines), [data.orders, data.lines]);
+  // v1.28 open orders with no e-mail in their threads for more than 3 days: per order, how quiet
+  const quiet = useMemo(() => quietOrders(data.orders, data.lines, today, data.followups ?? []), [data.orders, data.lines, data.followups, today]);
   // the venues orders are for, by name (an order serving several counts for each)
   const venues = useMemo(() => [...new Set(data.orders.flatMap(o => orderVenueIds(o, linesByOrder.get(o.id) ?? [])))]
     .map(id => ({ id, name: venueName(id) })).sort((a, b) => a.name.localeCompare(b.name)), [data.orders, linesByOrder, venueName]);
@@ -104,6 +109,7 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
       if (approveOnly && !r.toApprove) return false;
       if (stubsOnly && !stubSend.has(r.o.id)) return false;
       if (acctOnly && !notAcct.has(r.o.id)) return false;
+      if (quietOnly && !quiet.has(r.o.id)) return false;
       if (!term) return true;
       const hay = [r.o.order_number, r.o.vendor_name, venueName(r.o.venue_id), ...r.ls.flatMap(l => [l.description, l.sku, l.invoice_number, l.quote_number, l.tracking_number]),
         ...data.tracking.filter(t => t.order_id === r.o.id).map(t => t.tracking_number), ...(docsByOrder.get(r.o.id) ?? []).flatMap(d => [d.doc_number, d.file_name])]
@@ -111,9 +117,9 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
       return hay.includes(term);
     });
     return sortOrders(filterByVenue(list, venue), sort, venueName);
-  }, [all, data.tracking, docsByOrder, q, state, vendor, venue, sort, lateOnly, unpaidOnly, approveOnly, stubsOnly, stubSend, acctOnly, notAcct, venueName]);
+  }, [all, data.tracking, docsByOrder, q, state, vendor, venue, sort, lateOnly, unpaidOnly, approveOnly, stubsOnly, stubSend, acctOnly, notAcct, quietOnly, quiet, venueName]);
 
-  const clearFilters = () => { setQ(''); setVendor(''); setVenue(''); setLateOnly(false); setUnpaidOnly(false); setApproveOnly(false); setStubsOnly(false); setAcctOnly(false); setState('all'); };
+  const clearFilters = () => { setQ(''); setVendor(''); setVenue(''); setLateOnly(false); setUnpaidOnly(false); setApproveOnly(false); setStubsOnly(false); setAcctOnly(false); setQuietOnly(false); setState('all'); };
   const toApproveCount = all.filter(r => r.toApprove > 0).length;
   const stubOverdue = [...stubSend.values()].filter(Boolean).length;
   const now = Date.now();
@@ -153,6 +159,10 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
           : notAcct.size > 0 && <button type="button" className="ot-btn sm" onClick={() => { setAcctOnly(true); setState('all'); }}
             title="Invoiced, not paid, and no e-mail to hwoodap@ or hwoodga@iqbackoffice.com names the invoice yet (checked each morning)">
             Not sent to accounting <span className="num">{notAcct.size}</span></button>}
+        {quietOnly ? <span className="ot-fchip warn">Follow up: no e-mail in over 3 days<button type="button" onClick={() => setQuietOnly(false)} aria-label="Clear the follow-up filter"><Icon name="x" /></button></span>
+          : quiet.size > 0 && <button type="button" className="ot-btn sm" onClick={() => { setQuietOnly(true); setState('open'); }}
+            title="Open orders with a line not delivered yet and no e-mail in their threads for more than 3 days (checked hourly, 10:30-5:30)">
+            Follow up <span className="num">{quiet.size}</span></button>}
         <span className="ot-count num">{rows.length} order{rows.length === 1 ? '' : 's'}</span>
       </div>
 
@@ -188,7 +198,8 @@ export function OrdersView({ data, today, venueName, onReload, focusOrderId, pre
                           : bible.off.some(x => x.state !== 'no-bible') && <span className="ot-pill warn" title={quoteBibleSummary(bible, venueName).sub}>Check bible</span>)}
                         {notAcct.has(o.id) && <span className="ot-pill warn" title={`No e-mail to hwoodap@ / hwoodga@iqbackoffice.com names ${notAcct.get(o.id)!.join(', ')} yet`}>Send to accounting</span>}
                         {stubSend.has(o.id) && <span className={`ot-pill ${stubSend.get(o.id) ? 'crit' : 'warn'}`}
-                          title="Paid recently: send the check stub to the vendor (To send)">{stubSend.get(o.id) ? 'Stub overdue' : 'Send stub'}</span>}</td>
+                          title="Paid recently: send the check stub to the vendor (To send)">{stubSend.get(o.id) ? 'Stub overdue' : 'Send stub'}</span>}
+                        {quiet.has(o.id) && <span className="ot-pill warn" data-quiet={quiet.get(o.id)!.days} title={quietText(quiet.get(o.id)!)}>Follow up · {quiet.get(o.id)!.days}d</span>}</td>
                       <td className="venue">{o.venue_id === MULTIPLE_VENUES ? vIds.map(v => venueName(v)).join(', ') : o.venue_id ? venueName(o.venue_id) : 'Warehouse stock'}
                         <div className="t2">{[orderCategory(o.order_number), st !== 'open' && st,
                           o.deliver_to === 'venue' && ls.some(l => l.deliver_to === 'warehouse' && l.status !== 'CANCELLED') && 'sea part to the warehouse'].filter(Boolean).join(' · ') || (o.deliver_to === 'warehouse' ? 'to the warehouse' : 'to the venue')}</div></td>

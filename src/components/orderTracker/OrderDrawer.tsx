@@ -7,6 +7,7 @@ import {
 import {
   accountingOf, accountingText, notSentToAccounting, arrivesNow, draftLineTotal, draftStage, draftTotal, invoiceToken, isPlanEmpty, lastUpdate, stubInvoices, lineDraft, markDraft, orderCategory, orderDraft, paymentOf, planOrderSave, setDraftStage, timeAgo,
   type LineDraft, type OrderDraft,
+  quietOrder, quietText,
 } from '@/lib/orderTrackerView';
 import {
   addLines, addMove, addTracking, attachFile, createOrder, deleteLine, deleteOrder, loadEvents, removeTracking, updateLine, updateOrder,
@@ -94,6 +95,8 @@ export function OrderDrawer({ order, lines, docs, data, today, venueName, onClos
   // v1.21 this order's unpaid invoices no e-mail to accounting (AP / GA) has named yet, like a quote to approve
   const [acctMsg, setAcctMsg] = useState<string | null>(null);
   const toAccounting = useMemo(() => (order ? notSentToAccounting([order], lines).get(order.id) ?? [] : []), [order, lines]);
+  // v1.28 no e-mail in the order's threads for more than 3 days (0178)
+  const quiet = useMemo(() => (order ? quietOrder(order, lines, today, data.followups ?? []) : null), [order, lines, today, data.followups]);
   // v1.21 the user: "it only shows I've sent it check now. Not the send email with the template filled in format with
   // attachments" - the payment request for those invoices (as To send writes it: from the invoice, to AP, the PDF
   // attached), one per venue of the order; composed already or not yet at Invoiced, it is offered all the same
@@ -215,6 +218,7 @@ export function OrderDrawer({ order, lines, docs, data, today, venueName, onClos
               <b>{bibleSum.title}.</b> {bibleSum.sub}
             </div>
           )}
+          {quiet && <div className="ot-note warn" data-quiet={quiet.days}><b>Follow up.</b> {quietText(quiet)}.</div>}
           {late.length > 0 && <div className="ot-note crit">{late.length} line{late.length > 1 ? 's are' : ' is'} past ETA. Update the ETA or mark {late.length > 1 ? 'them' : 'it'} received.</div>}
 
           <section className="ot-sec"><div className="ot-grid2">
