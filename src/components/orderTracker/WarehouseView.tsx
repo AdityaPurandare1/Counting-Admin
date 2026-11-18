@@ -2,7 +2,7 @@ import { Fragment, useMemo, useState } from 'react';
 import { Btn, Card, Eyebrow, Pill } from '@/components/atoms';
 import { VENUES } from '@/lib/access';
 import {
-  EE_WAREHOUSE, REVIEW_DAYS, countChanges, isStorageLine, itemLocation, orderVenues, planStorageLine, releasesByVenue, stockRows, storageMoveRows,
+  EE_WAREHOUSE, LEAD_DEFAULT, REVIEW_DAYS, USE_WINDOW_DAYS, countChanges, isCustomItem, onHand, isStorageLine, itemLocation, orderVenues, planStorageLine, releasesByVenue, stockRows, storageMoveRows,
   type OtItem, type OtLine, type OtOrder, type StockRow, type StoragePlan,
 } from '@/lib/orderTracker';
 import { addMove, deleteMove, recordStorageLine, saveItem, skipStorageLine, type ItemDraft, type TrackerData } from '@/lib/orderTrackerData';
@@ -22,6 +22,11 @@ export function WarehouseView({ data, today, venueName, onReload }: {
     .sort((a, b) => placeRank(itemLocation(a.item)) - placeRank(itemLocation(b.item)) || itemLocation(a.item).localeCompare(itemLocation(b.item))
       || rank(a.state) - rank(b.state) || a.item.name.localeCompare(b.item.name)), [data, today]);
   const untracked = data.items.filter(i => i.is_active && !i.track_stock);
+  // v1.29 E&E's catalog lines stored for us (not custom): what is on hand, no usage / reorder figures
+  const other = useMemo(() => data.items.filter(i => i.is_active && i.track_stock && !isCustomItem(i))
+    .map(i => { const mv = data.moves.filter(m => m.item_id === i.id); return { item: i, qty: onHand(mv),
+      counted: mv.filter(m => m.kind === 'count').map(m => m.moved_on).sort().pop() ?? null }; })
+    .sort((a, b) => a.item.name.localeCompare(b.item.name)), [data.items, data.moves]);
   const venues = useMemo(() => orderVenues(VENUES), []);
   const [action, setAction] = useState<Action>(null);
   const [qty, setQty] = useState('');
@@ -53,8 +58,8 @@ export function WarehouseView({ data, today, venueName, onReload }: {
     <>
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 12, color: 'var(--fg-muted)', maxWidth: 900 }}>
-          On hand = last count + received − released. Used per month = the last 90 days (or since the first count) of what was released plus
-          what the counts found gone. Reorder point = use over the lead time + 25% (the item's own lead time, else what its past orders took,
+          Custom items only. On hand = last count + received − released. Used per month = the last {USE_WINDOW_DAYS} days (or since the first
+          count) of what was released to the venues plus what the counts found gone. Reorder point = use over the lead time + 25% (the item's own lead time, else what its past orders took,
           else {LEAD_HINT}); set one on the item to override it. Reorder by counts what is already on order; the suggested order covers the lead
           time and {REVIEW_DAYS} days more.
         </span>
@@ -97,7 +102,8 @@ export function WarehouseView({ data, today, venueName, onReload }: {
                       <td style={tdNum}>{r.incoming ? fmtQty(r.incoming) : '—'}
                         {r.awaitingReceipt > 0 && <div style={subTxt}>{fmtQty(r.awaitingReceipt)} delivered, not received</div>}</td>
                       <td style={tdNum} data-use={Math.round(r.monthlyUse * 10) / 10}>{r.monthlyUse ? fmtQty(Math.round(r.monthlyUse * 10) / 10) : '—'}
-                        {(r.released > 0 || r.countedOut > 0) && <div style={subTxt}>{[r.released > 0 && `${fmtQty(r.released)} released`, r.countedOut > 0 && `${fmtQty(r.countedOut)} counted out`].filter(Boolean).join(' · ')} in {r.useDays} days</div>}</td>
+                        {(r.released > 0 || r.countedOut > 0) && <div style={subTxt}>{[r.released > 0 && `${fmtQty(r.released)} released`, r.countedOut > 0 && `${fmtQty(r.countedOut)} counted out`].filter(Boolean).join(' · ')} in {r.useDays} days</div>}
+                        {r.batches.n > 0 && <div style={subTxt} data-batches={r.batches.n} title={r.batches.last ? `Last: ${fmtQty(r.batches.last.qty)} to ${venueName(r.batches.last.venueId)} on ${shortDate(r.batches.last.day)}` : undefined}>{batchText(r)}</div>}</td>
                       <td style={tdNum}>{coverText(r)}</td>
                       <td style={tdNum} data-lead={r.leadDays}>{r.leadDays} d<div style={subTxt}>{leadNote(r)}</div></td>
                       <td style={tdNum} data-rop={r.reorderPoint == null ? '' : Math.round(r.reorderPoint * 10) / 10}>{r.reorderPoint != null ? fmtQty(Math.round(r.reorderPoint * 10) / 10) : '—'}
@@ -144,6 +150,22 @@ export function WarehouseView({ data, today, venueName, onReload }: {
           </div>
         )}
       </Card>
+      {other.length > 0 && (
+        <Card padding={16} style={{ marginTop: 12 }}>
+          <div style={{ fontWeight: 700, fontSize: 13 }}>Other stock at E&amp;E <span style={{ ...subTxt, fontWeight: 400 }}>· not custom ({other.length}) · on hand only, no reorder figures</span></div>
+          <table style={{ ...tbl, marginTop: 6 }} data-other-stock={other.length}>
+            <tbody>
+              {other.map(o => (
+                <tr key={o.item.id} style={rowBorder}>
+                  <td style={td}><button style={linkBtn} onClick={() => setEditing(o.item)}>{o.item.name}</button> <span style={subTxt}>{o.item.sku ?? ''}</span></td>
+                  <td style={{ ...tdNum, fontWeight: 700 }}>{fmtQty(o.qty)} <span style={subTxt}>{o.item.unit}</span></td>
+                  <td style={{ ...td, ...subTxt }}>{o.counted ? `counted ${shortDate(o.counted)}` : 'not counted'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
       {untracked.length > 0 && (
         <div style={{ ...subTxt, marginTop: 8 }}>
           Not stocked (price-tracked only): {untracked.map((i, k) => (
@@ -258,7 +280,7 @@ const placeRank = (p: string) => (p === EE_WAREHOUSE ? 0 : p === 'Corporate' ? 1
 const COLS = 10;
 /** "17 cases", "1 case"; units that are abbreviations or uncountable stay as they are (cs, each, dz) */
 const unitFor = (unit: string, n: number) => (n === 1 || /s$|^(each|ea|cs|pc|dz|doz|lb|oz|kg|g|ml|l)$/i.test(unit) ? unit : `${unit}s`);
-const LEAD_HINT = '84 days for custom printed, 42 for stock';
+const LEAD_HINT = `${LEAD_DEFAULT} days (every warehouse item is custom, by sea)`;
 /** v1.29 the latest count against what the moves said: "−4 at the 11/18 count" (gone unrecorded) / "+3 ..." (more than expected) */
 function countNote(r: StockRow): string | null {
   const c = r.lastCountChange;
@@ -271,8 +293,15 @@ function coverText(r: StockRow): string {
   if (r.daysCover == null) return '—';
   return r.daysCover < 90 ? `${Math.round(r.daysCover)} days` : `${(Math.round(r.daysCover / 30 * 10) / 10).toFixed(1)} mo`;
 }
+/** v1.29 "4 batches · every ~5 wks · ~3 each": the small batches sent out of storage, how often a venue reorders, their size */
+function batchText(r: StockRow): string {
+  const b = r.batches;
+  const every = b.everyDays == null ? null : b.everyDays < 14 ? `${b.everyDays} days` : `${Math.round(b.everyDays / 7)} wks`;
+  return [`${b.n} batch${b.n === 1 ? '' : 'es'}${b.venues > 1 ? ` to ${b.venues} venues` : ''}`, every && `every ~${every}`, b.avgQty != null && `~${fmtQty(b.avgQty)} each`]
+    .filter(Boolean).join(' · ');
+}
 function leadNote(r: StockRow): string {
-  return r.leadSource === 'item' ? 'set on item' : r.leadSource === 'history' ? `${r.leadOrders} past order${r.leadOrders === 1 ? '' : 's'}` : r.leadSource;
+  return r.leadSource === 'item' ? 'set on item' : r.leadSource === 'history' ? `${r.leadOrders} past order${r.leadOrders === 1 ? '' : 's'}` : 'default';
 }
 const rank = (s: StockRow['state']) => ({ 'reorder now': 0, 'reorder soon': 1, ok: 2, 'no usage yet': 3 })[s];
 
@@ -280,14 +309,14 @@ function ItemHistory({ itemId, data, today, venueName, onDelete }: {
   itemId: string; data: TrackerData; today: string; venueName: (id: string | null) => string; onDelete: (id: string) => void;
 }) {
   const moves = data.moves.filter(m => m.item_id === itemId).sort((a, b) => (a.moved_on === b.moved_on ? b.created_at.localeCompare(a.created_at) : a.moved_on < b.moved_on ? 1 : -1));
-  const byVenue = releasesByVenue(data.moves, itemId, today);
+  const byVenue = releasesByVenue(data.moves, itemId, today, USE_WINDOW_DAYS);
   const vsExpected = countChanges(data.moves.filter(m => m.item_id === itemId));
   return (
     <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', fontSize: 12 }}>
       <div style={{ minWidth: 220 }}>
-        <Eyebrow>Released, last 90 days</Eyebrow>
+        <Eyebrow>Released, last {USE_WINDOW_DAYS} days</Eyebrow>
         {byVenue.length === 0 && <div style={{ color: 'var(--fg-muted)', marginTop: 4 }}>None.</div>}
-        {byVenue.map(v => <div key={v.venueId ?? '-'} style={{ marginTop: 4 }}>{venueName(v.venueId)}: <b>{fmtQty(v.qty)}</b> ({fmtQty(Math.round(v.qty / 3 * 10) / 10)} / month)</div>)}
+        {byVenue.map(v => <div key={v.venueId ?? '-'} style={{ marginTop: 4 }}>{venueName(v.venueId)}: <b>{fmtQty(v.qty)}</b> ({fmtQty(Math.round(v.qty / (USE_WINDOW_DAYS / 30) * 10) / 10)} / month)</div>)}
       </div>
       <div style={{ flex: 1, minWidth: 360 }}>
         <Eyebrow>Stock movements</Eyebrow>
