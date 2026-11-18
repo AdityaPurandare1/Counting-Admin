@@ -102,11 +102,11 @@ export function buildReportRows(inp: ReportInput): ReportSheets {
 
   const stock: StockRow[] = stockRows(inp.items, inp.moves, inp.lines, inp.orders, inp.today);
   const warehouse: Cell[][] = [['Item', 'SKU', 'Vendor', 'Unit', 'On hand', 'Incoming (not received yet)', 'Of which delivered, awaiting receipt', 'Used per month', 'Months of cover',
-    'Reorder point', 'Reorder by', 'Runs out by', 'Last count', 'Last receipt', 'Status']];
+    'Days of cover', 'Lead time (days)', 'Lead time from', 'Reorder point', 'Reorder by', 'Runs out by', 'Suggested order', 'Last count', 'Last receipt', 'Status']];
   for (const s of stock.sort((a, b) => a.item.name.localeCompare(b.item.name))) {
     warehouse.push([s.item.name, s.item.sku ?? '', s.item.vendor_name ?? '', s.item.unit, r2(s.onHand), r2(s.incoming), r2(s.awaitingReceipt),
-      r2(s.monthlyUse), s.monthsCover != null ? r2(s.monthsCover) : null, s.reorderPoint != null ? r2(s.reorderPoint) : null,
-      s.reorderBy ?? '', s.stockOutBy ?? '', s.lastCount ? `${s.lastCount.qty} on ${s.lastCount.moved_on}` : '',
+      r2(s.monthlyUse), s.monthsCover != null ? r2(s.monthsCover) : null, s.daysCover != null ? Math.round(s.daysCover) : null, s.leadDays, s.leadSource,
+      s.reorderPoint != null ? r2(s.reorderPoint) : null, s.reorderBy ?? '', s.stockOutBy ?? '', s.orderQty, s.lastCount ? `${s.lastCount.qty} on ${s.lastCount.moved_on}` : '',
       s.lastReceipt ? `${s.lastReceipt.qty} on ${s.lastReceipt.moved_on}` : '', s.state]);
   }
 

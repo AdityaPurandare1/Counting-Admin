@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   statusRank, headlineStatus, orderState, isLate, statusAfterDocument, matchDocLines, matchItem, matchOrder,
-  onHand, receivedForLine, stockRows, releasesByVenue, validateNewOrder, similarity, addDays, sameVendor,
+  onHand, receivedForLine, stockRows, releasesByVenue, countChanges, itemLeadDays, isCustomItem, LEAD_DEFAULT_CUSTOM, LEAD_DEFAULT_STOCK, REVIEW_DAYS, validateNewOrder, similarity, addDays, sameVendor,
   planDocRows, planDocumentSave, documentChecks, decideMailDocument, extractTracking, trackingUrl, orderForEmail, venueForDoc, filterByVenue, sortOrders, orderVenueIds,
   planStorageLine, storageMoveRows, isStorageLine, autoOrderNumber, lineOutsideSubtotal, orderForReferences,
   keepOtherAttachment, isSpreadsheet, sheetUpdates, itemLocation, EE_WAREHOUSE, linePack, qtyInItemUnits, lineDeliversTo,
@@ -144,9 +144,9 @@ check('"other" documents change nothing', statusAfterDocument('ORDERED', 'other'
   check('received per line', receivedForLine(moves, l1.id) === 100);
 
   const [row] = stockRows([bag], moves, [l1], [o], '2026-10-20');
-  // window = the 90 days before 10/20 (from 7/22): all three releases (4+3+4 = 11) fall in it, and as
-  // the first one was 7/25 the rate is measured over the 87 days since then
-  const daily = 11 / 87;
+  // window = the 90 days before 10/20 (from 7/22): all three releases (4+3+4 = 11) fall in it; v1.29 the rate is
+  // measured from the item's first move (the 7/01 receipt: it was there, unused, from 7/22 on), so over all 90 days
+  const daily = 11 / 90;
   check('use per month: released in the window / days measured × 30', near(row.monthlyUse, daily * 30), row.monthlyUse);
   check('months of cover', near(row.monthsCover, 89 / (daily * 30)), row.monthsCover);
   check('reorder point default = lead time demand + 25%', near(row.reorderPoint, daily * 84 * 1.25), row.reorderPoint);
@@ -1293,13 +1293,80 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
   const st = (i: OtItem, mv: OtMove[], extra: { lines?: OtLine[]; orders?: OtOrder[] } = {}) => stockRows([i], mv, extra.lines ?? [], extra.orders ?? [], today)[0];
   check('status: no reorder point, nothing left = reorder now', st(bag, [move(bag.id, 'count', 0, '2026-11-03'), ...used(bag.id, 9)]).state === 'reorder now');
   const wrap = it({ name: 'BS Taco Wrap 6x7' });
-  check('status: no reorder point, about a month left = reorder soon', st(wrap, [move(wrap.id, 'count', 2, '2026-11-03'), ...used(wrap.id, 2)]).state === 'reorder soon');
+  // v1.29: a month left with the 12-week custom lead time (no lead time set -> the default) is already reorder now
+  check('status: a month left, 12-week lead time = reorder now (v1.29; was reorder soon with no lead time)',
+    st(wrap, [move(wrap.id, 'count', 2, '2026-11-03'), ...used(wrap.id, 2)]).state === 'reorder now');
   const towel = it({ name: 'BS Towel' });
   check('status: no reorder point, months left = ok', st(towel, [move(towel.id, 'count', 23, '2026-11-03'), ...used(towel.id, 2)]).state === 'ok');
   const o = order({ deliver_to: 'warehouse', expected_on: null });
   const coming = line(o, { item_id: bag.id, qty: 40, status: 'SHIPPED' });
-  check('status: what is on order counts (0 left, 40 coming at 9 a month = ok)',
-    st(bag, [move(bag.id, 'count', 0, '2026-11-03'), ...used(bag.id, 9)], { lines: [coming], orders: [o] }).state === 'ok');
+  // v1.29: 40 coming at ~10.7 a month is just above the 84-day reorder point (37) - reorder soon, not now
+  check('status: what is on order counts (0 left + 40 coming = reorder soon, not reorder now)',
+    st(bag, [move(bag.id, 'count', 0, '2026-11-03'), ...used(bag.id, 9)], { lines: [coming], orders: [o] }).state === 'reorder soon');
+}
+
+// v1.29 (the user, 11/18, E&E's levels after those of 10/07 and 11/03: "make sure that ROPs, depletions and other aspects are
+// calculated and displayed"): use = released + what the counts found gone; lead time and reorder point worked out
+{
+  const today = '2026-11-18';
+  const eq = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  const love = item({ name: 'Delilah Love Napkin', sku: 'DELI-LOVE', category: 'Delilah', lead_time_days: null });
+  const mv = [move(love.id, 'count', 6, '2026-10-07'), move(love.id, 'count', 6, '2026-11-03'), move(love.id, 'count', 2, '2026-11-18')];
+  const ch = countChanges(mv);
+  check('countChanges: nothing before the first count; then 6 -> 6 (none gone), 6 -> 2 (4 gone)',
+    ch.size === 2 && ch.get(mv[1].id)!.expected === 6 && ch.get(mv[2].id)!.counted === 2 && ch.get(mv[2].id)!.expected === 6, [...ch.values()]);
+  const r = stockRows([love], mv, [], [], today)[0];
+  check('counted out 4, released 0, measured over the 42 days since the first count', r.countedOut === 4 && r.released === 0 && r.useDays === 42, r);
+  check('use per month = 4 / 42 x 30', near(r.monthlyUse, 4 / 42 * 30), r.monthlyUse);
+  check('days of cover = 2 / (4/42) = 21', near(r.daysCover, 21), r.daysCover);
+  check('custom printed (a venue category), no lead time anywhere -> 84 days, "custom default"',
+    r.leadDays === LEAD_DEFAULT_CUSTOM && r.leadDays === 84 && r.leadSource === 'custom default' && r.leadOrders === null, r.leadSource);
+  check('reorder point (auto) = use over 84 days + 25% = 10', near(r.reorderPoint, 4 / 42 * 84 * 1.25) && r.reorderSource === 'auto', r.reorderPoint);
+  check('2 on hand under it -> reorder now, order ~17 (84 days +25% and 90 more, less the 2)',
+    r.state === 'reorder now' && REVIEW_DAYS === 90 && r.orderQty === Math.ceil(4 / 42 * 84 * 1.25 + 4 / 42 * REVIEW_DAYS - 2), r.orderQty);
+  check('the last count against what was expected: 2 counted, 6 expected', r.lastCountChange?.counted === 2 && r.lastCountChange?.expected === 6);
+
+  // a release recorded between the counts is not counted twice: 86 -> (3 released) -> 81 = 2 more gone
+  const euro = item({ name: 'TNG Eurotote Bag', category: 'The Nice Guy', lead_time_days: null });
+  const r2 = stockRows([euro], [move(euro.id, 'count', 86, '2026-10-07'), move(euro.id, 'release', 3, '2026-10-12', { venue_id: 'v3' }),
+    move(euro.id, 'count', 81, '2026-11-03'), move(euro.id, 'count', 81, '2026-11-18')], [], [], today)[0];
+  check('released 3 + counted out 2 = 5 used', r2.released === 3 && r2.countedOut === 2 && near(r2.monthlyUse, 5 / 42 * 30), r2);
+  // a count over what was expected is stock that came in unrecorded, never negative use
+  const plate = item({ name: 'Palate & Plate soup plate', category: 'h.wood', lead_time_days: null });
+  const r3 = stockRows([plate], [move(plate.id, 'count', 3, '2026-10-07'), move(plate.id, 'count', 6, '2026-11-03')], [], [], today)[0];
+  check('3 -> 6: no use, the count says +3, the stock default lead time (42)', r3.countedOut === 0 && r3.monthlyUse === 0 && r3.state === 'no usage yet'
+    && r3.lastCountChange?.counted === 6 && r3.lastCountChange?.expected === 3 && r3.leadDays === LEAD_DEFAULT_STOCK && r3.leadSource === 'stock default', r3);
+  check('no use -> no reorder point, no order', r3.reorderPoint === null && r3.reorderSource === null && r3.orderQty === null);
+  // E&E's delivery invoice comes after the count it is inside: dated before it, recorded later
+  const wrap = item({ name: 'BS Taco Wrap', category: 'Bird Streets', lead_time_days: null });
+  const late = move(wrap.id, 'release', 2, '2026-10-28', { created_at: '2026-11-10T12:00:00Z' });
+  const r4 = stockRows([wrap], [move(wrap.id, 'count', 4, '2026-10-07'), move(wrap.id, 'count', 2, '2026-11-03'), late], [], [], today)[0];
+  check('a release dated before a count is inside it: 4 - 2 released = 2 counted, nothing more gone', r4.onHand === 2 && r4.released === 2 && r4.countedOut === 0, r4);
+
+  // lead time: the item's own; else its past orders (sent -> received into stock, else delivered); else the default
+  const chop = item({ name: 'BS Chopsticks', category: 'Bird Streets', lead_time_days: null });
+  const o1 = order({ order_number: 'CUS-0011', sent_on: '2026-08-31' }), o2 = order({ order_number: 'CUS-0022', sent_on: '2026-09-17' });
+  const o3 = order({ order_number: 'CUS-0030', sent_on: '2026-10-01' });
+  const l1 = line(o1, { item_id: chop.id, status: 'RECEIVED', delivered_on: '2026-09-22' });
+  const l2 = line(o2, { item_id: chop.id, status: 'DELIVERED', delivered_on: '2026-11-30' });   // received into stock 11/05: that day wins
+  const l3 = line(o3, { item_id: chop.id, status: 'SHIPPED' });                                   // not in yet: no lead time from it
+  const rcv = move(chop.id, 'receipt', 14, '2026-11-05', { line_id: l2.id });
+  check('itemLeadDays: the median of 22 and 49 days, 2 orders', eq(itemLeadDays(chop, [rcv], [l1, l2, l3], [o1, o2, o3]), { days: 36, orders: 2 }),
+    itemLeadDays(chop, [rcv], [l1, l2, l3], [o1, o2, o3]));
+  check('itemLeadDays: none in yet -> null', itemLeadDays(chop, [], [l3], [o3]) === null);
+  const r5 = stockRows([chop], [move(chop.id, 'count', 7, '2026-10-07'), rcv, move(chop.id, 'count', 20, '2026-11-18')], [l1, l2, l3], [o1, o2, o3], today)[0];
+  check('the history lead time is used, from 2 past orders', r5.leadDays === 36 && r5.leadSource === 'history' && r5.leadOrders === 2, r5);
+  check('7 + 14 received = 21 expected, 20 counted -> 1 counted out', r5.countedOut === 1, r5.countedOut);
+  check("the item's own lead time wins", stockRows([{ ...chop, lead_time_days: 60 }], [], [l1], [o1], today)[0].leadSource === 'item');
+  check('a reorder point set on the item says "set"', stockRows([{ ...chop, reorder_point: 6 }], [], [], [], today)[0].reorderSource === 'set');
+  check('custom vs stock by category', isCustomItem({ category: 'Bird Streets' }) && !isCustomItem({ category: 'h.wood' }) && !isCustomItem({ category: ' H.Wood ' })
+    && !isCustomItem({ category: null }) && !isCustomItem({ category: '' }));
+  // the screen shows it
+  const wv = readFileSync(join(process.cwd(), 'src/components/orderTracker/WarehouseView.tsx'), 'utf8');
+  check('Warehouse: Lead time and Reorder point columns, days of cover, what a count found gone, the suggested order',
+    wv.includes('>Lead time</th>') && wv.includes('>Reorder point</th>') && wv.includes('counted out') && wv.includes('function countNote') && wv.includes('order ~{fmtQty(r.orderQty)}'));
+  const rep2 = readFileSync(join(process.cwd(), 'src/lib/orderTrackerReport.ts'), 'utf8');
+  check('the Excel export has them too', rep2.includes("'Lead time (days)'") && rep2.includes("'Suggested order'") && rep2.includes("'Days of cover'"));
 }
 
 // ── quote approval (0157): a quote stays flagged until h.wood e-mails the vendor its go-ahead ─────────

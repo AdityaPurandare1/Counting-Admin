@@ -2,7 +2,7 @@ import { Fragment, useMemo, useState } from 'react';
 import { Btn, Card, Eyebrow, Pill } from '@/components/atoms';
 import { VENUES } from '@/lib/access';
 import {
-  EE_WAREHOUSE, isStorageLine, itemLocation, orderVenues, planStorageLine, releasesByVenue, stockRows, storageMoveRows,
+  EE_WAREHOUSE, REVIEW_DAYS, countChanges, isStorageLine, itemLocation, orderVenues, planStorageLine, releasesByVenue, stockRows, storageMoveRows,
   type OtItem, type OtLine, type OtOrder, type StockRow, type StoragePlan,
 } from '@/lib/orderTracker';
 import { addMove, deleteMove, recordStorageLine, saveItem, skipStorageLine, type ItemDraft, type TrackerData } from '@/lib/orderTrackerData';
@@ -52,9 +52,11 @@ export function WarehouseView({ data, today, venueName, onReload }: {
   return (
     <>
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 12, color: 'var(--fg-muted)', maxWidth: 820 }}>
-          On hand = last count + received − released. Use per month is the last 90 days of releases. The reorder date leaves the item's lead time
-          (+25%) of stock, counting what is already on order; set a reorder point on the item to override it.
+        <span style={{ fontSize: 12, color: 'var(--fg-muted)', maxWidth: 900 }}>
+          On hand = last count + received − released. Used per month = the last 90 days (or since the first count) of what was released plus
+          what the counts found gone. Reorder point = use over the lead time + 25% (the item's own lead time, else what its past orders took,
+          else {LEAD_HINT}); set one on the item to override it. Reorder by counts what is already on order; the suggested order covers the lead
+          time and {REVIEW_DAYS} days more.
         </span>
         <div style={{ flex: 1 }} />
         <Btn variant="secondary" size="sm" onClick={() => setEditing('new')}>Add item</Btn>
@@ -72,13 +74,15 @@ export function WarehouseView({ data, today, venueName, onReload }: {
             <table style={{ ...tbl, minWidth: 1000 }}>
               <thead><tr style={headRow}>
                 <th style={th}>Item</th><th style={thR}>On hand</th><th style={thR} title="Still to come in: ordered, not received into the warehouse yet">Incoming</th>
-                <th style={thR}>Used / month</th><th style={thR}>Cover</th><th style={th}>Reorder by</th><th style={th}>Status</th><th style={th} />
+                <th style={thR} title="Released + counted out (what a count found gone), per month">Used / month</th><th style={thR} title="How long what is on hand lasts at that rate">Cover</th>
+                <th style={thR} title="Sent to the vendor until it arrives">Lead time</th><th style={thR} title="Reorder when on hand + incoming falls to this">Reorder point</th>
+                <th style={th}>Reorder by</th><th style={th}>Status</th><th style={th} />
               </tr></thead>
               <tbody>
                 {rows.map((r, ri) => (
                   <Fragment key={r.item.id}>
                     {(ri === 0 || itemLocation(rows[ri - 1].item) !== itemLocation(r.item)) && (
-                      <tr><td colSpan={8} style={{ ...td, background: 'var(--surface-alt)', fontWeight: 700, fontSize: 12, letterSpacing: '.04em', textTransform: 'uppercase' }}>
+                      <tr><td colSpan={COLS} style={{ ...td, background: 'var(--surface-alt)', fontWeight: 700, fontSize: 12, letterSpacing: '.04em', textTransform: 'uppercase' }}>
                         {itemLocation(r.item)} <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, color: 'var(--fg-muted)' }}>
                           · {rows.filter(x => itemLocation(x.item) === itemLocation(r.item)).length} items{itemLocation(r.item) === EE_WAREHOUSE ? ' · E&E delivery charges draw from here' : ''}</span>
                       </td></tr>
@@ -86,15 +90,21 @@ export function WarehouseView({ data, today, venueName, onReload }: {
                     <tr style={rowBorder}>
                       <td style={{ ...td, maxWidth: 280 }}>
                         <button style={linkBtn} onClick={() => setOpenHist(openHist === r.item.id ? null : r.item.id)}>{r.item.name}</button>
-                        <div style={subTxt}>{[r.item.sku, r.item.vendor_name, r.item.lead_time_days != null && `${r.item.lead_time_days}-day lead time`].filter(Boolean).join(' · ') || ' '}</div>
+                        <div style={subTxt}>{[r.item.sku, r.item.vendor_name].filter(Boolean).join(' · ') || ' '}</div>
                       </td>
-                      <td style={{ ...tdNum, fontWeight: 700 }}>{fmtQty(r.onHand)} <span style={subTxt}>{r.item.unit}</span></td>
+                      <td style={{ ...tdNum, fontWeight: 700 }} data-onhand={r.onHand}>{fmtQty(r.onHand)} <span style={subTxt}>{r.item.unit}</span>
+                        {countNote(r) && <div style={{ ...subTxt, fontWeight: 400, color: r.lastCountChange!.counted < r.lastCountChange!.expected ? 'var(--ot-warn, #a1652c)' : undefined }}>{countNote(r)}</div>}</td>
                       <td style={tdNum}>{r.incoming ? fmtQty(r.incoming) : '—'}
                         {r.awaitingReceipt > 0 && <div style={subTxt}>{fmtQty(r.awaitingReceipt)} delivered, not received</div>}</td>
-                      <td style={tdNum}>{r.monthlyUse ? fmtQty(Math.round(r.monthlyUse * 10) / 10) : '—'}</td>
-                      <td style={tdNum}>{r.monthsCover != null ? `${(Math.round(r.monthsCover * 10) / 10).toFixed(1)} mo` : '—'}</td>
+                      <td style={tdNum} data-use={Math.round(r.monthlyUse * 10) / 10}>{r.monthlyUse ? fmtQty(Math.round(r.monthlyUse * 10) / 10) : '—'}
+                        {(r.released > 0 || r.countedOut > 0) && <div style={subTxt}>{[r.released > 0 && `${fmtQty(r.released)} released`, r.countedOut > 0 && `${fmtQty(r.countedOut)} counted out`].filter(Boolean).join(' · ')} in {r.useDays} days</div>}</td>
+                      <td style={tdNum}>{coverText(r)}</td>
+                      <td style={tdNum} data-lead={r.leadDays}>{r.leadDays} d<div style={subTxt}>{leadNote(r)}</div></td>
+                      <td style={tdNum} data-rop={r.reorderPoint == null ? '' : Math.round(r.reorderPoint * 10) / 10}>{r.reorderPoint != null ? fmtQty(Math.round(r.reorderPoint * 10) / 10) : '—'}
+                        {r.reorderSource && <div style={subTxt}>{r.reorderSource === 'set' ? 'set on item' : 'auto'}</div>}</td>
                       <td style={td}>{r.reorderBy ? shortDate(r.reorderBy) : '—'}{r.stockOutBy && <div style={subTxt}>runs out {shortDate(r.stockOutBy)}</div>}</td>
-                      <td style={td}><Pill tone={STATE_TONE[r.state]} size="sm">{r.state}</Pill></td>
+                      <td style={td}><Pill tone={STATE_TONE[r.state]} size="sm">{r.state}</Pill>
+                        {r.orderQty != null && <div style={subTxt} data-order-qty={r.orderQty}>order ~{fmtQty(r.orderQty)} {unitFor(r.item.unit, r.orderQty)}</div>}</td>
                       <td style={{ ...td, whiteSpace: 'nowrap' }}>
                         <Btn variant="secondary" size="sm" onClick={() => start(r.item.id, 'release')}>Release</Btn>{' '}
                         <Btn variant="ghost" size="sm" onClick={() => start(r.item.id, 'count')}>Count</Btn>{' '}
@@ -102,7 +112,7 @@ export function WarehouseView({ data, today, venueName, onReload }: {
                       </td>
                     </tr>
                     {action?.itemId === r.item.id && (
-                      <tr><td colSpan={8} style={{ ...td, background: 'var(--surface-alt)' }}>
+                      <tr><td colSpan={COLS} style={{ ...td, background: 'var(--surface-alt)' }}>
                         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', fontSize: 12 }}>
                           {action.kind === 'release' ? 'Released' : 'Counted on hand:'}
                           <input style={{ ...smallInput, width: 80 }} inputMode="decimal" value={qty} onChange={e => setQty(e.target.value)} autoFocus /> {r.item.unit}
@@ -123,7 +133,7 @@ export function WarehouseView({ data, today, venueName, onReload }: {
                       </td></tr>
                     )}
                     {openHist === r.item.id && (
-                      <tr><td colSpan={8} style={{ ...td, background: 'var(--surface-alt)' }}>
+                      <tr><td colSpan={COLS} style={{ ...td, background: 'var(--surface-alt)' }}>
                         <ItemHistory itemId={r.item.id} data={data} today={today} venueName={venueName} onDelete={id => void run(() => deleteMove(id))} />
                       </td></tr>
                     )}
@@ -245,6 +255,25 @@ function StorageQueue({ data, today, venues, venueName, busy, run }: {
 }
 
 const placeRank = (p: string) => (p === EE_WAREHOUSE ? 0 : p === 'Corporate' ? 1 : 2);
+const COLS = 10;
+/** "17 cases", "1 case"; units that are abbreviations or uncountable stay as they are (cs, each, dz) */
+const unitFor = (unit: string, n: number) => (n === 1 || /s$|^(each|ea|cs|pc|dz|doz|lb|oz|kg|g|ml|l)$/i.test(unit) ? unit : `${unit}s`);
+const LEAD_HINT = '84 days for custom printed, 42 for stock';
+/** v1.29 the latest count against what the moves said: "−4 at the 11/18 count" (gone unrecorded) / "+3 ..." (more than expected) */
+function countNote(r: StockRow): string | null {
+  const c = r.lastCountChange;
+  if (!c) return null;
+  const d = Math.round((c.counted - c.expected) * 100) / 100;
+  return d ? `${d > 0 ? '+' : '−'}${fmtQty(Math.abs(d))} at the ${shortDate(c.day)} count` : null;
+}
+/** Cover in days under 3 months (E&E's days of stock), else months. */
+function coverText(r: StockRow): string {
+  if (r.daysCover == null) return '—';
+  return r.daysCover < 90 ? `${Math.round(r.daysCover)} days` : `${(Math.round(r.daysCover / 30 * 10) / 10).toFixed(1)} mo`;
+}
+function leadNote(r: StockRow): string {
+  return r.leadSource === 'item' ? 'set on item' : r.leadSource === 'history' ? `${r.leadOrders} past order${r.leadOrders === 1 ? '' : 's'}` : r.leadSource;
+}
 const rank = (s: StockRow['state']) => ({ 'reorder now': 0, 'reorder soon': 1, ok: 2, 'no usage yet': 3 })[s];
 
 function ItemHistory({ itemId, data, today, venueName, onDelete }: {
@@ -252,6 +281,7 @@ function ItemHistory({ itemId, data, today, venueName, onDelete }: {
 }) {
   const moves = data.moves.filter(m => m.item_id === itemId).sort((a, b) => (a.moved_on === b.moved_on ? b.created_at.localeCompare(a.created_at) : a.moved_on < b.moved_on ? 1 : -1));
   const byVenue = releasesByVenue(data.moves, itemId, today);
+  const vsExpected = countChanges(data.moves.filter(m => m.item_id === itemId));
   return (
     <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', fontSize: 12 }}>
       <div style={{ minWidth: 220 }}>
@@ -265,7 +295,9 @@ function ItemHistory({ itemId, data, today, venueName, onDelete }: {
         {moves.slice(0, 40).map(m => (
           <div key={m.id} style={{ marginTop: 3 }}>
             {shortDate(m.moved_on)} · <b>{m.kind === 'receipt' ? '+' : m.kind === 'release' ? '−' : '='}{fmtQty(m.qty)}</b> {m.kind}
-            {m.venue_id ? ` → ${venueName(m.venue_id)}` : ''}{m.note ? ` · ${m.note}` : ''}
+            {m.venue_id ? ` → ${venueName(m.venue_id)}` : ''}
+            {vsExpected.has(m.id) && vsExpected.get(m.id)!.counted !== vsExpected.get(m.id)!.expected && <CountVs c={vsExpected.get(m.id)!} />}
+            {m.note ? ` · ${m.note}` : ''}
             <span style={{ color: 'var(--fg-muted)' }}> {m.created_by ?? ''}</span>{' '}
             <button style={{ ...linkBtn, fontWeight: 400, fontSize: 11, color: 'var(--fg-muted)' }} onClick={() => { if (confirm('Delete this stock entry?')) onDelete(m.id); }}>delete</button>
           </div>
@@ -273,6 +305,12 @@ function ItemHistory({ itemId, data, today, venueName, onDelete }: {
       </div>
     </div>
   );
+}
+
+/** v1.29 a count in the history against what the moves before it said */
+function CountVs({ c }: { c: { expected: number; counted: number } }) {
+  const d = Math.round((c.counted - c.expected) * 100) / 100;
+  return <span style={{ color: d < 0 ? 'var(--ot-warn, #a1652c)' : 'var(--fg-muted)' }}> ({d < 0 ? `${fmtQty(-d)} gone since the count before` : `${fmtQty(d)} more than expected`})</span>;
 }
 
 function ItemForm({ item, onDone, onCancel }: { item: OtItem | null; onDone: () => void; onCancel: () => void }) {
