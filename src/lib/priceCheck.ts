@@ -116,10 +116,12 @@ export function counts(d: PcData, venue = '', q = ''): Record<PcFilter, number> 
   return out;
 }
 
-/** The latest run in words: "412 of 952 checked, $61.20 of the $200 budget" / when it finished or why it stopped. */
+/** The latest run in words: "412 of 952 checked, $61.20 so far" / when it finished or why it stopped. No budget (the
+ *  user, 11/18: "this function is just to check if the same items are available for cheaper else where. doesnt need
+ *  budget") - what it cost is shown for information. */
 export function runLine(r: PcRun | undefined, enabled: boolean): string {
   if (!r) return enabled ? 'No run yet - the first starts Saturday evening, or start one now.' : 'Switched off - no run yet.';
-  const spent = `$${Number(r.cost_usd).toFixed(2)}${r.budget_usd ? ` of the $${Number(r.budget_usd).toFixed(0)} budget` : ''}`;
+  const spent = `$${Number(r.cost_usd).toFixed(2)}${r.finished_at ? '' : ' so far'}`;
   const when = new Date(r.started_at).toLocaleString('en-US', { timeZone: 'America/Los_Angeles', weekday: 'short', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   if (!r.finished_at) return `Run started ${when}: ${r.items_done} of ${r.items_total} checked, ${spent}.`;
   return `Last run ${when}: ${r.items_done} of ${r.items_total} checked, ${spent}${r.stopped ? ` - stopped: ${r.stopped}` : ''}.`;
@@ -131,8 +133,18 @@ export const fmtUnit = (n: number | null | undefined) => (n == null ? '-' : `$${
 async function invoke<T>(body: Record<string, unknown>): Promise<T> {
   const { data, error } = await supabase.functions.invoke('kount-price-check', { body });
   if (error) {
+    // the function's own words ({error}), else the platform's ({message}, e.g. a 546 when it ran out of CPU), else the status
     let m = error.message;
-    try { const ctx = (error as { context?: Response }).context; if (ctx && typeof ctx.json === 'function') m = (await ctx.json()).error ?? m; } catch { /* generic */ }
+    try {
+      const ctx = (error as { context?: Response }).context;
+      if (ctx && typeof ctx.text === 'function') {
+        const t = await ctx.text();
+        let j: { error?: string; message?: string; msg?: string } = {};
+        try { j = JSON.parse(t); } catch { /* not JSON */ }
+        m = j.error ?? j.message ?? j.msg ?? (t ? t.slice(0, 200) : `the price check answered ${ctx.status}`);
+        if (ctx.status) m = `${m} (HTTP ${ctx.status})`;
+      }
+    } catch { /* generic */ }
     throw new Error(m);
   }
   return data as T;
@@ -145,7 +157,7 @@ export async function setQuote(itemId: string, state: 'requested' | 'received' |
   const { error } = await supabase.rpc('kount_pc_set_quote', { p_item: itemId, p_state: state, p_vendor: vendor, p_price: price, p_note: note });
   if (error) throw new Error(error.message);
 }
-export async function setSettings(p: { enabled?: boolean; budget?: number; overpay?: number; model?: string }): Promise<void> {
-  const { error } = await supabase.rpc('kount_pc_set_settings', { p_enabled: p.enabled ?? null, p_budget: p.budget ?? null, p_overpay: p.overpay ?? null, p_model: p.model ?? null });
+export async function setSettings(p: { enabled?: boolean; overpay?: number; model?: string }): Promise<void> {
+  const { error } = await supabase.rpc('kount_pc_set_settings', { p_enabled: p.enabled ?? null, p_budget: null, p_overpay: p.overpay ?? null, p_model: p.model ?? null });
   if (error) throw new Error(error.message);
 }

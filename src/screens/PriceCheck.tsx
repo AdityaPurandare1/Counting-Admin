@@ -80,9 +80,6 @@ export function PriceCheck({ user, load = loadPriceCheck }: { user: AccessEntry;
                   <select style={picker} value={st.model} disabled={!!busy} onChange={e => void run('model', async () => { await setSettings({ model: e.target.value }); })}>
                     {MODELS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
                   </select></label>
-                <label style={{ fontSize: 12 }}>Weekly budget ${' '}
-                  <input style={{ ...smallInput, width: 70 }} type="number" min={0} step={10} defaultValue={st.weekly_budget_usd} key={`b${st.updated_at}`}
-                    onBlur={e => { const v = Number(e.target.value); if (v >= 0 && v !== Number(st.weekly_budget_usd)) void run('budget', async () => { await setSettings({ budget: v }); }); }} /></label>
                 <label style={{ fontSize: 12 }}>Overpaying from{' '}
                   <input style={{ ...smallInput, width: 50 }} type="number" min={1} max={90} defaultValue={st.overpay_pct} key={`o${st.updated_at}`}
                     onBlur={e => { const v = Number(e.target.value); if (v > 0 && v < 100 && v !== Number(st.overpay_pct)) void run('overpay', async () => { await setSettings({ overpay: v }); }); }} />% cheaper</label>

@@ -57,7 +57,7 @@ check('a venue keeps its own bible items', counts(d, 'v2').all === 1 && rowsFor(
 check('search: item, maker, item #', rowsFor(d, 'all', '', 'oyster steelite').length === 1 && rowsFor(d, 'all', '', over2.item_no!).length === 1);
 check('the run line', runLine(undefined, false) === 'Switched off - no run yet.'
   && runLine({ id: 'r', trigger: 'weekly', model: null, started_at: '2026-11-21T03:00:00Z', finished_at: null, items_total: 952, items_done: 412, cost_usd: 61.2, budget_usd: 200, stopped: null }, true)
-    === 'Run started Fri, 11/20, 7:00 PM: 412 of 952 checked, $61.20 of the $200 budget.',
+    === 'Run started Fri, 11/20, 7:00 PM: 412 of 952 checked, $61.20 so far.',
   runLine({ id: 'r', trigger: 'weekly', model: null, started_at: '2026-11-21T03:00:00Z', finished_at: null, items_total: 952, items_done: 412, cost_usd: 61.2, budget_usd: 200, stopped: null }, true));
 check('price per piece: cents, tenths of a cent under $1', fmtUnit(4.9992) === '$5.00' && fmtUnit(0.3125) === '$0.313' && fmtUnit(null) === '-');
 
@@ -74,8 +74,11 @@ if (fn && mig && toml) {
     && /safeEqual\(req\.headers\.get\('x-kount-cron'\)/.test(fn) && /const FEATURES = \['purchasing:order-tracker', 'purchasing:order-prices'\];/.test(fn));
   check('function: OpenRouter web search + web fetch, data_collection deny, the key from the secrets', /type: 'openrouter:web_search'/.test(fn) && /type: 'openrouter:web_fetch'/.test(fn)
     && /provider: \{ data_collection: 'deny' \}/.test(fn) && /Deno\.env\.get\('OPENROUTER_API_KEY'\)/.test(fn));
-  check('function: stops at the weekly budget; a switched-off check does nothing on its schedule', /overBudget\(Number\(run\.cost_usd\), Number\(run\.budget_usd\)\)/.test(fn)
-    && /if \(!st\.enabled\) return json\(200, \{ skipped: 'the price check is switched off' \}\);/.test(fn));
+  // 11/18 the user: "this function is just to check if the same items are available for cheaper else where. doesnt need budget"
+  check('function: no budget stop; a switched-off check does nothing on its schedule; purchases matched through the index (CPU limit)',
+    !/overBudget/.test(fn) && /if \(!st\.enabled\) return json\(200, \{ skipped: 'the price check is switched off' \}\);/.test(fn)
+    && /const ix = purchaseIndex\(await loadPurchaseLines\(sb\)\);/.test(fn));
+  check('screen: no budget field', !/budget/i.test(src('src/screens/PriceCheck.tsx')));
   check('0176: off until switched on, $200 a week, Sonnet 5.5, 10% threshold', /enabled boolean not null default false/.test(mig) && /weekly_budget_usd numeric not null default 200/.test(mig)
     && /model text not null default 'anthropic\/claude-sonnet-5\.5'/.test(mig) && /overpay_pct numeric not null default 10/.test(mig));
   check('0176: read by Order tracker or Order prices; writes only through the function or the two RPCs', /kount_has_feature\(''purchasing:order-tracker''\) or public\.kount_has_feature\(''purchasing:order-prices''\)/.test(mig)
