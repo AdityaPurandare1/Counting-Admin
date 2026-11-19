@@ -160,6 +160,17 @@ export const pastPullConfirm = (domain: string, day: string) =>
   + 'What clearly belongs to an order goes on it. Documents older than 30 days start no new orders (they wait in the Inbox for you), '
   + 'and older tracking numbers are added without moving lines. The 9 o\'clock pull is not affected.';
 export const checkApprovals = () => invokeMail<{ approved: number; error: string | null }>({ action: 'approvals' });
+/** v1.30 the release engine now (0179): e-mails to E&E since the last read -> releases; then E&E's invoices link to them. */
+export interface ReleaseCheck { seen: number; read: number; recorded: number; review: number; linked: number; note: string | null; error: string | null }
+export const checkReleases = () => invokeMail<ReleaseCheck>({ action: 'releases' });
+/** What "Check my e-mails to E&E now" says. */
+export function releaseCheckText(r: ReleaseCheck): string {
+  if (r.error) return `The check stopped: ${r.error}`;
+  const s = (k: number, one: string, many = `${one}s`) => `${k} ${k === 1 ? one : many}`;
+  const parts = [r.recorded ? `${s(r.recorded, 'e-mail')} recorded as releases` : '', r.review ? `${s(r.review, 'e-mail')} for you to check` : '',
+    r.linked ? `${s(r.linked, 'E&E invoice line')} linked to them` : ''].filter(Boolean);
+  return `${s(r.seen, 'e-mail')} to E&E looked at: ${parts.length ? parts.join(', ') : 'no new releases'}.${r.note ? ` ${r.note}` : ''}`;
+}
 /** v1.21: the e-mail as a real draft in the connected Outlook mailbox, these tracker documents attached; link opens
  *  it in Outlook. drafted = false with a reason when the tracker can't (not_granted: IT has not given the app
  *  Mail.ReadWrite; not_owner: someone else's mailbox is connected; not_connected). */

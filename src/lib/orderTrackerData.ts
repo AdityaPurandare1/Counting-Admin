@@ -5,7 +5,7 @@
 
 import type { OtFollowup } from './orderFollowups';
 import { supabase, selectAllPagedFiltered } from './supabase';
-import type { ApplyDocument, DocKind, DocLine, LineStatus, OtDocument, OtItem, OtLine, OtMove, OtOrder, OtTracking } from './orderTracker';
+import { linkStorageRows, type ApplyDocument, type DocKind, type DocLine, type LineStatus, type OtDocument, type OtItem, type OtLine, type OtMove, type OtOrder, type OtTracking, type ReleaseRead } from './orderTracker';
 import type { BibleText } from './quoteBible';
 
 export const DOC_BUCKET = 'kount-order-docs';
@@ -23,6 +23,15 @@ export interface TrackerData {
   bibles?: BibleText[];
   /** follow-ups / payment requests composed (0153); absent in older test data */
   followups?: OtFollowup[];
+  /** v1.30 e-mails to E&E the release engine read as releases (0179): waiting for a person, or recorded; absent before 0179 */
+  releaseMail?: OtReleaseMail[];
+}
+
+/** v1.30 one e-mail to E&E the release engine read (kount_ot_release_mail, 0179). */
+export interface OtReleaseMail {
+  id: string; message_id: string; sent_at: string; sender_email: string | null; sender_name: string | null; subject: string | null;
+  excerpt: string | null; read: (ReleaseRead & { model?: string }) | null; state: 'recorded' | 'review' | 'not_release' | 'ignored';
+  decision: string | null; move_ids: string[] | null;
 }
 
 const num = (x: unknown): number | null => (x == null || x === '' ? null : Number.isFinite(Number(x)) ? Number(x) : null);
@@ -49,6 +58,11 @@ export async function loadTracker(): Promise<TrackerData> {
   ]);
   // follow-ups / payment requests composed (0153); empty before that migration
   const followups = await page<OtFollowup>('kount_ot_followups', 'created_at').catch(() => [] as OtFollowup[]);
+  // v1.30 the release engine's e-mails (0179): the ones a person looks at, and the recorded ones; none before 0179
+  const releaseMail = await Promise.resolve(supabase.from('kount_ot_release_mail')
+    .select('id, message_id, sent_at, sender_email, sender_name, subject, excerpt, read, state, decision, move_ids')
+    .in('state', ['review', 'recorded']).order('sent_at', { ascending: false }).limit(500))
+    .then(({ data, error }) => (error ? [] : (data ?? []) as OtReleaseMail[]), () => [] as OtReleaseMail[]);
   const fixLine = (l: OtLine): OtLine => ({ ...l, qty: Number(l.qty) || 0, unit_price: num(l.unit_price) });
   const fixItem = (i: OtItem): OtItem => ({ ...i, pack_size: num(i.pack_size), reorder_point: num(i.reorder_point), lead_time_days: num(i.lead_time_days) });
   return {
@@ -60,6 +74,7 @@ export async function loadTracker(): Promise<TrackerData> {
     tracking,
     bibles,
     followups,
+    releaseMail,
   };
 }
 
@@ -226,16 +241,44 @@ export async function addMove(move: Omit<OtMove, 'id' | 'created_at'>): Promise<
   if (error) fail('Stock not updated', error);
 }
 
-/** Record an E&E storage line once (0141): claim it, then write its stock moves (undoing the claim if they fail). */
-export async function recordStorageLine(lineId: string, moves: Array<Omit<OtMove, 'id' | 'created_at'> & { created_at?: string }>): Promise<void> {
+/** Record an E&E storage line once (0141): claim it, then write its stock moves (undoing the claim if they fail).
+ *  v1.30 (0179): a trip already asked for by e-mail is that release - it takes the line's day, cases and line instead
+ *  of being added twice (`existing` = the stock moves on screen). */
+export async function recordStorageLine(lineId: string, moves: Array<Omit<OtMove, 'id' | 'created_at'> & { created_at?: string }>, existing: OtMove[] = []): Promise<void> {
   const { data, error } = await supabase.from('kount_ot_lines').update({ stock_draw: 'recorded' }).eq('id', lineId).is('stock_draw', null).select('id');
   if (error) fail('Delivery not recorded', error);
   if (!data?.length) throw new Error('This delivery was already recorded — reload.');
-  const { error: mErr } = await supabase.from('kount_ot_stock_moves').insert(moves);
-  if (mErr) {
-    await supabase.from('kount_ot_lines').update({ stock_draw: null }).eq('id', lineId);
-    fail('Delivery not recorded', mErr);
+  const undo = async (e: { message: string }) => { await supabase.from('kount_ot_lines').update({ stock_draw: null }).eq('id', lineId); fail('Delivery not recorded', e); };
+  const { link, insert } = linkStorageRows(moves, existing);
+  for (const { move, row } of link) {
+    const { error: lErr } = await supabase.from('kount_ot_stock_moves').update({ line_id: row.line_id, moved_on: row.moved_on, qty: row.qty,
+      note: `${move.note ?? ''} · ${row.note ?? ''}`.slice(0, 500) }).eq('id', move.id);
+    if (lErr) await undo(lErr);
   }
+  if (insert.length) {
+    const { error: mErr } = await supabase.from('kount_ot_stock_moves').insert(insert);
+    if (mErr) await undo(mErr);
+  }
+}
+
+/** v1.30 an e-mail the release engine was unsure of, recorded by a person: its releases (each from that e-mail), and the
+ *  e-mail marked recorded. */
+export async function recordReleaseMail(mailId: string, moves: Array<Omit<OtMove, 'id' | 'created_at' | 'line_id' | 'kind'>>): Promise<void> {
+  if (!moves.length) throw new Error('Add at least one item.');
+  const rows = moves.map(m => ({ ...m, kind: 'release' as const, line_id: null, mail_id: mailId, created_at: `${m.moved_on}T19:00:00Z` }));
+  const { data, error } = await supabase.from('kount_ot_stock_moves').insert(rows).select('id');
+  if (error || !data) fail('Releases not recorded', error);
+  const me = (await supabase.auth.getUser()).data.user?.email ?? null;
+  const { error: uErr } = await supabase.from('kount_ot_release_mail').update({ state: 'recorded', move_ids: (data as Array<{ id: string }>).map(r => r.id),
+    decision: `Recorded by hand: ${moves.map(m => m.qty).join(' + ')} case${moves.length === 1 && moves[0].qty === 1 ? '' : 's'}`, decided_by: me, decided_at: new Date().toISOString() }).eq('id', mailId);
+  if (uErr) fail('Recorded, but the e-mail was not marked', uErr);
+}
+
+/** v1.30 an e-mail the release engine was unsure of that is not stock out of storage. */
+export async function ignoreReleaseMail(mailId: string): Promise<void> {
+  const me = (await supabase.auth.getUser()).data.user?.email ?? null;
+  const { error } = await supabase.from('kount_ot_release_mail').update({ state: 'ignored', decided_by: me, decided_at: new Date().toISOString() }).eq('id', mailId);
+  if (error) fail('Not updated', error);
 }
 
 /** An E&E storage line that moved no stock of ours (or is already in a count). */

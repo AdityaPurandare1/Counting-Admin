@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   statusRank, headlineStatus, orderState, isLate, statusAfterDocument, matchDocLines, matchItem, matchOrder,
-  onHand, receivedForLine, stockRows, releasesByVenue, countChanges, itemLeadDays, releaseFrequency, isCustomItem, USE_WINDOW_DAYS, LEAD_DEFAULT, REVIEW_DAYS, validateNewOrder, similarity, addDays, sameVendor,
+  onHand, receivedForLine, stockRows, releasesByVenue, countChanges, itemLeadDays, releaseFrequency, isCustomItem, USE_WINDOW_DAYS, LEAD_DEFAULT, REVIEW_DAYS, releaseMailCandidate, planReleaseMail, matchRelease, linkStorageRows, validateNewOrder, similarity, addDays, sameVendor,
   planDocRows, planDocumentSave, documentChecks, decideMailDocument, extractTracking, trackingUrl, orderForEmail, venueForDoc, filterByVenue, sortOrders, orderVenueIds,
   planStorageLine, storageMoveRows, isStorageLine, autoOrderNumber, lineOutsideSubtotal, orderForReferences,
   keepOtherAttachment, isSpreadsheet, sheetUpdates, itemLocation, EE_WAREHOUSE, linePack, qtyInItemUnits, lineDeliversTo,
@@ -1388,6 +1388,66 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
     && wv.includes('function batchText') && wv.includes('Other stock at E&amp;E') && wv.includes('!isCustomItem(i)'));
   const rep2 = readFileSync(join(process.cwd(), 'src/lib/orderTrackerReport.ts'), 'utf8');
   check('the Excel export has them too', rep2.includes("'Lead time (days)'") && rep2.includes("'Suggested order'") && rep2.includes("'Days of cover'"));
+}
+
+// v1.30 the release engine (0179): "build the engine that tracks them like this" - e-mails asking E&E for cases out of
+// storage become releases; E&E's invoice for the same trip links to them instead of counting twice
+{
+  const eq = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  const VENUES = [{ id: 'v1', name: 'Delilah LA' }, { id: 'v2', name: 'Delilah Miami' }, { id: 'v3', name: 'The Nice Guy' },
+    { id: 'v4', name: 'The Birdstreet Club' }, { id: 'x:Delilah Dallas', name: 'Delilah Dallas' }];
+  const med = item({ name: 'Delilah Medium Eurotote Bag', sku: 'DEL-MEDBAG', category: 'Delilah', pack_size: 100 });
+  const gloss = item({ name: 'Delilah Gloss Eurotote Bag', sku: 'SHUR8180', category: 'Delilah', pack_size: 100 });
+  const bsTote = item({ name: 'BS Eurotote Bag', sku: 'BS-EUROTTE', category: 'Bird Streets', pack_size: 50 });
+  const tngNap = item({ name: 'TNG Custom Napkin /1000', sku: 'TNG-NAPKIN', category: 'The Nice Guy', pack_size: 1000 });
+  const stock = [med, gloss, bsTote, tngNap];
+  const held = [move(med.id, 'count', 0, '2026-11-18'), move(gloss.id, 'count', 0, '2026-11-18'), move(bsTote.id, 'count', 63, '2026-11-18'), move(tngNap.id, 'count', 32, '2026-11-18')];
+
+  // which e-mails are worth reading
+  check('candidate: "please send 5 cases of the medium tote bags to Delilah LA"',
+    releaseMailCandidate('Delilah LA bags', 'Hi Jemma, could you please send 5 cases of the medium tote bags to Delilah LA? Thank you'));
+  check('candidate: an Uber for 2 cs of taco wrap', releaseMailCandidate('Re: BSC', 'Hi Aleli, please schedule an Uber for 2 cs of taco wrap to BSC today.'));
+  check('candidate: "two cases ... from the warehouse"', releaseMailCandidate('', 'Can we get two cases of TNG napkins from the warehouse?'));
+  check('not: a quote for 100 cases (nothing sent)', !releaseMailCandidate('Quote', 'Please approve the quote for 100 cases of the eurotote bags.'));
+  check('not: a payment / an invoice question', !releaseMailCandidate('Payment', 'Payment sent for INV-2026-857309.') && !releaseMailCandidate('', 'Can you send the invoice?'));
+
+  // what a read e-mail records
+  const a = planReleaseMail({ is_release: true, venue: 'Delilah LA', lines: [{ sku: 'DEL-MEDBAG', item: 'medium tote bags', qty: 5, unit: 'cases' }] }, '2026-11-18', stock, held, VENUES);
+  check('the SKU picked by the reader: 5 cases of the medium tote to Delilah LA, dated the e-mail',
+    a.problem === null && a.kind === 'release' && a.venueId === 'v1' && a.day === '2026-11-18' && eq(a.draws.map(d => [d.itemId, d.qty]), [[med.id, 5]]), a);
+  const b = planReleaseMail({ is_release: true, venue: 'Bird Streets Club', lines: [{ sku: null, item: 'eurotote bags', qty: 2, unit: 'cs' }] }, '2026-11-10', stock, held, VENUES);
+  check("no SKU: the words among the venue's brand (Bird Streets -> BS Eurotote Bag)", b.problem === null && b.venueId === 'v4' && eq(b.draws.map(d => [d.itemId, d.qty]), [[bsTote.id, 2]]), b);
+  const c = planReleaseMail({ is_release: true, venue: 'Delilah Dallas', lines: [{ sku: 'SHUR8180', item: 'gloss bags', qty: 2, unit: null },
+    { sku: 'DEL-MEDBAG', item: 'medium bags / 100', qty: 3, unit: 'case' }] }, '2026-10-07', stock, held, VENUES);
+  check('two lines, an order-only venue (Delilah Dallas), a slash in the item words', c.problem === null && c.venueId === 'x:Delilah Dallas'
+    && eq(c.draws.map(d => [d.itemId, d.qty]), [[gloss.id, 2], [med.id, 3]]), c);
+  const d = planReleaseMail({ is_release: true, venue: 'The Nice Guy', lines: [{ sku: 'TNG-NAPKIN', item: 'napkins', qty: 1000, unit: 'pcs' }] }, '2026-11-18', stock, held, VENUES);
+  check('pieces, not cases -> a person says how many cases', !!d.problem && /How many cases/.test(d.problem), d.problem);
+  const e = planReleaseMail({ is_release: true, venue: null, lines: [{ sku: 'BS-EUROTTE', item: 'totes', qty: 2, unit: 'cases' }] }, '2026-11-18', stock, held, VENUES);
+  check('no venue -> a person picks it', !!e.problem && /Which venue/.test(e.problem), e.problem);
+  const f = planReleaseMail({ is_release: true, venue: 'Delilah LA', lines: [] }, '2026-11-18', stock, held, VENUES);
+  check('nothing read -> a person', !!f.problem, f.problem);
+
+  // the same trip recorded twice is one
+  const asked = move(med.id, 'release', 5, '2026-11-10', { venue_id: 'v1', mail_id: 'mail-1' } as Partial<OtMove>);
+  const typed = move(med.id, 'release', 4, '2026-11-12', { venue_id: 'v1' });
+  check('matchRelease: same item and venue within 7 days, the same quantity first', matchRelease([typed, asked], med.id, 'v1', '2026-11-13', 5)?.id === asked.id
+    && matchRelease([typed, asked], med.id, 'v1', '2026-11-13', 4)?.id === typed.id);
+  check('matchRelease: not another venue, not 8+ days apart, not another item', matchRelease([asked], med.id, 'v2', '2026-11-10', 5) === null
+    && matchRelease([asked], med.id, 'v1', '2026-11-19', 5) === null && matchRelease([asked], gloss.id, 'v1', '2026-11-10', 5) === null);
+  check('matchRelease: a venue not known on either side still matches', matchRelease([asked], med.id, null, '2026-11-11', 5)?.id === asked.id);
+
+  // E&E's invoice line for that trip links to the e-mail's release; the rest is new
+  const billed = linkStorageRows([
+    { item_id: med.id, venue_id: 'v1', moved_on: '2026-11-14', qty: 5, kind: 'release' as const },
+    { item_id: gloss.id, venue_id: 'v1', moved_on: '2026-11-14', qty: 2, kind: 'release' as const },
+  ], [asked, typed]);
+  check('linkStorageRows: the asked release takes the invoice; an item not asked for is new', billed.link.length === 1 && billed.link[0].move.id === asked.id
+    && billed.insert.length === 1 && billed.insert[0].item_id === gloss.id, billed);
+  const onLine = { ...asked, line_id: 'line-9' };
+  check('linkStorageRows: never a release typed by hand, nor one an invoice already took', linkStorageRows([{ item_id: med.id, venue_id: 'v1', moved_on: '2026-11-12', qty: 4, kind: 'release' as const }],
+    [typed, onLine]).insert.length === 1);
+  check('linkStorageRows: a receipt is never linked', linkStorageRows([{ item_id: med.id, venue_id: null, moved_on: '2026-11-12', qty: 5, kind: 'receipt' as const }], [asked]).insert.length === 1);
 }
 
 // ── quote approval (0157): a quote stays flagged until h.wood e-mails the vendor its go-ahead ─────────

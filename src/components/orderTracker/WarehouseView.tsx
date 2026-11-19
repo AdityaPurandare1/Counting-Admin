@@ -2,10 +2,11 @@ import { Fragment, useMemo, useState } from 'react';
 import { Btn, Card, Eyebrow, Pill } from '@/components/atoms';
 import { VENUES } from '@/lib/access';
 import {
-  EE_WAREHOUSE, LEAD_DEFAULT, REVIEW_DAYS, USE_WINDOW_DAYS, countChanges, isCustomItem, onHand, isStorageLine, itemLocation, orderVenues, planStorageLine, releasesByVenue, stockRows, storageMoveRows,
+  EE_WAREHOUSE, LEAD_DEFAULT, REVIEW_DAYS, USE_WINDOW_DAYS, addDays, countChanges, isCustomItem, onHand, isStorageLine, itemLocation, orderVenues, planStorageLine, releasesByVenue, stockRows, storageMoveRows,
   type OtItem, type OtLine, type OtOrder, type StockRow, type StoragePlan,
 } from '@/lib/orderTracker';
-import { addMove, deleteMove, recordStorageLine, saveItem, skipStorageLine, type ItemDraft, type TrackerData } from '@/lib/orderTrackerData';
+import { addMove, deleteMove, ignoreReleaseMail, recordReleaseMail, recordStorageLine, saveItem, skipStorageLine, type ItemDraft, type OtReleaseMail, type TrackerData } from '@/lib/orderTrackerData';
+import { checkReleases, releaseCheckText } from '@/lib/orderMail';
 import { errBox, fmtQty, headRow, lbl, linkBtn, picker, rowBorder, shortDate, smallInput, subTxt, tbl, td, tdNum, th, thR } from './shared';
 
 const STATE_TONE: Record<StockRow['state'], 'critical' | 'caution' | 'positive' | 'ghost'> = {
@@ -69,6 +70,7 @@ export function WarehouseView({ data, today, venueName, onReload }: {
 
       {editing && <ItemForm item={editing === 'new' ? null : editing} onDone={() => { setEditing(null); onReload(); }} onCancel={() => setEditing(null)} />}
       {err && <div style={errBox}>{err}</div>}
+      <ReleaseMailQueue data={data} today={today} venues={venues} busy={busy} run={run} />
       <StorageQueue data={data} today={today} venues={venues} venueName={venueName} busy={busy} run={run} />
 
       <Card flush padding={0}>
@@ -197,7 +199,7 @@ function StorageQueue({ data, today, venues, venueName, busy, run }: {
   if (!pending.length) return null;
 
   const dayOf = (p: { l: OtLine; o: OtOrder; plan: StoragePlan }) => p.plan.day ?? p.l.invoice_date ?? p.o.ordered_on ?? today;
-  const record = (p: { l: OtLine; o: OtOrder; plan: StoragePlan }) => run(() => recordStorageLine(p.l.id, storageMoveRows(p.plan, p.l, dayOf(p))));
+  const record = (p: { l: OtLine; o: OtOrder; plan: StoragePlan }) => run(() => recordStorageLine(p.l.id, storageMoveRows(p.plan, p.l, dayOf(p)), data.moves));
   const ready = pending.filter(p => !p.plan.problem);
   const open = (p: { l: OtLine; o: OtOrder; plan: StoragePlan }) => {
     setFormErr(null);
@@ -213,7 +215,7 @@ function StorageQueue({ data, today, venues, venueName, busy, run }: {
       await recordStorageLine(p.l.id, [{
         item_id: form.itemId, moved_on: form.day || today, kind: form.kind, qty: q, venue_id: form.kind === 'release' ? form.venue : null,
         line_id: p.l.id, note: `E&E: ${p.l.description}`.slice(0, 500),
-      }]);
+      }], data.moves);
       setForm(null);
     });
   };
@@ -226,7 +228,7 @@ function StorageQueue({ data, today, venues, venueName, busy, run }: {
         <div style={{ fontWeight: 700 }}>E&amp;E deliveries to put in stock <Pill tone="gold" size="sm">{pending.length}</Pill></div>
         <span style={subTxt}>Orders filled from E&amp;E's warehouse come only as a delivery fee line. The morning pull records the ones it can read; pick the item for the rest.</span>
         <div style={{ flex: 1 }} />
-        {ready.length > 1 && <Btn variant="secondary" size="sm" disabled={busy} onClick={() => void run(async () => { for (const p of ready) await recordStorageLine(p.l.id, storageMoveRows(p.plan, p.l, dayOf(p))); })}>Record all {ready.length} read</Btn>}
+        {ready.length > 1 && <Btn variant="secondary" size="sm" disabled={busy} onClick={() => void run(async () => { for (const p of ready) await recordStorageLine(p.l.id, storageMoveRows(p.plan, p.l, dayOf(p)), data.moves); })}>Record all {ready.length} read</Btn>}
       </div>
       <table style={{ ...tbl, marginTop: 8 }}>
         <tbody>
@@ -272,6 +274,113 @@ function StorageQueue({ data, today, venues, venueName, busy, run }: {
           ))}
         </tbody>
       </table>
+    </Card>
+  );
+}
+
+/** v1.30 (0179) the release engine: each e-mail h.wood sends E&E asking for cases out of storage is recorded as releases
+ *  by the mail pull (each morning, then hourly). These are the ones it was unsure of - what it read and why - to record
+ *  with the item / cases / venue picked, or to put aside. */
+function ReleaseMailQueue({ data, today, venues, busy, run }: {
+  data: TrackerData; today: string; venues: Array<{ id: string; name: string }>;
+  busy: boolean; run: (fn: () => Promise<void>) => Promise<void>;
+}) {
+  const pending = (data.releaseMail ?? []).filter(r => r.state === 'review').sort((a, b) => b.sent_at.localeCompare(a.sent_at));
+  const recent = (data.releaseMail ?? []).filter(r => r.state === 'recorded' && r.sent_at.slice(0, 10) >= addDays(today, -30)).length;
+  const stock = useMemo(() => data.items.filter(i => i.is_active && i.track_stock && isCustomItem(i) && itemLocation(i) === EE_WAREHOUSE)
+    .sort((a, b) => a.name.localeCompare(b.name)), [data.items]);
+  const [form, setForm] = useState<{ id: string; venue: string; day: string; rows: Array<{ itemId: string; qty: string }> } | null>(null);
+  const [formErr, setFormErr] = useState<string | null>(null);
+  const [checkMsg, setCheckMsg] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  const laDay = (iso: string) => new Date(iso).toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+  const open = (r: OtReleaseMail) => {
+    setFormErr(null);
+    const v = r.read?.venue ? venues.find(x => x.name.toLowerCase() === r.read!.venue!.toLowerCase()) : undefined;
+    const rows = (r.read?.lines ?? []).map(l => ({ itemId: stock.find(i => i.sku && l.sku && i.sku.toLowerCase() === l.sku.toLowerCase())?.id ?? '',
+      qty: l.qty != null && (!l.unit || /^(cases?|cs|ctns?|cartons?|box(es)?)$/i.test(l.unit)) ? String(l.qty) : '' }));
+    setForm({ id: r.id, venue: v?.id ?? '', day: laDay(r.sent_at), rows: rows.length ? rows : [{ itemId: '', qty: '' }] });
+  };
+  const save = () => {
+    if (!form) return;
+    if (!form.venue) { setFormErr('Pick the venue it went to.'); return; }
+    const rows = form.rows.filter(x => x.itemId || x.qty.trim());
+    if (!rows.length) { setFormErr('Add the item and cases.'); return; }
+    for (const x of rows) {
+      if (!x.itemId) { setFormErr('Pick the item on every line.'); return; }
+      if (!(Number(x.qty) > 0)) { setFormErr('Enter the cases on every line.'); return; }
+    }
+    const mail = pending.find(r => r.id === form.id);
+    void run(async () => {
+      await recordReleaseMail(form.id, rows.map(x => ({ item_id: x.itemId, moved_on: form.day || today, qty: Number(x.qty), venue_id: form.venue,
+        note: `Asked E&E by e-mail: ${mail?.subject ?? ''}`.slice(0, 500) })));
+      setForm(null);
+    });
+  };
+  const checkNow = async () => {
+    setChecking(true); setCheckMsg(null);
+    try { setCheckMsg(releaseCheckText(await checkReleases())); await run(async () => {}); } catch (e) { setCheckMsg(e instanceof Error ? e.message : String(e)); } finally { setChecking(false); }
+  };
+  const readText = (r: OtReleaseMail) => (r.read?.lines ?? []).map(l => `${l.qty ?? '?'} ${l.unit ?? ''} ${l.sku ?? l.item}`.replace(/\s+/g, ' ').trim()).join(', ')
+    + (r.read?.venue ? ` → ${r.read.venue}` : '');
+
+  return (
+    <Card padding={16} style={{ marginBottom: 12 }}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }} data-release-queue={pending.length}>
+        <div style={{ fontWeight: 700 }}>Releases asked by e-mail {pending.length > 0 && <Pill tone="gold" size="sm">{pending.length}</Pill>}</div>
+        <span style={subTxt}>Each e-mail to E&amp;E asking for cases out of storage is recorded as a release (each morning, then hourly){recent ? ` · ${recent} in the last 30 days` : ''}.
+          {pending.length ? ' These it was not sure of:' : ''}</span>
+        <div style={{ flex: 1 }} />
+        <Btn variant="secondary" size="sm" disabled={busy || checking} onClick={() => void checkNow()}>{checking ? 'Checking…' : 'Check my e-mails to E&E now'}</Btn>
+      </div>
+      {checkMsg && <div style={{ ...subTxt, marginTop: 6 }} data-release-check>{checkMsg}</div>}
+      {pending.length > 0 && (
+        <table style={{ ...tbl, marginTop: 8 }}>
+          <tbody>
+            {pending.map(r => (
+              <Fragment key={r.id}>
+                <tr style={rowBorder}>
+                  <td style={{ ...td, maxWidth: 420 }} title={r.excerpt ?? ''}><b>{r.subject || '(no subject)'}</b>
+                    <div style={subTxt}>{[r.sender_name || r.sender_email, shortDate(laDay(r.sent_at))].filter(Boolean).join(' · ')}</div></td>
+                  <td style={{ ...td, fontSize: 12 }}>{readText(r) || '—'}<div style={subTxt}>{r.decision}</div></td>
+                  <td style={{ ...td, whiteSpace: 'nowrap', textAlign: 'right' }}>
+                    <Btn variant="primary" size="sm" disabled={busy} onClick={() => open(r)}>Record</Btn>{' '}
+                    <Btn variant="ghost" size="sm" disabled={busy} title="Not stock out of E&E's storage" onClick={() => void run(() => ignoreReleaseMail(r.id))}>Not a release</Btn>
+                  </td>
+                </tr>
+                {form?.id === r.id && (
+                  <tr><td colSpan={3} style={{ ...td, background: 'var(--surface-alt)' }}>
+                    <div style={{ display: 'grid', gap: 6, fontSize: 12 }}>
+                      {form.rows.map((x, k) => (
+                        <div key={k} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                          <input style={{ ...smallInput, width: 70 }} inputMode="decimal" placeholder="cases" value={x.qty}
+                            onChange={e => setForm({ ...form, rows: form.rows.map((y, j) => (j === k ? { ...y, qty: e.target.value } : y)) })} />
+                          <select style={{ ...smallInput, maxWidth: 280 }} value={x.itemId} onChange={e => setForm({ ...form, rows: form.rows.map((y, j) => (j === k ? { ...y, itemId: e.target.value } : y)) })}>
+                            <option value="">Item…</option>
+                            {stock.map(i => <option key={i.id} value={i.id}>{i.name}{i.sku ? ` (${i.sku})` : ''}</option>)}
+                          </select>
+                          {form.rows.length > 1 && <button style={{ ...linkBtn, fontWeight: 400 }} onClick={() => setForm({ ...form, rows: form.rows.filter((_, j) => j !== k) })}>remove</button>}
+                        </div>
+                      ))}
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <button style={{ ...linkBtn, fontWeight: 400 }} onClick={() => setForm({ ...form, rows: [...form.rows, { itemId: '', qty: '' }] })}>+ another item</button>
+                        to <select style={smallInput} value={form.venue} onChange={e => setForm({ ...form, venue: e.target.value })}>
+                          <option value="">Venue…</option>
+                          {venues.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                        </select>
+                        on <input type="date" style={smallInput} value={form.day} onChange={e => setForm({ ...form, day: e.target.value })} />
+                        <Btn variant="primary" size="sm" disabled={busy} onClick={save}>Save</Btn>
+                        <Btn variant="ghost" size="sm" onClick={() => setForm(null)}>Cancel</Btn>
+                        {formErr && <span style={{ color: 'var(--raspberry-500, #c0392b)' }}>{formErr}</span>}
+                      </div>
+                    </div>
+                  </td></tr>
+                )}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      )}
     </Card>
   );
 }
