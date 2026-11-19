@@ -1408,7 +1408,11 @@ check('a reload never re-reads the PDF (read keyed on the file / inbox row only)
     releaseMailCandidate('Delilah LA bags', 'Hi Jemma, could you please send 5 cases of the medium tote bags to Delilah LA? Thank you'));
   check('candidate: an Uber for 2 cs of taco wrap', releaseMailCandidate('Re: BSC', 'Hi Aleli, please schedule an Uber for 2 cs of taco wrap to BSC today.'));
   check('candidate: "two cases ... from the warehouse"', releaseMailCandidate('', 'Can we get two cases of TNG napkins from the warehouse?'));
+  check('candidate: the user\'s own way - "place an order for 2 cases of togo bags for birdstreet" (11/10, missed by the first run)',
+    releaseMailCandidate('BSC Order - Togo bags', 'Hi Jemma, I would like to place an order for 2 cases of togo bags for birdstreet. Thankyou'));
   check('not: a quote for 100 cases (nothing sent)', !releaseMailCandidate('Quote', 'Please approve the quote for 100 cases of the eurotote bags.'));
+  check('not: no number of cases', !releaseMailCandidate('Re: Order - Delilah Dallas', 'Hi Aleli, Can we move forward with these ?')
+    && !releaseMailCandidate('Lady Delilah - Wax paper', 'I would like to place an order for Lady Delilah wax papers. 20k pieces.'));
   check('not: a payment / an invoice question', !releaseMailCandidate('Payment', 'Payment sent for INV-2026-857309.') && !releaseMailCandidate('', 'Can you send the invoice?'));
 
   // what a read e-mail records
