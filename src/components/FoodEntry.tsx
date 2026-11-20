@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import { supabase } from '@/lib/supabase';
 import { Card, Eyebrow, Btn, Num, Money, Pill } from '@/components/atoms';
 import { FOOD_SHEETS, sheetForCategory, type FoodRow, type FoodSheetKey } from '@/lib/foodImport';
-import { foodKey, parseQty, rankMatches, searchStem, unitLabel, worthRemembering, UNIT_CHOICES } from '@/lib/foodMatch';
+import { foodKey, parseQty, rankMatches, searchStem, unitLabel, worthRemembering } from '@/lib/foodMatch';
 import { COUNT_UNIT_WORDS, composeUnit, parseFactor, suggestFactor } from '@/lib/foodUnits';
 
 /* ───────────────────────────────────────────────────────────────────────
@@ -26,6 +26,12 @@ import { COUNT_UNIT_WORDS, composeUnit, parseFactor, suggestFactor } from '@/lib
      (lb, each, case, ...). One number is asked: how many of the new unit make
      one of the old (worked out when both units say their size). The price, past
      counts and invoice maps are restated with it (kount_food_set_count_unit).
+   - v1.32 (0207): "Add an item that's missing" (top of the screen, and "+ add"
+     on every section) puts ANY catalog item -- or a new one -- on the venue's
+     list at once (kount_food_list_add): it stays for future counts, gets its
+     price from the venue's invoices when it was bought there, and the count box
+     is focused. "Undo" takes a wrong add back off (kount_food_list_remove; never
+     an item the venue has counted).
    ─────────────────────────────────────────────────────────────────────── */
 
 interface Props { venue: string; venueName: string; userEmail: string }
@@ -55,6 +61,12 @@ interface ImportResult {
 }
 
 interface CatalogHit { id: string; name: string; category: string | null }
+
+/** kount_food_list_add's answer (0207). */
+interface ListAdd {
+  added: boolean; already_on_list: boolean; how: string; master_item_id: string; name: string; category: string | null;
+  count_unit: string | null; units_per_case: number | null; sheet_category: string | null; sort_order: number | null; price: number | null;
+}
 
 /** kount_food_set_count_unit's answer (0205). */
 interface UnitChange {
@@ -119,6 +131,9 @@ export function FoodEntry({ venue, venueName, userEmail }: Props) {
     initial && (Object.values(initial.qty).some(v => String(v).trim() !== '') || initial.extras.length > 0) ? initial.savedAt : null);
   const [editing, setEditing]     = useState<string | null>(null);   // the item whose unit is being changed
   const [notice, setNotice]       = useState('');
+  const [addSheet, setAddSheet]   = useState<FoodSheetKey | null>(null);   // "+ add" on a section presets it
+  const [focusKey, setFocusKey]   = useState<string | null>(null);         // focus this count box after render
+  const [lastAdded, setLastAdded] = useState<{ key: string; name: string } | null>(null);
 
   /* ── load the list, prices and the last food count ── */
   useEffect(() => {
@@ -253,6 +268,61 @@ export function FoodEntry({ venue, venueName, userEmail }: Props) {
       (res.report && res.report.startsWith('not recomputed') ? ' The last food count report will refresh later.' : ''));
   };
 
+  /* ── an item was put on the list (0207): show it in its section and put the cursor in its count box ── */
+  useEffect(() => {
+    if (!focusKey) return;
+    const el = inputs.current.get(focusKey);
+    if (el) { el.focus(); el.scrollIntoView({ block: 'center', behavior: 'smooth' }); setFocusKey(null); }
+  }, [focusKey, base, filter]);
+
+  const showItem = (masterId: string) => { setFilter(''); setFocusKey(masterId); };
+
+  const listAdded = (res: ListAdd, typed: string) => {
+    setAddSheet(null);
+    const sheet: FoodSheetKey = isSheet(res.sheet_category) ? res.sheet_category : sheetForCategory(res.category);
+    const onScreen = (base ?? []).some(i => i.masterId === res.master_item_id);
+    if (!onScreen) {
+      const item: ListItem = {
+        key: res.master_item_id, masterId: res.master_item_id, name: res.name, unit: res.count_unit,
+        pack: res.units_per_case === null ? null : Number(res.units_per_case), sheet,
+        sort: res.sort_order ?? 900000, listSort: res.sort_order, price: res.price === null ? null : Number(res.price),
+        last: null, added: false, typed: typed.trim() || undefined,
+      };
+      setBase(b => [...(b ?? []), item]);
+      // an item added on screen earlier in this draft is now a list item: carry its number over, drop the extra
+      const extra = extras.find(x => x.masterId === res.master_item_id);
+      if (extra) setExtras(es => es.filter(x => x.key !== extra.key));
+    }
+    showItem(res.master_item_id);
+    setPreview(null); setResult(null);
+    if (res.already_on_list) {
+      setLastAdded(null);
+      setNotice(`${res.name} is already on the list (${sheetTitle(sheet)}), counted in ${unitLabel(res.count_unit, res.units_per_case).text}.`);
+    } else {
+      setLastAdded({ key: res.master_item_id, name: res.name });
+      setNotice(`Added ${res.name} to ${venueName}'s food list (${sheetTitle(sheet)}, counted in ${unitLabel(res.count_unit, res.units_per_case).text})` +
+        (res.price !== null ? `, at ${'$' + Number(res.price).toFixed(2)} from its last invoice` : ', no price yet') +
+        '. It stays on the list for future counts.');
+    }
+  };
+
+  const undoAdd = async () => {
+    if (!lastAdded) return;
+    const { key, name } = lastAdded;
+    const { error: rmErr } = await supabase.rpc('kount_food_list_remove', { p_venue_id: venue, p_master_item_id: key });
+    if (rmErr) { setNotice(`Could not take ${name} off the list: ${rmErr.message}`); return; }
+    setBase(b => (b ?? []).filter(i => i.key !== key));
+    setQty(q => { const { [key]: _gone, ...rest } = q; return rest; });
+    setLastAdded(null); setPreview(null);
+    setNotice(`${name} is off the list again.`);
+  };
+
+  const openAdd = (sheet: FoodSheetKey | null) => {
+    setAddSheet(sheet);
+    const el = document.getElementById('food-add-input') as HTMLInputElement | null;
+    if (el) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); el.focus(); }
+  };
+
   /* ── record ── */
   const rowsToSend = useCallback((): SendRow[] => {
     const out: SendRow[] = [];
@@ -298,7 +368,7 @@ export function FoodEntry({ venue, venueName, userEmail }: Props) {
       // so a wrong pick that was removed or left blank never becomes a match.
       for (const it of items) {
         const q = parsed.get(it.key);
-        if (it.added && it.masterId && it.typed && (q !== null || blanksZero) && worthRemembering(it.typed, it.name)) {
+        if (it.masterId && it.typed && (q !== null || blanksZero) && worthRemembering(it.typed, it.name)) {
           void rememberSpelling(venue, it.typed, it.masterId);
         }
       }
@@ -309,17 +379,6 @@ export function FoodEntry({ venue, venueName, userEmail }: Props) {
       setExtras(extras.filter(x => keep.some(k => k.key === x.key)));
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(''); }
-  };
-
-  const addItem = (x: Omit<Extra, 'key'>, typed: string) => {
-    if (x.masterId && (base ?? []).some(i => i.masterId === x.masterId)) {
-      setFilter(x.name);                // already on the list: show it instead of adding a second row
-      return;
-    }
-    if (x.masterId && extras.some(e => e.masterId === x.masterId)) { setFilter(x.name); return; }
-    const key = x.masterId ?? `new:${Date.now()}`;
-    setExtras(es => [...es, { ...x, key, typed: typed.trim() || undefined }]);
-    setPreview(null);                   // a review never covers an item added after it
   };
 
   if (base === null) return <Card padding={16}>Loading {venueName}'s food list…</Card>;
@@ -348,13 +407,23 @@ export function FoodEntry({ venue, venueName, userEmail }: Props) {
           {' '}Counted differently in your kitchen? Press <strong>change</strong> next to the unit.
         </div>
         {notice && (
-          <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 6, background: 'var(--positive-bg)', fontSize: 13 }}>{notice}</div>
+          <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 6, background: 'var(--positive-bg)', fontSize: 13 }}>
+            {notice}
+            {lastAdded && (
+              <button onClick={() => void undoAdd()} title={`Take ${lastAdded.name} back off the list`}
+                      style={{ marginLeft: 8, border: 'none', background: 'none', cursor: 'pointer', color: 'var(--accent, var(--fg-muted))', fontSize: 13, textDecoration: 'underline' }}>
+                Undo
+              </button>
+            )}
+          </div>
         )}
       </Card>
 
+      <AddItem venue={venue} venueName={venueName} venueItems={base} sheetHint={addSheet} onAdded={listAdded} onShow={showItem} />
+
       {items.length === 0 && (
         <Card padding={16}>
-          {venueName} has no food list yet. Add items below, or upload the venue's workbook once (Upload workbook) to set the list up.
+          {venueName} has no food list yet. Add items above, or upload the venue's workbook once (Upload workbook) to set the list up.
         </Card>
       )}
 
@@ -366,7 +435,13 @@ export function FoodEntry({ venue, venueName, userEmail }: Props) {
           <Card key={s.key} padding={0}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
               <Eyebrow>{s.title}</Eyebrow>
-              <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>{done} of {rows.length} counted</span>
+              <span style={{ display: 'flex', gap: 12, alignItems: 'center', fontSize: 12, color: 'var(--fg-muted)' }}>
+                {done} of {rows.length} counted
+                <button onClick={() => openAdd(s.key)} title={`Add an item that's missing from ${s.title}`}
+                        style={{ border: 'none', background: 'none', cursor: 'pointer', color: 'var(--accent, var(--fg-muted))', fontSize: 12, textDecoration: 'underline' }}>
+                  + add item
+                </button>
+              </span>
             </div>
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
@@ -434,8 +509,6 @@ export function FoodEntry({ venue, venueName, userEmail }: Props) {
         );
       })}
 
-      <AddItem venueItems={base} onAdd={addItem} />
-
       <Card padding={16}>
         <Eyebrow>Record the count</Eyebrow>
         <div style={{ marginTop: 8, fontSize: 13, color: 'var(--fg-secondary)', lineHeight: 1.6 }}>
@@ -494,17 +567,29 @@ async function rememberSpelling(venue: string, typed: string, masterId: string) 
   if (aliasErr) console.warn('[food] alias not saved', aliasErr.message);
 }
 
-/* ── add an item: the venue's list first, then the catalog, then "new" ── */
-function AddItem({ venueItems, onAdd }: {
+/* ── add an item that's missing: the venue's list first, then ANY catalog item, then "new" (0207: saved to
+      the list at once, kount_food_list_add) ── */
+function AddItem({ venue, venueName, venueItems, sheetHint, onAdded, onShow }: {
+  venue: string;
+  venueName: string;
   venueItems: ListItem[];
-  onAdd: (x: Omit<Extra, 'key'>, typed: string) => void;
+  sheetHint: FoodSheetKey | null;
+  onAdded: (res: ListAdd, typed: string) => void;
+  onShow: (masterId: string) => void;
 }) {
   const [q, setQ] = useState('');
   const [hits, setHits] = useState<CatalogHit[]>([]);
   const [pick, setPick] = useState<{ masterId: string | null; name: string; category: string | null } | null>(null);
   const [unit, setUnit] = useState<string>('lb');
+  const [other, setOther] = useState('');
+  const [size, setSize] = useState('');
   const [pack, setPack] = useState('');
   const [sheet, setSheet] = useState<FoodSheetKey>('Grocery');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  // "+ add item" on a section: that section, until something is added
+  useEffect(() => { if (sheetHint) setSheet(sheetHint); }, [sheetHint]);
 
   useEffect(() => {
     const words = q.toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length >= 3).sort((a, b) => b.length - a.length);
@@ -513,10 +598,12 @@ function AddItem({ venueItems, onAdd }: {
     const t = setTimeout(async () => {
       const term = searchStem(words[0]).replace(/[\\%_]/g, m => '\\' + m);
       const { data, error } = await supabase.from('master_items').select('id,name,category')
-        .eq('is_active', true).ilike('name', '%' + term + '%').limit(60);
+        .eq('is_active', true).ilike('name', '%' + term + '%').limit(120);
       if (!live) return;
       if (error) { console.error('[food] item search', error); setHits([]); return; }
-      setHits(((data ?? []) as CatalogHit[]).filter(h => FOOD_CATEGORY_RE.test(h.category ?? '')));
+      // any item can be counted with food (sake for the kitchen, to-go packaging...): food categories first
+      const all = (data ?? []) as CatalogHit[];
+      setHits([...all.filter(h => FOOD_CATEGORY_RE.test(h.category ?? '')), ...all.filter(h => !FOOD_CATEGORY_RE.test(h.category ?? ''))]);
     }, 250);
     return () => { live = false; clearTimeout(t); };
   }, [q]);
@@ -524,33 +611,50 @@ function AddItem({ venueItems, onAdd }: {
   const listMatches = useMemo(() => rankMatches(q, venueItems.filter(i => i.masterId).map(i => ({ id: i.masterId as string, name: i.name })), 4), [q, venueItems]);
   const catMatches = useMemo(() => {
     const onList = new Set(venueItems.map(i => i.masterId));
-    return rankMatches(q, hits.filter(h => !onList.has(h.id)), 6);
+    return rankMatches(q, hits.filter(h => !onList.has(h.id)), 8);
   }, [q, hits, venueItems]);
 
   const choose = (masterId: string | null, name: string, category: string | null) => {
-    setPick({ masterId, name, category });
-    setSheet(sheetForCategory(category));
+    setPick({ masterId, name, category }); setErr('');
+    setSheet(sheetHint ?? sheetForCategory(category));
   };
-  const confirm = () => {
-    if (!pick) return;
-    const n = Number(pack);
-    onAdd({ masterId: pick.masterId, name: pick.name, unit, pack: pack.trim() && Number.isFinite(n) && n > 0 ? n : null, sheet }, q);
-    setQ(''); setPick(null); setPack(''); setHits([]);
+  const unitWord = unit === 'other' ? other : unit;
+  const caseLike = unitWord === 'cs' || unitWord === 'pk';
+  const packN = caseLike && pack.trim() ? Number(pack) : null;
+  const packOk = packN === null || (Number.isFinite(packN) && packN > 0);
+  const label = unitWord.trim() ? composeUnit(unitWord, size) : '';
+  const canSave = !!pick && label !== '' && label.length <= 40 && packOk && !busy;
+
+  const confirm = async () => {
+    if (!pick || !canSave) return;
+    setBusy(true); setErr('');
+    const { data, error } = await supabase.rpc('kount_food_list_add', {
+      p_venue_id: venue, p_master_item_id: pick.masterId, p_name: pick.masterId ? null : pick.name,
+      p_count_unit: label, p_units_per_case: packN, p_sheet: sheet,
+    });
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    onAdded(data as ListAdd, pick.masterId ? q : '');
+    setQ(''); setPick(null); setPack(''); setSize(''); setOther(''); setHits([]);
   };
 
   return (
     <Card padding={16}>
-      <Eyebrow>Add an item that isn't listed</Eyebrow>
+      <Eyebrow>Add an item that's missing</Eyebrow>
       {!pick && (
         <>
-          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Type the item the way you call it, e.g. unsalted butter"
+          <input id="food-add-input" value={q} onChange={e => setQ(e.target.value)}
+                 placeholder={`Missing something? Type it the way you call it, e.g. unsalted butter${sheetHint ? ` (goes under ${sheetTitle(sheetHint)})` : ''}`}
                  style={{ ...picker, width: '100%', marginTop: 10 }} />
+          <div style={{ marginTop: 6, fontSize: 12, color: 'var(--fg-muted)' }}>
+            It goes on {venueName}'s food list right away and stays there for future counts.
+          </div>
           {q.trim().length >= 2 && (
             <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13 }}>
               {listMatches.filter(m => m.score >= 0.34).map(m => (
                 <div key={'l' + m.item.id} style={sugg}>
                   <span><strong>{m.item.name}</strong> <span style={{ color: 'var(--fg-muted)' }}>— already on your list</span></span>
-                  <Btn size="sm" variant="ghost" onClick={() => { onAdd({ masterId: m.item.id, name: m.item.name, unit: '', pack: null, sheet: 'Grocery' }, q); setQ(''); }}>Show it</Btn>
+                  <Btn size="sm" variant="ghost" onClick={() => { onShow(m.item.id); setQ(''); }}>Show it</Btn>
                 </div>
               ))}
               {catMatches.map(m => (
@@ -574,12 +678,22 @@ function AddItem({ venueItems, onAdd }: {
           </div>
           <label style={lbl}>Counted in
             <select value={unit} onChange={e => setUnit(e.target.value)} style={picker}>
-              {UNIT_CHOICES.map(u => <option key={u} value={u}>{unitLabel(u).unit}</option>)}
+              {COUNT_UNIT_WORDS.map(u => <option key={u} value={u}>{unitLabel(u).unit}</option>)}
+              <option value="other">Other…</option>
             </select>
           </label>
-          {(unit === 'cs' || unit === 'pk') && (
-            <label style={lbl}>Units per {unit === 'cs' ? 'case' : 'pack'}
-              <input inputMode="decimal" value={pack} onChange={e => setPack(e.target.value)} style={{ ...picker, width: 80 }} placeholder="e.g. 12" />
+          {unit === 'other' && (
+            <label style={lbl}>Unit
+              <input value={other} onChange={e => setOther(e.target.value)} placeholder="e.g. quart deli" maxLength={30} style={{ ...picker, width: 130 }} />
+            </label>
+          )}
+          <label style={lbl}>Size (optional)
+            <input value={size} onChange={e => setSize(e.target.value)} placeholder={caseLike ? 'e.g. 30/1 lb' : 'e.g. 5 lb'} style={{ ...picker, width: 110 }} />
+          </label>
+          {caseLike && (
+            <label style={lbl}>Units per {unitWord === 'cs' ? 'case' : 'pack'}
+              <input inputMode="decimal" value={pack} onChange={e => setPack(e.target.value)} placeholder="e.g. 12"
+                     style={{ ...picker, width: 80, borderColor: packOk ? undefined : 'var(--danger)' }} />
             </label>
           )}
           <label style={lbl}>Section
@@ -587,10 +701,11 @@ function AddItem({ venueItems, onAdd }: {
               {FOOD_SHEETS.map(s => <option key={s.key} value={s.key}>{sheetTitle(s.key)}</option>)}
             </select>
           </label>
-          <Btn size="sm" onClick={confirm}>Add to the count</Btn>
-          <Btn size="sm" variant="ghost" onClick={() => setPick(null)}>Back</Btn>
+          <Btn size="sm" onClick={() => void confirm()} disabled={!canSave}>{busy ? 'Adding…' : 'Add to the list'}</Btn>
+          <Btn size="sm" variant="ghost" onClick={() => { setPick(null); setErr(''); }} disabled={busy}>Back</Btn>
         </div>
       )}
+      {err && <div style={{ marginTop: 8, fontSize: 13, color: 'var(--danger)' }}>{err}</div>}
     </Card>
   );
 }
