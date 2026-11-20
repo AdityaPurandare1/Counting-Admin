@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { Card, Eyebrow, Btn, Num, Money, Pill } from '@/components/atoms';
 import { FOOD_SHEETS, sheetForCategory, type FoodRow, type FoodSheetKey } from '@/lib/foodImport';
 import { foodKey, parseQty, rankMatches, searchStem, unitLabel, worthRemembering, UNIT_CHOICES } from '@/lib/foodMatch';
+import { COUNT_UNIT_WORDS, composeUnit, parseFactor, suggestFactor } from '@/lib/foodUnits';
 
 /* ───────────────────────────────────────────────────────────────────────
    Food count → Type counts. The chef opens the venue's food list, types a
@@ -21,6 +22,10 @@ import { foodKey, parseQty, rankMatches, searchStem, unitLabel, worthRemembering
    - Typing is saved as a draft in this browser until the count is recorded.
    - Records through kount_import_food_count with each row's master_item_id
      (0155), prices NOT sent: typing a count never rewrites the venue's costs.
+   - v1.31 (0205): "Change" next to a unit switches how that item is counted
+     (lb, each, case, ...). One number is asked: how many of the new unit make
+     one of the old (worked out when both units say their size). The price, past
+     counts and invoice maps are restated with it (kount_food_set_count_unit).
    ─────────────────────────────────────────────────────────────────────── */
 
 interface Props { venue: string; venueName: string; userEmail: string }
@@ -50,6 +55,12 @@ interface ImportResult {
 }
 
 interface CatalogHit { id: string; name: string; category: string | null }
+
+/** kount_food_set_count_unit's answer (0205). */
+interface UnitChange {
+  changed: boolean; count_unit: string; units_per_case: number | null; factor?: number;
+  price_before?: number | null; price?: number | null; entries_restated?: number; maps_restated?: number; maps_added?: number; report?: string;
+}
 
 /** A row as sent to kount_import_food_count: FoodRow, but sort may be null and the item may be named outright (0155). */
 type SendRow = Omit<FoodRow, 'sort'> & { sort: number | null; master_item_id?: string };
@@ -106,6 +117,8 @@ export function FoodEntry({ venue, venueName, userEmail }: Props) {
   const [error, setError]         = useState('');
   const [restored, setRestored]   = useState<string | null>(() =>
     initial && (Object.values(initial.qty).some(v => String(v).trim() !== '') || initial.extras.length > 0) ? initial.savedAt : null);
+  const [editing, setEditing]     = useState<string | null>(null);   // the item whose unit is being changed
+  const [notice, setNotice]       = useState('');
 
   /* ── load the list, prices and the last food count ── */
   useEffect(() => {
@@ -220,6 +233,26 @@ export function FoodEntry({ venue, venueName, userEmail }: Props) {
 
   const setOne = (key: string, v: string) => { setQty(q => ({ ...q, [key]: v })); setPreview(null); setResult(null); };
 
+  /* ── a unit was changed (0205): mirror what the database restated, and the number already typed ── */
+  const unitChanged = (it: ListItem, res: UnitChange, factor: number) => {
+    setEditing(null);
+    if (!res.changed) return;
+    setBase(b => (b ?? []).map(i => i.key !== it.key ? i : {
+      ...i, unit: res.count_unit, pack: res.units_per_case === null ? null : Number(res.units_per_case),
+      price: res.price === undefined || res.price === null ? null : Number(res.price),
+      last: i.last === null ? null : i.last * factor,
+    }));
+    const typed = parseQty(qty[it.key] ?? '');
+    const convertTyped = factor !== 1 && typed !== null && !Number.isNaN(typed);
+    if (convertTyped) setQty(q => ({ ...q, [it.key]: fmt(typed * factor) }));
+    setPreview(null); setResult(null);
+    const to = unitLabel(res.count_unit, res.units_per_case).text;
+    setNotice(`${it.name} is now counted in ${to}` +
+      (factor !== 1 ? ` (1 old unit = ${fmt(factor)}). Its price${res.entries_restated ? ', past counts' : ''} switched too` : '') +
+      (convertTyped ? `, and the ${fmt(typed)} you typed is now ${fmt(typed * factor)}` : '') + '.' +
+      (res.report && res.report.startsWith('not recomputed') ? ' The last food count report will refresh later.' : ''));
+  };
+
   /* ── record ── */
   const rowsToSend = useCallback((): SendRow[] => {
     const out: SendRow[] = [];
@@ -312,7 +345,11 @@ export function FoodEntry({ venue, venueName, userEmail }: Props) {
           Type how many of each <strong>unit</strong> you have. Leave it blank if you didn't count it; type <strong>0</strong> if there is none.
           Enter jumps to the next item. {lastOn ? <>"Last" is the food count from {lastOn}.</> : null}
           {restored && <> · Picked up your unsaved count from {new Date(restored).toLocaleString()}.</>}
+          {' '}Counted differently in your kitchen? Press <strong>change</strong> next to the unit.
         </div>
+        {notice && (
+          <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 6, background: 'var(--positive-bg)', fontSize: 13 }}>{notice}</div>
+        )}
       </Card>
 
       {items.length === 0 && (
@@ -345,7 +382,8 @@ export function FoodEntry({ venue, venueName, userEmail }: Props) {
                     const q = parsed.get(it.key);
                     const bad = Number.isNaN(q as number);
                     return (
-                      <tr key={it.key} style={{ borderTop: '1px solid var(--border)' }}>
+                      <Fragment key={it.key}>
+                      <tr style={{ borderTop: '1px solid var(--border)' }}>
                         <td style={td}>
                           {it.name}{' '}
                           {it.added && <Pill tone={it.masterId ? 'inform' : 'caution'} size="sm">{it.masterId ? 'added' : 'new item'}</Pill>}
@@ -356,6 +394,13 @@ export function FoodEntry({ venue, venueName, userEmail }: Props) {
                         </td>
                         <td style={{ ...td, whiteSpace: 'nowrap' }}>
                           <strong>{u.unit}</strong>{u.detail && <span style={{ color: 'var(--fg-muted)' }}> · {u.detail}</span>}
+                          {!it.added && it.masterId && (
+                            <button onClick={() => { setEditing(editing === it.key ? null : it.key); setNotice(''); }}
+                                    title="Change how this item is counted (lb, each, case, ...)" aria-label={`Change how ${it.name} is counted`}
+                                    style={{ marginLeft: 8, border: 'none', background: 'none', cursor: 'pointer', color: 'var(--accent, var(--fg-muted))', fontSize: 12, textDecoration: 'underline' }}>
+                              {editing === it.key ? 'close' : 'change'}
+                            </button>
+                          )}
                         </td>
                         <td style={{ ...td, textAlign: 'right', color: 'var(--fg-muted)' }}>{it.last === null ? '—' : fmt(it.last)}</td>
                         <td style={{ ...td, textAlign: 'right' }}>
@@ -372,6 +417,14 @@ export function FoodEntry({ venue, venueName, userEmail }: Props) {
                           {q !== null && q !== undefined && !bad && it.price !== null ? <Money value={q * it.price} bold={false} size={13} /> : ''}
                         </td>
                       </tr>
+                      {editing === it.key && it.masterId && (
+                        <tr>
+                          <td colSpan={6} style={{ padding: '4px 12px 12px', background: 'var(--surface-2, var(--inform-bg))' }}>
+                            <UnitEditor venue={venue} item={it} onDone={(res, f) => unitChanged(it, res, f)} onCancel={() => setEditing(null)} />
+                          </td>
+                        </tr>
+                      )}
+                      </Fragment>
                     );
                   })}
                 </tbody>
@@ -539,6 +592,95 @@ function AddItem({ venueItems, onAdd }: {
         </div>
       )}
     </Card>
+  );
+}
+
+/* ── change how one item is counted (0205 kount_food_set_count_unit) ── */
+function UnitEditor({ venue, item, onDone, onCancel }: {
+  venue: string;
+  item: ListItem;
+  onDone: (res: UnitChange, factor: number) => void;
+  onCancel: () => void;
+}) {
+  const [word, setWord] = useState<string>('lb');
+  const [other, setOther] = useState('');
+  const [size, setSize] = useState('');
+  const [pack, setPack] = useState('');
+  const [factorText, setFactorText] = useState('');
+  const [factorTouched, setFactorTouched] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const unitWord = word === 'other' ? other : word;
+  const label = unitWord.trim() ? composeUnit(unitWord, size) : '';
+  const packN = pack.trim() ? Number(pack) : null;
+  const packOk = packN === null || (Number.isFinite(packN) && packN > 0);
+  const caseLike = unitWord === 'cs' || unitWord === 'pk';
+  const suggested = label ? suggestFactor(item.unit, item.pack, label, caseLike ? packN : null) : null;
+  // the worked-out number fills the box until the person types their own
+  useEffect(() => { if (!factorTouched) setFactorText(suggested === null ? '' : String(suggested)); }, [suggested, factorTouched]);
+  const factor = parseFactor(factorText);
+  const oldText = unitLabel(item.unit, item.pack).text;
+  const newText = label ? unitLabel(label, caseLike ? packN : null).text : 'new unit';
+  const ok = label !== '' && label.length <= 40 && packOk && !Number.isNaN(factor);
+
+  const save = async () => {
+    if (!ok || !item.masterId) return;
+    setBusy(true); setErr('');
+    const { data, error } = await supabase.rpc('kount_food_set_count_unit', {
+      p_venue_id: venue, p_master_item_id: item.masterId, p_count_unit: label,
+      p_units_per_case: caseLike ? packN : null, p_factor: factor,
+    });
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    onDone(data as UnitChange, factor);
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 8 }}>
+      <div style={{ fontSize: 13 }}>
+        How do you count <strong>{item.name}</strong>? Now: <strong>{oldText}</strong>.
+      </div>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <label style={lbl}>Count in
+          <select value={word} onChange={e => setWord(e.target.value)} style={picker}>
+            {COUNT_UNIT_WORDS.map(u => <option key={u} value={u}>{unitLabel(u).unit}</option>)}
+            <option value="other">Other…</option>
+          </select>
+        </label>
+        {word === 'other' && (
+          <label style={lbl}>Unit
+            <input value={other} onChange={e => setOther(e.target.value)} placeholder="e.g. quart deli" maxLength={30} style={{ ...picker, width: 130 }} />
+          </label>
+        )}
+        <label style={lbl}>Size (optional)
+          <input value={size} onChange={e => setSize(e.target.value)} placeholder={caseLike ? 'e.g. 30/1 lb' : 'e.g. 5 lb'} style={{ ...picker, width: 110 }} />
+        </label>
+        {caseLike && (
+          <label style={lbl}>Units per {unitWord === 'cs' ? 'case' : 'pack'}
+            <input inputMode="decimal" value={pack} onChange={e => setPack(e.target.value)} placeholder="e.g. 12"
+                   style={{ ...picker, width: 80, borderColor: packOk ? undefined : 'var(--danger)' }} />
+          </label>
+        )}
+        <label style={lbl}>1 {oldText} =
+          <span style={{ display: 'flex', gap: 6, alignItems: 'center', textTransform: 'none', letterSpacing: 0, fontSize: 13, color: 'var(--fg-secondary)' }}>
+            <input inputMode="decimal" value={factorText} onChange={e => { setFactorText(e.target.value); setFactorTouched(true); }}
+                   placeholder="?" aria-label={`How many ${newText} make one ${oldText}`}
+                   style={{ ...picker, width: 80, textAlign: 'right', borderColor: factorText && Number.isNaN(factor) ? 'var(--danger)' : undefined }} />
+            {newText}
+          </span>
+        </label>
+        <Btn size="sm" onClick={() => void save()} disabled={!ok || busy}>{busy ? 'Saving…' : 'Save'}</Btn>
+        <Btn size="sm" variant="ghost" onClick={onCancel} disabled={busy}>Cancel</Btn>
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--fg-muted)', lineHeight: 1.5 }}>
+        {suggested !== null && !factorTouched
+          ? <>Worked out from the sizes: 1 {oldText} = {fmt(suggested)} {newText}. Change it if that's wrong.</>
+          : <>Type how many {newText} make one {oldText} (e.g. 30, 0.5 or 1/6).</>}
+        {' '}The price and past counts switch to the new unit too, so their value stays the same.
+      </div>
+      {err && <div style={{ fontSize: 13, color: 'var(--danger)' }}>{err}</div>}
+    </div>
   );
 }
 
