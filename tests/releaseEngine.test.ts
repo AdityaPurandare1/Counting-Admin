@@ -34,7 +34,7 @@ check('Warehouse: "Releases asked by e-mail" with Check now, Record (item / case
   && wv.includes("'Check my e-mails to E&E now'") && wv.includes('Not a release') && wv.includes('await recordReleaseMail(form.id'));
 check('Warehouse: the queue offers custom E&E stock only, and the storage records pass the moves on screen', wv.includes('isCustomItem(i) && itemLocation(i) === EE_WAREHOUSE')
   && (wv.match(/data\.moves\)/g) ?? []).length >= 2 && wv.includes('}], data.moves);'));
-check('version 1.30', src('src/lib/version.ts').includes("'1.30'"));
+check('version 1.30 or later', Number((/APP_VERSION = '([0-9.]+)'/.exec(src('src/lib/version.ts')) ?? [])[1]) >= 1.30);
 
 // ── the database and the pull (the sibling repo, when it is there) ──
 const mig = sibling('supabase', 'migrations', '0179_kount_ot_release_mail.sql');
